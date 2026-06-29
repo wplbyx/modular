@@ -30,3 +30,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local disk storage test artifacts (persisted by TestDiskStorage_PersistToUploadDir)
+storage/upload/
