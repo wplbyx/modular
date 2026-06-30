@@ -1,0 +1,115 @@
+application:
+  name: "custom-modular-monolith"
+  mode: "prod"
+  version: "v1.0.0"
+  service: "111111"
+  clients:
+    auth: http111
+
+logging:
+  level: "info"
+  format: "json"
+  output: "file"
+  filename: "/var/log/my-awesome-app/app.log"
+  max_size: 200
+  max_age: 15
+  compress: true
+
+# 数据库配置保持不变
+database:
+  driver: "postgres"
+  port: 2000
+  urls:
+    - "postgres://user:password@db1.example.com:5432/mydb?sslmode=require"
+  max_open_conn: 50
+  enable_tls: true
+
+redis:
+  # urls: [] # 'urls' 字段留空，将使用下面的 host/port 配置
+  host: "127.0.0.1"
+  port: 6379
+  # username: "" # 如果 Redis 6.0+ 且未设置 ACL，此项可为空
+  password: "your-redis-password" # 设置您的 Redis 密码
+  database: 0 # 使用的数据库索引，默认为 0
+  pool_size: 10 # 连接池大小
+  min_idle_conn: 5 # 最小空闲连接数
+  dial_timeout: "5s" # 连接超时
+  read_timeout: "3s" # 读取超时
+  write_timeout: "3s" # 写入超时
+  max_retries: 3 # 操作失败时的重试次数
+
+# HTTP 服务器配置
+http:
+  host: "0.0.0.0"
+  port: 18080
+  read_timeout: "30s"
+  write_timeout: "30s"
+  shutdown_timeout: "45s"
+
+# gRPC 服务器配置
+grpc:
+  host: "0.0.0.0"
+  port: 28080
+  timeout: "15s"
+  shutdown_timeout: "45s"
+
+# Kafka 配置
+kafka:
+  brokers:
+    - "kafka1.example.com:9092"
+    - "kafka2.example.com:9092"
+    - "kafka3.example.com:9092"
+  producer:
+    topic: "order-events"
+    required_ack: "all" # 高可靠性
+    compression: "snappy"
+    batch_size: 200
+    batch_timeout: "20ms"
+    balancer: "hash" # 保证相同key的消息到同一分区
+  consumer:
+    topic: "order-events"
+    group_id: "order-service-group"
+    min_bytes: 10e3 # 10KB
+    max_bytes: 10e6 # 10MB
+    start_offset: "newest" # 从最新消息开始消费
+    commit_interval: 0 # 手动提交
+    max_retries: 5
+    dlq_topic: "order-events-dlq"
+
+
+# ... (其他配置保持不变) ...
+
+# 存储配置
+storage:
+  # 场景1: 本地存储 (开发环境)
+  type: "local" # local, s3, minio, oss
+  local:
+    root_path: "./data/storage" # 相对于项目根目录
+    perm: 0755
+    cleanup_timeout: "5m"
+  # # 场景2: AWS S3 (生产环境)
+  # s3:
+  #   access_key_id: "YOUR_AWS_ACCESS_KEY_ID"
+  #   secret_access_key: "YOUR_AWS_SECRET_ACCESS_KEY"
+  #   region: "us-east-1"
+  #   bucket: "my-production-app-storage"
+  #   timeout: "60s"
+  #   max_retries: 5
+  # # 场景3: MinIO (私有云/本地部署)
+  # minio:
+  #   access_key_id: "MINIO_ACCESS_KEY"
+  #   secret_access_key: "MINIO_SECRET_KEY"
+  #   region: "us-east-1" # MinIO 可以是任意值
+  #   bucket: "my-private-app-storage"
+  #   endpoint: "http://minio.example.com:9000" # MinIO 服务地址
+  #   disable_ssl: true # 如果是 HTTP
+  #   force_path_style: true
+  # # 场景4: 阿里云 OSS
+  # oss:
+  #   access_key_id: "YOUR_OSS_ACCESS_KEY_ID"
+  #   access_key_secret: "YOUR_OSS_ACCESS_KEY_SECRET"
+  #   region: "cn-hangzhou"
+  #   bucket: "my-oss-bucket"
+  #   endpoint: "https://oss-cn-hangzhou.aliyuncs.com"
+  #   timeout: "60s"
+  #   max_retries: 3
