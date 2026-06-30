@@ -47,7 +47,7 @@ type UploadPartResponse struct {
 
 // IOOptions 封装通用上传/下载/删除的可选参数。
 type IOOptions struct {
-	Quiet         bool              // 批量删除是否静默模式（true 只返回失败列表）
+	Quiet         bool              // 批量删除时是否开启静默模式（OSS quiet 模式下服务端不返回已删除对象列表，故 BatchDelete 返回空切片）
 	ContentType   string            // 上传媒体类型，如 "image/png"
 	VersionID     string            // 操作指定版本的对象
 	ConcurrentNum int               // 批处理内部并发数

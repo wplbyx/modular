@@ -22,11 +22,11 @@ type DiskStorageConfig struct {
 
 // OSSStorageConfig 阿里云 OSS 对象存储配置
 type OSSStorageConfig struct {
-	AccessKeyID     string        `mapstructure:"AccessKeyID" validate:"required"`
-	AccessKeySecret string        `mapstructure:"AccessKeySecret" validate:"required"`
+	AccessKeyID     string        `mapstructure:"AccessKeyID"`
+	AccessKeySecret string        `mapstructure:"AccessKeySecret"`
 	SecurityToken   string        `mapstructure:"SecurityToken"`
-	Region          string        `mapstructure:"Region" validate:"required"`
-	Bucket          string        `mapstructure:"Bucket" validate:"required"`
+	Region          string        `mapstructure:"Region"`
+	Bucket          string        `mapstructure:"Bucket"`
 	Endpoint        string        `mapstructure:"Endpoint"`
 	BaseDir         string        `mapstructure:"BaseDir"` // 对象 key 前缀
 	DisableSSL      bool          `mapstructure:"DisableSSL"`

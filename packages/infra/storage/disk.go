@@ -76,7 +76,7 @@ func (s *DiskStorage) safeFilePath(key string) (string, error) {
 
 // multipartDir 返回指定 uploadID 的分片临时目录（位于系统临时目录下，不污染 rootDir）
 func (s *DiskStorage) multipartDir(uploadID string) string {
-	return filepath.Join(os.TempDir(), "aliyun_oss_disk", uploadID)
+	return filepath.Join(os.TempDir(), "modular_storage_disk", uploadID)
 }
 
 // GetUsefulUrl 生成可直接访问的完整 URL：baseUrl + "/" + key

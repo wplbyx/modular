@@ -129,6 +129,29 @@ func TestOSS_BatchDelete_Quiet(t *testing.T) {
 	assert.Empty(t, deleted) // quiet 模式无返回
 }
 
+func TestOSS_BatchDelete_Verbose(t *testing.T) {
+	var seenQuiet bool
+	m := &mockOSSClient{
+		deleteMulti: func(_ context.Context, r *aliyunoss.DeleteMultipleObjectsRequest) (*aliyunoss.DeleteMultipleObjectsResult, error) {
+			seenQuiet = r.Delete.Quiet
+			// 非静默模式：服务端返回已删除对象完整 objectKey（含 baseDir 前缀）
+			return &aliyunoss.DeleteMultipleObjectsResult{
+				DeletedObjects: []aliyunoss.DeletedInfo{
+					{Key: aliyunoss.Ptr("prefix/a")},
+					{Key: aliyunoss.Ptr("prefix/b")},
+				},
+			}, nil
+		},
+	}
+	s := newMockOSSStorage(m)
+	// 注意：不设置 WithQuiet(true)，走 verbose 分支
+	deleted, err := s.BatchDelete(context.Background(), []string{"a", "b"})
+	require.NoError(t, err)
+	assert.False(t, seenQuiet)
+	// baseDir("prefix")+"/" 前缀被剥离，还原为相对 key
+	assert.Equal(t, []string{"a", "b"}, deleted)
+}
+
 func TestOSS_PrefixIterator_Pagination(t *testing.T) {
 	calls := 0
 	m := &mockOSSClient{
