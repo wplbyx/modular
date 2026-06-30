@@ -33,3 +33,4 @@ go.work.sum
 
 # Local disk storage test artifacts (persisted by TestDiskStorage_PersistToUploadDir)
 storage/upload/
+packages/infra/storage/upload/
