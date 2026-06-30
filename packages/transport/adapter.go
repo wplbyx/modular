@@ -17,6 +17,14 @@ type Endpoint interface {
 	Stop(context.Context) error
 }
 
+// Start must block until the service is no longer running. It must not return
+// early on its own under normal operation. Application.Run treats any Start
+// return (nil or error) as an exit signal and triggers a full shutdown.
+//
+// Stop must unblock Start (e.g. by calling http.Server.Shutdown or
+// grpc.Server.GracefulStop). Start does not need to react to its context being
+// cancelled; Stop is the mechanism that brings Start down.
+
 // Endpointer is registry endpoint.
 type Endpointer interface {
 	Endpoint() (*url.URL, error)

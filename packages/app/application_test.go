@@ -5,12 +5,22 @@ import (
 	"errors"
 	"net/url"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/sdk/resource"
 
 	"modular/packages/config"
 	"modular/packages/registry"
 )
+
+// testResource returns a minimal non-nil resource so that Run() passes its nil check.
+func testResource() *resource.Resource {
+	res, _ := resource.Merge(resource.Empty(), resource.Empty())
+	return res
+}
 
 func TestApplicationRunStopsEndpointAndRunsCleanup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -20,6 +30,7 @@ func TestApplicationRunStopsEndpointAndRunsCleanup(t *testing.T) {
 	var cleanupOrder []string
 
 	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+		WithResource(testResource()),
 		WithEndpoint(endpoint),
 		WithCleanup("first", func(context.Context) error {
 			cleanupOrder = append(cleanupOrder, "first")
@@ -76,6 +87,7 @@ func TestApplicationRegistersDiscoverableEndpoint(t *testing.T) {
 	registrar := &testRegistrar{}
 
 	application, err := NewApplication(ctx, &config.Application{Name: "holo", Version: "v1.2.3"},
+		WithResource(testResource()),
 		WithRegistrar(registrar),
 		WithEndpoint(endpoint),
 	)
@@ -134,6 +146,7 @@ func TestApplicationRegisterFailureDoesNotStartEndpoint(t *testing.T) {
 	registrar := &testRegistrar{registerErr: errors.New("registry unavailable")}
 
 	application, err := NewApplication(ctx, &config.Application{Name: "holo"},
+		WithResource(testResource()),
 		WithRegistrar(registrar),
 		WithEndpoint(endpoint),
 	)
@@ -151,9 +164,218 @@ func TestApplicationRegisterFailureDoesNotStartEndpoint(t *testing.T) {
 	}
 }
 
+// TestApplicationRunEndpointNilExitTriggersShutdown verifies that when an
+// endpoint's Start returns nil (silent exit), the application shuts down and
+// other endpoints are stopped.
+func TestApplicationRunEndpointNilExitTriggersShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// ep1 returns nil immediately from Start (simulating a silent exit).
+	ep1 := &testEndpoint{
+		started:       make(chan struct{}),
+		startBehavior: startReturnNil,
+	}
+	// ep2 blocks on ctx until Stop is called.
+	ep2 := &testEndpoint{started: make(chan struct{})}
+
+	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+		WithResource(testResource()),
+		WithEndpoint(ep1),
+		WithEndpoint(ep2),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.Run()
+	}()
+
+	select {
+	case <-ep1.started:
+	case <-time.After(time.Second):
+		t.Fatal("ep1 did not start")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not return after ep1 nil exit")
+	}
+
+	if ep2.stopCount != 1 {
+		t.Fatalf("expected ep2 Stop to be called once, got %d", ep2.stopCount)
+	}
+}
+
+// TestApplicationRunEndpointErrorPropagated verifies that an error returned
+// from Start is propagated through Run.
+func TestApplicationRunEndpointErrorPropagated(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	endpointErr := errors.New("start failed")
+	ep := &testEndpoint{
+		started:       make(chan struct{}),
+		startBehavior: startReturnErr,
+		startErr:      endpointErr,
+	}
+
+	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+		WithResource(testResource()),
+		WithEndpoint(ep),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.Run()
+	}()
+
+	select {
+	case runErr := <-errCh:
+		if runErr == nil {
+			t.Fatal("Run() error = nil, want non-nil")
+		}
+		if !errors.Is(runErr, endpointErr) {
+			t.Fatalf("Run() error = %v, want it to wrap %v", runErr, endpointErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not return after endpoint error")
+	}
+}
+
+// TestApplicationRunCleanupTimeout verifies that a blocking cleanup does not
+// hang Run forever; it must return within the shutdown timeout.
+func TestApplicationRunCleanupTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ep := &testEndpoint{started: make(chan struct{})}
+
+	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+		WithResource(testResource()),
+		WithEndpoint(ep),
+		WithCleanup("blocking", func(innerCtx context.Context) error {
+			<-innerCtx.Done()
+			return innerCtx.Err()
+		}),
+		WithShutdownTimeout(200*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.Run()
+	}()
+
+	select {
+	case <-ep.started:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint did not start")
+	}
+
+	cancel()
+
+	select {
+	case <-errCh:
+		// Run returned within a reasonable time despite the blocking cleanup.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() hung on blocking cleanup")
+	}
+}
+
+// TestApplicationRunParallelStop verifies that endpoints are stopped in
+// parallel: total stop time should be close to max(durations), not sum.
+func TestApplicationRunParallelStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopDelay := 100 * time.Millisecond
+
+	var stopCount int64
+	ep1 := &slowEndpoint{
+		started:   make(chan struct{}),
+		stopDelay: stopDelay,
+		count:     &stopCount,
+	}
+	ep2 := &slowEndpoint{
+		started:   make(chan struct{}),
+		stopDelay: stopDelay,
+		count:     &stopCount,
+	}
+
+	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+		WithResource(testResource()),
+		WithEndpoint(ep1),
+		WithEndpoint(ep2),
+		WithShutdownTimeout(5*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.Run()
+	}()
+
+	select {
+	case <-ep1.started:
+	case <-time.After(time.Second):
+		t.Fatal("ep1 did not start")
+	}
+	select {
+	case <-ep2.started:
+	case <-time.After(time.Second):
+		t.Fatal("ep2 did not start")
+	}
+
+	cancel()
+
+	start := time.Now()
+	select {
+	case err := <-errCh:
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		// Parallel: ~100ms. Serial would be ~200ms. Allow generous 300ms margin.
+		if elapsed > 300*time.Millisecond {
+			t.Fatalf("stop took %v, expected parallel (~%v)", elapsed, stopDelay)
+		}
+		if atomic.LoadInt64(&stopCount) != 2 {
+			t.Fatalf("expected both endpoints stopped, got %d", stopCount)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() did not return")
+	}
+}
+
+// --- test helpers ---
+
+type startBehavior int
+
+const (
+	startBlock     startBehavior = iota // block on ctx.Done(), return ctx.Err()
+	startReturnNil                      // return nil immediately
+	startReturnErr                      // return startErr immediately
+)
+
 type testEndpoint struct {
-	started   chan struct{}
-	stopCount int
+	started       chan struct{}
+	stopCount     int
+	startBehavior startBehavior
+	startErr      error
 }
 
 func (e *testEndpoint) Name() string {
@@ -162,8 +384,15 @@ func (e *testEndpoint) Name() string {
 
 func (e *testEndpoint) Start(ctx context.Context) error {
 	close(e.started)
-	<-ctx.Done()
-	return ctx.Err()
+	switch e.startBehavior {
+	case startReturnNil:
+		return nil
+	case startReturnErr:
+		return e.startErr
+	default:
+		<-ctx.Done()
+		return ctx.Err()
+	}
 }
 
 func (e *testEndpoint) Stop(context.Context) error {
@@ -204,5 +433,35 @@ func (r *testRegistrar) GetService(context.Context, string) ([]*registry.Service
 }
 
 func (r *testRegistrar) Subscribe(context.Context, string) error {
+	return nil
+}
+
+// slowEndpoint blocks on ctx in Start and sleeps for stopDelay in Stop.
+type slowEndpoint struct {
+	started   chan struct{}
+	stopDelay time.Duration
+	count     *int64
+	mu        sync.Mutex
+	stopped   bool
+}
+
+func (e *slowEndpoint) Name() string { return "slow" }
+
+func (e *slowEndpoint) Start(ctx context.Context) error {
+	close(e.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (e *slowEndpoint) Stop(context.Context) error {
+	e.mu.Lock()
+	if e.stopped {
+		e.mu.Unlock()
+		return nil
+	}
+	e.stopped = true
+	e.mu.Unlock()
+	time.Sleep(e.stopDelay)
+	atomic.AddInt64(e.count, 1)
 	return nil
 }

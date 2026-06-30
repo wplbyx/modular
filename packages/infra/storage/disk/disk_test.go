@@ -1,4 +1,4 @@
-package storage
+package disk
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"modular/packages/infra/storage"
 	"os"
 	"path/filepath"
 	"slices"
@@ -260,7 +261,7 @@ func TestBatchUpload(t *testing.T) {
 	})
 
 	t.Run("all succeed", func(t *testing.T) {
-		tasks := []UploadTask{
+		tasks := []storage.UploadTask{
 			{Key: "batch/a.txt", Body: strings.NewReader("aaa")},
 			{Key: "batch/b.txt", Body: strings.NewReader("bbb")},
 			{Key: "batch/c.txt", Body: strings.NewReader("ccc")},
@@ -275,7 +276,7 @@ func TestBatchUpload(t *testing.T) {
 	})
 
 	t.Run("aggregates errors but keeps valid uploads", func(t *testing.T) {
-		tasks := []UploadTask{
+		tasks := []storage.UploadTask{
 			{Key: "batch2/ok.txt", Body: strings.NewReader("ok")},
 			{Key: "../escape", Body: strings.NewReader("bad")},
 		}
@@ -370,7 +371,7 @@ func TestPrefixIterator(t *testing.T) {
 	s := newTestStorage(t)
 
 	t.Run("non-existing prefix returns nil", func(t *testing.T) {
-		noErr(t, s.PrefixIterator(ctx, "nope/", func(ctx context.Context, items ...ObjectItem) error {
+		noErr(t, s.PrefixIterator(ctx, "nope/", func(ctx context.Context, items ...storage.ObjectItem) error {
 			t.Fatal("callback should not be invoked")
 			return nil
 		}))
@@ -378,8 +379,8 @@ func TestPrefixIterator(t *testing.T) {
 
 	t.Run("prefix points to a single file", func(t *testing.T) {
 		noErr(t, s.Upload(ctx, "single.txt", strings.NewReader("only")))
-		var seen []ObjectItem
-		noErr(t, s.PrefixIterator(ctx, "single.txt", func(ctx context.Context, items ...ObjectItem) error {
+		var seen []storage.ObjectItem
+		noErr(t, s.PrefixIterator(ctx, "single.txt", func(ctx context.Context, items ...storage.ObjectItem) error {
 			seen = append(seen, items...)
 			return nil
 		}))
@@ -394,7 +395,7 @@ func TestPrefixIterator(t *testing.T) {
 			noErr(t, s.Upload(ctx, k, strings.NewReader("x")))
 		}
 		var seen []string
-		noErr(t, s.PrefixIterator(ctx, "pdir/", func(ctx context.Context, items ...ObjectItem) error {
+		noErr(t, s.PrefixIterator(ctx, "pdir/", func(ctx context.Context, items ...storage.ObjectItem) error {
 			for _, it := range items {
 				seen = append(seen, it.Key)
 				if !strings.Contains(it.Key, "/") || strings.Contains(it.Key, "\\") {
@@ -414,7 +415,7 @@ func TestPrefixIterator(t *testing.T) {
 		}
 		stop := errors.New("stop-now")
 		calls := 0
-		err := s.PrefixIterator(ctx, "abort/", func(ctx context.Context, items ...ObjectItem) error {
+		err := s.PrefixIterator(ctx, "abort/", func(ctx context.Context, items ...storage.ObjectItem) error {
 			calls++
 			return stop
 		})
@@ -498,7 +499,7 @@ func TestCompleteMultipartUpload(t *testing.T) {
 		r1, err := s.MultipartUpload(ctx, sess, 1, int64(len(p1)), bytes.NewReader(p1))
 		noErr(t, err)
 
-		parts := []UploadPartResponse{r2, r1} // intentionally reversed
+		parts := []storage.UploadPartResponse{r2, r1} // intentionally reversed
 		noErr(t, s.CompleteMultipartUpload(ctx, sess, parts))
 
 		got := readFile(t, filepath.Join(s.rootDir, "cmp", "ordered.bin"))
@@ -564,7 +565,7 @@ func TestDiskStorage_PersistToUploadDir(t *testing.T) {
 	})
 
 	t.Run("batch upload nested dirs", func(t *testing.T) {
-		tasks := []UploadTask{
+		tasks := []storage.UploadTask{
 			{Key: "batch/a.txt", Body: strings.NewReader("AAA")},
 			{Key: "batch/sub/b.txt", Body: strings.NewReader("BBB")},
 			{Key: "batch/sub/deep/c.txt", Body: strings.NewReader("CCC")},
@@ -591,7 +592,7 @@ func TestDiskStorage_PersistToUploadDir(t *testing.T) {
 		noErr(t, err)
 		assertEq(t, r2.ETag, md5Hex(p2))
 
-		noErr(t, s.CompleteMultipartUpload(ctx, sess, []UploadPartResponse{r3, r1, r2}))
+		noErr(t, s.CompleteMultipartUpload(ctx, sess, []storage.UploadPartResponse{r3, r1, r2}))
 
 		merged := append(append(append([]byte{}, p1...), p2...), p3...)
 		got := readFile(t, filepath.Join(s.rootDir, filepath.FromSlash("big/blob.bin")))
@@ -600,7 +601,7 @@ func TestDiskStorage_PersistToUploadDir(t *testing.T) {
 
 	t.Run("prefix iterator lists all artifacts", func(t *testing.T) {
 		var keys []string
-		noErr(t, s.PrefixIterator(ctx, "", func(ctx context.Context, items ...ObjectItem) error {
+		noErr(t, s.PrefixIterator(ctx, "", func(ctx context.Context, items ...storage.ObjectItem) error {
 			for _, it := range items {
 				keys = append(keys, it.Key)
 			}

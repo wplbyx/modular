@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-
-	"modular/packages/config"
 )
 
 // ==========================================
@@ -89,15 +87,6 @@ func WithMeta(meta map[string]string) IOOption {
 	}
 }
 
-// applyIOOptions 将可选参数合并为 IOOptions。
-func applyIOOptions(opts []IOOption) *IOOptions {
-	o := &IOOptions{}
-	for _, opt := range opts {
-		opt(o)
-	}
-	return o
-}
-
 // ==========================================
 // 统一存储抽象接口
 // ==========================================
@@ -130,17 +119,17 @@ type Storage interface {
 // ErrUnsupportedStorageType 表示配置的存储类型不支持。
 var ErrUnsupportedStorageType = fmt.Errorf("unsupported storage type")
 
-// NewStorage 根据配置创建 Storage 实例。
-func NewStorage(cfg *config.Storage) (Storage, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("storage config is nil")
-	}
-	switch cfg.Type {
-	case "disk":
-		return NewDiskStorage(cfg)
-	case "oss":
-		return NewOSSStorage(cfg)
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedStorageType, cfg.Type)
-	}
-}
+//// NewStorage 根据配置创建 Storage 实例。
+//func NewStorage(cfg *config.Storage) (Storage, error) {
+//	if cfg == nil {
+//		return nil, fmt.Errorf("storage config is nil")
+//	}
+//	switch cfg.Type {
+//	case "disk":
+//		return disk.NewDiskStorage(cfg)
+//	case "oss":
+//		return aliyunoss.NewOSSStorage(cfg)
+//	default:
+//		return nil, fmt.Errorf("%w: %s", ErrUnsupportedStorageType, cfg.Type)
+//	}
+//}

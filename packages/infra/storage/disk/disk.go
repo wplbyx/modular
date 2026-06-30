@@ -1,4 +1,4 @@
-package storage
+package disk
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"modular/packages/infra/storage"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,7 +22,7 @@ import (
 )
 
 // 编译期接口断言：确保 DiskStorage 完整实现 Storage 接口
-var _ Storage = (*DiskStorage)(nil)
+var _ storage.Storage = (*DiskStorage)(nil)
 
 // DiskStorage 是 Storage 接口的本地磁盘实现，跨平台兼容（Linux/Unix/Windows）。
 // key 统一为 URL 风格的相对路径（用 "/" 分隔），内部由 filepath 转换为平台路径。
@@ -103,7 +104,7 @@ func (s *DiskStorage) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 // Upload 上传单个文件（opts 中的 Meta/ContentType 在磁盘实现中被忽略）
-func (s *DiskStorage) Upload(ctx context.Context, key string, body io.Reader, opts ...IOOption) error {
+func (s *DiskStorage) Upload(ctx context.Context, key string, body io.Reader, opts ...storage.IOOption) error {
 	p, err := s.safeFilePath(key)
 	if err != nil {
 		return err
@@ -121,7 +122,7 @@ func (s *DiskStorage) Upload(ctx context.Context, key string, body io.Reader, op
 }
 
 // Delete 删除单个文件
-func (s *DiskStorage) Delete(ctx context.Context, key string, opts ...IOOption) error {
+func (s *DiskStorage) Delete(ctx context.Context, key string, opts ...storage.IOOption) error {
 	p, err := s.safeFilePath(key)
 	if err != nil {
 		return err
@@ -130,7 +131,7 @@ func (s *DiskStorage) Delete(ctx context.Context, key string, opts ...IOOption) 
 }
 
 // Download 下载单个文件，调用方需关闭返回的 io.ReadCloser
-func (s *DiskStorage) Download(ctx context.Context, key string, opts ...IOOption) (io.ReadCloser, error) {
+func (s *DiskStorage) Download(ctx context.Context, key string, opts ...storage.IOOption) (io.ReadCloser, error) {
 	p, err := s.safeFilePath(key)
 	if err != nil {
 		return nil, err
@@ -139,16 +140,16 @@ func (s *DiskStorage) Download(ctx context.Context, key string, opts ...IOOption
 }
 
 // Stat 获取单个文件的元信息
-func (s *DiskStorage) Stat(ctx context.Context, key string) (ObjectItem, error) {
+func (s *DiskStorage) Stat(ctx context.Context, key string) (storage.ObjectItem, error) {
 	p, err := s.safeFilePath(key)
 	if err != nil {
-		return ObjectItem{}, err
+		return storage.ObjectItem{}, err
 	}
 	info, err := os.Stat(p)
 	if err != nil {
-		return ObjectItem{}, err
+		return storage.ObjectItem{}, err
 	}
-	return ObjectItem{
+	return storage.ObjectItem{
 		Key:          key,
 		Size:         info.Size(),
 		LastModified: info.ModTime().Unix(),
@@ -156,11 +157,11 @@ func (s *DiskStorage) Stat(ctx context.Context, key string) (ObjectItem, error) 
 }
 
 // BatchUpload 批量上传，errgroup 控制并发，全跑完后聚合错误
-func (s *DiskStorage) BatchUpload(ctx context.Context, tasks []UploadTask, opts ...IOOption) error {
+func (s *DiskStorage) BatchUpload(ctx context.Context, tasks []storage.UploadTask, opts ...storage.IOOption) error {
 	if len(tasks) == 0 {
 		return nil
 	}
-	o := applyIOOptions(opts)
+	o := storage.applyIOOptions(opts)
 	concurrency := o.ConcurrentNum
 	if concurrency <= 0 {
 		concurrency = 5
@@ -186,7 +187,7 @@ func (s *DiskStorage) BatchUpload(ctx context.Context, tasks []UploadTask, opts 
 }
 
 // BatchDelete 批量删除，返回成功删除的 key 列表（不存在的 key 视为已删除，跳过不报错）
-func (s *DiskStorage) BatchDelete(ctx context.Context, keys []string, opts ...IOOption) ([]string, error) {
+func (s *DiskStorage) BatchDelete(ctx context.Context, keys []string, opts ...storage.IOOption) ([]string, error) {
 	var (
 		deleted []string
 		errs    []error
@@ -213,7 +214,7 @@ func (s *DiskStorage) BatchDelete(ctx context.Context, keys []string, opts ...IO
 }
 
 // DeleteByPrefix 按前缀删除所有文件（遍历 + 分批删除，内存峰值受控）
-func (s *DiskStorage) DeleteByPrefix(ctx context.Context, prefix string, opts ...IOOption) error {
+func (s *DiskStorage) DeleteByPrefix(ctx context.Context, prefix string, opts ...storage.IOOption) error {
 	if prefix == "" {
 		return errors.New("DeleteByPrefix: prefix must not be empty")
 	}
@@ -227,7 +228,7 @@ func (s *DiskStorage) DeleteByPrefix(ctx context.Context, prefix string, opts ..
 		batch = batch[:0]
 		return err
 	}
-	err := s.PrefixIterator(ctx, prefix, func(ctx context.Context, items ...ObjectItem) error {
+	err := s.PrefixIterator(ctx, prefix, func(ctx context.Context, items ...storage.ObjectItem) error {
 		for _, item := range items {
 			batch = append(batch, item.Key)
 			if len(batch) >= deleteBatch {
@@ -245,7 +246,7 @@ func (s *DiskStorage) DeleteByPrefix(ctx context.Context, prefix string, opts ..
 }
 
 // PrefixIterator 迭代遍历指定前缀目录下的所有文件，分页流式回调
-func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callback ListCallback) error {
+func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callback storage.ListCallback) error {
 	walkRoot := filepath.Join(s.rootDir, filepath.FromSlash(prefix))
 	info, err := os.Stat(walkRoot)
 	if err != nil {
@@ -257,7 +258,7 @@ func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callbac
 	// prefix 指向单个文件时，回调它自身
 	if !info.IsDir() {
 		rel, _ := filepath.Rel(s.rootDir, walkRoot)
-		return callback(ctx, ObjectItem{
+		return callback(ctx, storage.ObjectItem{
 			Key:          filepath.ToSlash(rel),
 			Size:         info.Size(),
 			LastModified: info.ModTime().Unix(),
@@ -265,7 +266,7 @@ func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callbac
 	}
 
 	const batchSize = 1000
-	var batch []ObjectItem
+	var batch []storage.ObjectItem
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
@@ -292,7 +293,7 @@ func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callbac
 		if err != nil {
 			return err
 		}
-		batch = append(batch, ObjectItem{
+		batch = append(batch, storage.ObjectItem{
 			Key:          filepath.ToSlash(rel), // 统一用 "/" 输出 key
 			Size:         fi.Size(),
 			LastModified: fi.ModTime().Unix(),
@@ -309,40 +310,40 @@ func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callbac
 }
 
 // InitiateMultipartUpload 初始化分片上传（用 UUID 生成 uploadID，创建临时目录）
-func (s *DiskStorage) InitiateMultipartUpload(ctx context.Context, key string) (MultipartUploadSession, error) {
+func (s *DiskStorage) InitiateMultipartUpload(ctx context.Context, key string) (storage.MultipartUploadSession, error) {
 	if _, err := s.safeFilePath(key); err != nil {
-		return MultipartUploadSession{}, err
+		return storage.MultipartUploadSession{}, err
 	}
 	uploadID := uuid.NewString()
 	if err := os.MkdirAll(s.multipartDir(uploadID), 0o755); err != nil {
-		return MultipartUploadSession{}, fmt.Errorf("create multipart temp dir: %w", err)
+		return storage.MultipartUploadSession{}, fmt.Errorf("create multipart temp dir: %w", err)
 	}
-	return MultipartUploadSession{UploadID: uploadID, Key: key}, nil
+	return storage.MultipartUploadSession{UploadID: uploadID, Key: key}, nil
 }
 
 // MultipartUpload 上传单个分片到临时目录，返回 ETag（分片内容的 MD5）
-func (s *DiskStorage) MultipartUpload(ctx context.Context, session MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (UploadPartResponse, error) {
+func (s *DiskStorage) MultipartUpload(ctx context.Context, session storage.MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (storage.UploadPartResponse, error) {
 	if partNumber < 1 {
-		return UploadPartResponse{}, errors.New("partNumber must be >= 1")
+		return storage.UploadPartResponse{}, errors.New("partNumber must be >= 1")
 	}
 	partPath := filepath.Join(s.multipartDir(session.UploadID), fmt.Sprintf("part_%d", partNumber))
 	f, err := os.Create(partPath)
 	if err != nil {
-		return UploadPartResponse{}, err
+		return storage.UploadPartResponse{}, err
 	}
 	defer f.Close()
 	h := md5.New()
 	if _, err = io.Copy(io.MultiWriter(f, h), body); err != nil {
-		return UploadPartResponse{}, err
+		return storage.UploadPartResponse{}, err
 	}
-	return UploadPartResponse{
+	return storage.UploadPartResponse{
 		PartNumber: partNumber,
 		ETag:       hex.EncodeToString(h.Sum(nil)),
 	}, nil
 }
 
 // CompleteMultipartUpload 按 PartNumber 升序合并所有分片到最终路径，清理临时目录
-func (s *DiskStorage) CompleteMultipartUpload(ctx context.Context, session MultipartUploadSession, parts []UploadPartResponse, opts ...IOOption) error {
+func (s *DiskStorage) CompleteMultipartUpload(ctx context.Context, session storage.MultipartUploadSession, parts []storage.UploadPartResponse, opts ...storage.IOOption) error {
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
@@ -381,6 +382,6 @@ func (s *DiskStorage) CompleteMultipartUpload(ctx context.Context, session Multi
 }
 
 // CancelMultipartUpload 取消分片上传，删除临时分片目录
-func (s *DiskStorage) CancelMultipartUpload(ctx context.Context, session MultipartUploadSession) error {
+func (s *DiskStorage) CancelMultipartUpload(ctx context.Context, session storage.MultipartUploadSession) error {
 	return os.RemoveAll(s.multipartDir(session.UploadID))
 }

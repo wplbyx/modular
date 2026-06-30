@@ -1,10 +1,11 @@
-package storage
+package aliyunoss
 
 import (
 	"bytes"
 	"context"
 	"errors"
 	"io"
+	"modular/packages/infra/storage"
 	"testing"
 
 	aliyunoss "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
@@ -14,15 +15,15 @@ import (
 
 // mockOSSClient 实现 ossClient，按需覆盖单个方法。
 type mockOSSClient struct {
-	putObject     func(context.Context, *aliyunoss.PutObjectRequest) (*aliyunoss.PutObjectResult, error)
-	getObject     func(context.Context, *aliyunoss.GetObjectRequest) (*aliyunoss.GetObjectResult, error)
-	deleteObject  func(context.Context, *aliyunoss.DeleteObjectRequest) (*aliyunoss.DeleteObjectResult, error)
-	headObject    func(context.Context, *aliyunoss.HeadObjectRequest) (*aliyunoss.HeadObjectResult, error)
-	deleteMulti   func(context.Context, *aliyunoss.DeleteMultipleObjectsRequest) (*aliyunoss.DeleteMultipleObjectsResult, error)
-	listV2        func(context.Context, *aliyunoss.ListObjectsV2Request) (*aliyunoss.ListObjectsV2Result, error)
-	initMultipart func(context.Context, *aliyunoss.InitiateMultipartUploadRequest) (*aliyunoss.InitiateMultipartUploadResult, error)
-	uploadPart    func(context.Context, *aliyunoss.UploadPartRequest) (*aliyunoss.UploadPartResult, error)
-	completeMulti func(context.Context, *aliyunoss.CompleteMultipartUploadRequest) (*aliyunoss.CompleteMultipartUploadResult, error)
+	putObject      func(context.Context, *aliyunoss.PutObjectRequest) (*aliyunoss.PutObjectResult, error)
+	getObject      func(context.Context, *aliyunoss.GetObjectRequest) (*aliyunoss.GetObjectResult, error)
+	deleteObject   func(context.Context, *aliyunoss.DeleteObjectRequest) (*aliyunoss.DeleteObjectResult, error)
+	headObject     func(context.Context, *aliyunoss.HeadObjectRequest) (*aliyunoss.HeadObjectResult, error)
+	deleteMulti    func(context.Context, *aliyunoss.DeleteMultipleObjectsRequest) (*aliyunoss.DeleteMultipleObjectsResult, error)
+	listV2         func(context.Context, *aliyunoss.ListObjectsV2Request) (*aliyunoss.ListObjectsV2Result, error)
+	initMultipart  func(context.Context, *aliyunoss.InitiateMultipartUploadRequest) (*aliyunoss.InitiateMultipartUploadResult, error)
+	uploadPart     func(context.Context, *aliyunoss.UploadPartRequest) (*aliyunoss.UploadPartResult, error)
+	completeMulti  func(context.Context, *aliyunoss.CompleteMultipartUploadRequest) (*aliyunoss.CompleteMultipartUploadResult, error)
 	abortMultipart func(context.Context, *aliyunoss.AbortMultipartUploadRequest) (*aliyunoss.AbortMultipartUploadResult, error)
 }
 
@@ -123,7 +124,7 @@ func TestOSS_BatchDelete_Quiet(t *testing.T) {
 		},
 	}
 	s := newMockOSSStorage(m)
-	deleted, err := s.BatchDelete(context.Background(), []string{"a", "b"}, WithQuiet(true))
+	deleted, err := s.BatchDelete(context.Background(), []string{"a", "b"}, storage.WithQuiet(true))
 	require.NoError(t, err)
 	assert.True(t, seenQuiet)
 	assert.Empty(t, deleted) // quiet 模式无返回
@@ -176,7 +177,7 @@ func TestOSS_PrefixIterator_Pagination(t *testing.T) {
 	}
 	s := newMockOSSStorage(m)
 	var keys []string
-	err := s.PrefixIterator(context.Background(), "prefix", func(_ context.Context, items ...ObjectItem) error {
+	err := s.PrefixIterator(context.Background(), "prefix", func(_ context.Context, items ...storage.ObjectItem) error {
 		for _, it := range items {
 			keys = append(keys, it.Key)
 		}
@@ -218,6 +219,6 @@ func TestOSS_MultipartFlow(t *testing.T) {
 	assert.Equal(t, 1, pr.PartNumber)
 	assert.Equal(t, "etag-uid-1", pr.ETag)
 
-	require.NoError(t, s.CompleteMultipartUpload(ctx, sess, []UploadPartResponse{{PartNumber: 1, ETag: "etag-uid-1"}}))
+	require.NoError(t, s.CompleteMultipartUpload(ctx, sess, []storage.UploadPartResponse{{PartNumber: 1, ETag: "etag-uid-1"}}))
 	require.NoError(t, s.CancelMultipartUpload(ctx, sess))
 }
