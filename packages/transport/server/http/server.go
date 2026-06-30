@@ -13,9 +13,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/trace"
 
-	"holographic/packages/config"
-	"holographic/packages/log"
-	"holographic/packages/transport"
+	"modular/packages/config"
+	"modular/packages/log"
+	"modular/packages/transport"
 )
 
 var (

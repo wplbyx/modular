@@ -12,7 +12,7 @@ import (
 	"github.com/uptrace/bun/migrate"
 	"github.com/urfave/cli/v2"
 
-	"holographic/packages/infra/database"
+	"modular/packages/infra/database"
 )
 
 // MigrationTool provides Bun SQL migrations plus model-based table creation.

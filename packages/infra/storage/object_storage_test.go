@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"holographic/packages/config"
+	"modular/packages/config"
 )
 
 func TestNewStorageObjectBackends(t *testing.T) {

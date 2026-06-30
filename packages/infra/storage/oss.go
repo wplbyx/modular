@@ -10,7 +10,7 @@ import (
 	aliyunoss "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	osscredentials "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 
-	"holographic/packages/config"
+	"modular/packages/config"
 )
 
 var _ Storage = (*OSSStorage)(nil)

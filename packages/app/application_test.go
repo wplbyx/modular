@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"holographic/packages/config"
-	"holographic/packages/registry"
+	"modular/packages/config"
+	"modular/packages/registry"
 )
 
 func TestApplicationRunStopsEndpointAndRunsCleanup(t *testing.T) {

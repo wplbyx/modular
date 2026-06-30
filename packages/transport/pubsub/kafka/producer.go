@@ -9,8 +9,8 @@ import (
 
 	"github.com/segmentio/kafka-go"
 
-	"holographic/packages/log"
-	"holographic/packages/transport/pubsub"
+	"modular/packages/log"
+	"modular/packages/transport/pubsub"
 )
 
 // Ensure Producer implements pubsub.Publisher interface

@@ -18,8 +18,8 @@ import (
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
-	"holographic/packages/config"
-	"holographic/packages/transport"
+	"modular/packages/config"
+	"modular/packages/transport"
 )
 
 var _ transport.Endpoint = (*Server)(nil)

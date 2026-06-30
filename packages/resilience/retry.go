@@ -7,8 +7,8 @@ import (
 
 	retrylib "github.com/avast/retry-go"
 	"go.uber.org/zap"
-	"holographic/packages/errs"
-	"holographic/packages/log"
+	"modular/packages/errs"
+	"modular/packages/log"
 )
 
 // RetryConfig 重试配置

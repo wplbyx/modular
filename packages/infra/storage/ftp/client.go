@@ -14,8 +14,8 @@ import (
 
 	"github.com/jlaffaye/ftp"
 
-	"holographic/packages/config"
-	"holographic/packages/infra/storage"
+	"modular/packages/config"
+	"modular/packages/infra/storage"
 )
 
 // Ensure FTPStorage implements Storage interface

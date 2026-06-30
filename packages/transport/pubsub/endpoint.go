@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"holographic/packages/transport"
+	"modular/packages/transport"
 )
 
 var (

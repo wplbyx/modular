@@ -15,10 +15,10 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
-	"holographic/packages/config"
-	"holographic/packages/log"
-	"holographic/packages/registry"
-	"holographic/packages/transport"
+	"modular/packages/config"
+	"modular/packages/log"
+	"modular/packages/registry"
+	"modular/packages/transport"
 )
 
 // Option 初始化应用时的函数式选项

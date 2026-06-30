@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"holographic/packages/config"
+	"modular/packages/config"
 )
 
 // WithOutputConsole 控制台日志输出

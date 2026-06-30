@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"holographic/packages/infra/cache"
+	"modular/packages/infra/cache"
 )
 
 // CacheAside implements the Cache-Aside pattern

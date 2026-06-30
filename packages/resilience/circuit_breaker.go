@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"holographic/packages/errs"
-	"holographic/packages/log"
+	"modular/packages/errs"
+	"modular/packages/log"
 )
 
 var (

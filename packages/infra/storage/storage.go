@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"holographic/packages/config"
+	"modular/packages/config"
 )
 
 // Storage is the interface for file storage operations

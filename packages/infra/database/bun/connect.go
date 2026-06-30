@@ -10,8 +10,8 @@ import (
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 
-	"holographic/packages/config"
-	"holographic/packages/infra/database"
+	"modular/packages/config"
+	"modular/packages/infra/database"
 )
 
 // Ensure BunDB implements Database interface

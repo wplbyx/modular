@@ -3,7 +3,7 @@ package http
 import (
 	"testing"
 
-	"holographic/packages/config"
+	"modular/packages/config"
 )
 
 func TestServerEndpoint(t *testing.T) {

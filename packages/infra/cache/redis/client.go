@@ -9,8 +9,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"holographic/packages/config"
-	"holographic/packages/infra/cache"
+	"modular/packages/config"
+	"modular/packages/infra/cache"
 )
 
 // Global client used by packages that need direct Redis access during wiring.

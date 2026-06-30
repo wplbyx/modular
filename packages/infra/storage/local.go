@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"holographic/packages/config"
+	"modular/packages/config"
 )
 
 var _ Storage = (*LocalStorage)(nil)

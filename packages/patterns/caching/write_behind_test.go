@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"holographic/packages/infra/cache"
+	"modular/packages/infra/cache"
 )
 
 func TestWriteBehindSetFlushesDefaultWriter(t *testing.T) {

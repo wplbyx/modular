@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"holographic/packages/infra/cache"
+	"modular/packages/infra/cache"
 )
 
 // RefreshAhead implements the Refresh-Ahead pattern

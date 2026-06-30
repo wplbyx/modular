@@ -12,8 +12,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
-	"holographic/packages/config"
-	"holographic/packages/infra/database"
+	"modular/packages/config"
+	"modular/packages/infra/database"
 )
 
 // Ensure GormDB implements Database interface

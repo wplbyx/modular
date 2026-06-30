@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"holographic/packages/infra/cache"
+	"modular/packages/infra/cache"
 )
 
 // WriteBehind implements the Write-Behind (Write-Back) pattern

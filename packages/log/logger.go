@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"holographic/packages/config"
+	"modular/packages/config"
 )
 
 // 全局日志器
