@@ -131,7 +131,6 @@ type Storage interface {
 var ErrUnsupportedStorageType = fmt.Errorf("unsupported storage type")
 
 // NewStorage 根据配置创建 Storage 实例。
-// Task 3/4 接入 disk/oss 后，此处 switch 填充对应分支。
 func NewStorage(cfg *config.Storage) (Storage, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("storage config is nil")
@@ -139,7 +138,8 @@ func NewStorage(cfg *config.Storage) (Storage, error) {
 	switch cfg.Type {
 	case "disk":
 		return NewDiskStorage(cfg)
-	// case "oss":   // Task 4 接入
+	case "oss":
+		return NewOSSStorage(cfg)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedStorageType, cfg.Type)
 	}
