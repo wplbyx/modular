@@ -137,7 +137,8 @@ func NewStorage(cfg *config.Storage) (Storage, error) {
 		return nil, fmt.Errorf("storage config is nil")
 	}
 	switch cfg.Type {
-	// case "disk":  // Task 3 接入
+	case "disk":
+		return NewDiskStorage(cfg)
 	// case "oss":   // Task 4 接入
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedStorageType, cfg.Type)
