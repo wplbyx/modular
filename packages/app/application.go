@@ -81,32 +81,10 @@ func (app *Application) Run() error {
 
 	log.GetLogger().Info("Run starting application... ", zap.String("name", app.cfg.Name))
 
-	ctx, cancel := context.WithCancel(app.ctx)
-	defer cancel()
-
-	// 1. 初始化基础设施资源（FIFO），任一失败 → 关闭已初始化的资源后返回
-	if err := app.setupResources(ctx); err != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
-		defer shutdownCancel()
-		_ = app.shutdown(shutdownCtx)
-		return err
-	}
-
-	// 2. 注册服务节点（纯传值，app 不关心注册细节）
-	if err := app.registerNode(ctx); err != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
-		defer shutdownCancel()
-		_ = app.shutdown(shutdownCtx)
-		return err
-	}
-
-	// 3. 启动运行所有服务
-	group, groupCtx := errgroup.WithContext(ctx)
-	shutdownCh := make(chan error, 1)
-
 	// shutdown 在同一个超时预算内完成全部关闭步骤。
 	// goroutine 在 groupCtx 取消时触发 shutdown，解除其余 endpoint 的阻塞；
 	// group.Wait() 返回后也调一次，stopOnce 保证只执行一次。
+	shutdownCh := make(chan error, 1)
 	var shutdownOnce sync.Once
 	triggerShutdown := func() {
 		shutdownOnce.Do(func() {
@@ -115,6 +93,30 @@ func (app *Application) Run() error {
 			shutdownCh <- app.shutdown(shutdownCtx)
 		})
 	}
+
+	ctx, cancel := context.WithCancel(app.ctx)
+	defer cancel()
+
+	// 1. 初始化基础设施资源（FIFO），任一失败 → 关闭已初始化的资源后返回
+	if err := app.setupResources(ctx); err != nil {
+		//shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
+		//defer shutdownCancel()
+		//_ = app.shutdown(shutdownCtx)
+		triggerShutdown()
+		return err
+	}
+
+	// 2. 注册服务节点（纯传值，app 不关心注册细节）
+	if err := app.registerNode(ctx); err != nil {
+		//shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
+		//defer shutdownCancel()
+		//_ = app.shutdown(shutdownCtx)
+		triggerShutdown()
+		return err
+	}
+
+	// 3. 启动运行所有服务
+	group, groupCtx := errgroup.WithContext(ctx)
 
 	go func() {
 		<-groupCtx.Done()
