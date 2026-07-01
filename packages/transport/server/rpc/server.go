@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -19,11 +18,10 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"modular/packages/config"
-	"modular/packages/transport"
+	"modular/packages/core"
 )
 
-var _ transport.Endpoint = (*Server)(nil)
-var _ transport.Endpointer = (*Server)(nil)
+var _ core.Endpoint = (*Server)(nil)
 
 // Server is a gRPC server implementation
 type Server struct {
@@ -51,10 +49,8 @@ func NewServer(cfg *config.GRPC, register RegisterFunc, opts ...Option) (*Server
 		cfg = &config.GRPC{}
 	}
 
-	// Initialize health check service
 	healthServer := health.NewServer()
 
-	// Create server instance
 	s := &Server{
 		health:     healthServer,
 		config:     cfg,
@@ -62,17 +58,14 @@ func NewServer(cfg *config.GRPC, register RegisterFunc, opts ...Option) (*Server
 		shutdownCh: make(chan struct{}),
 	}
 
-	// Apply options
 	for _, opt := range opts {
 		if err := opt(s); err != nil {
 			return nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
 
-	// Configure server options
 	serverOpts := []grpc.ServerOption{}
 
-	// Add TLS if configured
 	if s.credentials != nil {
 		serverOpts = append(serverOpts, grpc.Creds(s.credentials))
 	}
@@ -83,17 +76,14 @@ func NewServer(cfg *config.GRPC, register RegisterFunc, opts ...Option) (*Server
 		serverOpts = append(serverOpts, grpc.ChainStreamInterceptor(s.streamInts...))
 	}
 
-	// Create gRPC server
 	s.grpcServer = grpc.NewServer(serverOpts...)
 
-	// Register services
 	if register != nil {
 		if err := register(s.grpcServer); err != nil {
 			return nil, err
 		}
 	}
 
-	// Register health check service
 	grpc_health_v1.RegisterHealthServer(s.grpcServer, s.health)
 	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
@@ -145,41 +135,13 @@ func WithMTLS(serverCertFile, serverKeyFile, clientCAFile string) Option {
 	}
 }
 
-// Name returns the server name
+// Name returns the component name for logging.
 func (s *Server) Name() string {
 	return "gRPC Server"
 }
 
-// Endpoint returns the externally discoverable gRPC endpoint URL.
-func (s *Server) Endpoint() (*url.URL, error) {
-	if s == nil || s.config == nil {
-		return nil, errors.New("gRPC server config is nil")
-	}
-
-	host := s.config.Host
-	switch host {
-	case "", "0.0.0.0", "::":
-		host = "127.0.0.1"
-	}
-
-	port := s.config.Port
-	if s.listener != nil {
-		if tcpAddr, ok := s.listener.Addr().(*net.TCPAddr); ok && tcpAddr.Port > 0 {
-			port = tcpAddr.Port
-		}
-	}
-	if port <= 0 {
-		return nil, fmt.Errorf("gRPC server port is invalid: %d", port)
-	}
-
-	return &url.URL{
-		Scheme: "grpc",
-		Host:   net.JoinHostPort(host, fmt.Sprintf("%d", port)),
-	}, nil
-}
-
-// Start starts the gRPC server
-func (s *Server) Start(ctx context.Context) error {
+// Startup starts the gRPC server
+func (s *Server) Startup(ctx context.Context) error {
 	errCh := make(chan error, 1)
 
 	s.mu.Lock()
@@ -213,8 +175,8 @@ func (s *Server) Start(ctx context.Context) error {
 	return <-errCh
 }
 
-// Stop gracefully stops the gRPC server
-func (s *Server) Stop(ctx context.Context) error {
+// Shutdown gracefully stops the gRPC server
+func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.RLock()
 	if !s.isRunning {
 		s.mu.RUnlock()
@@ -224,10 +186,8 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	log.Println("Gracefully stopping gRPC server...")
 
-	// Mark service as not serving
 	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
-	// Determine shutdown timeout
 	timeout := 5 * time.Second
 	if s.config.ShutdownTimeout > 0 {
 		timeout = s.config.ShutdownTimeout
@@ -236,7 +196,6 @@ func (s *Server) Stop(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Graceful shutdown
 	shutdownComplete := make(chan struct{})
 	go func() {
 		s.grpcServer.GracefulStop()

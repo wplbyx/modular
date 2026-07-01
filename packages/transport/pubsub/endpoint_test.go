@@ -20,7 +20,7 @@ func TestSubscriberEndpointWithSubscriberOnly(t *testing.T) {
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- endpoint.Start(ctx)
+		errCh <- endpoint.Startup(ctx)
 	}()
 
 	select {
@@ -34,8 +34,8 @@ func TestSubscriberEndpointWithSubscriberOnly(t *testing.T) {
 
 	cancel()
 	<-errCh
-	if err := endpoint.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop() error = %v", err)
+	if err := endpoint.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 	if !sub.closed {
 		t.Fatal("subscriber was not closed")
@@ -57,14 +57,14 @@ func TestSubscriberEndpointWithConnector(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- endpoint.Start(ctx)
+		errCh <- endpoint.Startup(ctx)
 	}()
 	<-sub.subscribed
 
 	cancel()
 	<-errCh
-	if err := endpoint.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop() error = %v", err)
+	if err := endpoint.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 	if sub.connects != 1 || sub.disconnects != 1 || sub.closed {
 		t.Fatalf("connects=%d disconnects=%d closed=%v", sub.connects, sub.disconnects, sub.closed)

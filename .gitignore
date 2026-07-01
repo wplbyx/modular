@@ -28,8 +28,8 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
 
 # Local disk storage test artifacts (persisted by TestDiskStorage_PersistToUploadDir)
 storage/upload/

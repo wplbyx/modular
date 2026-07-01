@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,16 +17,13 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"modular/packages/config"
+	"modular/packages/core"
 	"modular/packages/log"
-	"modular/packages/transport"
 )
 
-var (
-	_ transport.Endpoint   = (*Server)(nil)
-	_ transport.Endpointer = (*Server)(nil)
-)
+var _ core.Endpoint = (*Server)(nil)
 
-// 默认超时与优雅关闭时长，在配置缺省（值为 0）时兜底使用。
+// 默认超时与优雅关闭时长，在配置缺失（值为 0）时兜底使用。
 const (
 	defaultReadHeaderTimeout = 5 * time.Second
 	defaultReadTimeout       = 30 * time.Second
@@ -43,10 +38,10 @@ const (
 // RegisterRouteFunc 路由注册函数类型
 type RegisterRouteFunc func(engine *gin.Engine)
 
-// Server 将 gin.Engine 封装为 transport.Endpoint。
+// Server 将 gin.Engine 封装为 core.Endpoint。
 //
-// 通过 NewServer 创建时会立即占用监听端口（"构造即监听"），
-// 因此即便配置 Port=0，构造完成后即可通过 Endpoint() 获取真实端口。
+// 通过 NewServer 创建时会立即占用监听端口（构造即监听），
+// 因此即便配置 Port=0，构造完成后即可获得真实端口。
 type Server struct {
 	server   *http.Server
 	engine   *gin.Engine
@@ -73,9 +68,6 @@ type Server struct {
 }
 
 // NewServer 创建并预监听一个 HTTP 服务。
-//
-// 注意：为支持 Port=0 动态端口，本函数在内部立即 net.Listen 占用端口，
-// 调用方应在不再使用时通过 Stop 关闭以释放端口。
 func NewServer(cfg *config.HTTP, opts ...ServerOption) (*Server, error) {
 	if cfg == nil {
 		cfg = &config.HTTP{}
@@ -118,7 +110,7 @@ func NewServer(cfg *config.HTTP, opts ...ServerOption) (*Server, error) {
 	if cfg.EnableTLS {
 		if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
 			_ = lis.Close()
-			return nil, errors.New("enableTLS 要求同时配置 TLSCertFile 与 TLSKeyFile")
+			return nil, errors.New("enableTLS 要求同时配置 TLSCertFile 和 TLSKeyFile")
 		}
 		if _, err := os.Stat(cfg.TLSCertFile); err != nil {
 			_ = lis.Close()
@@ -159,47 +151,13 @@ func NewServer(cfg *config.HTTP, opts ...ServerOption) (*Server, error) {
 	return srv, nil
 }
 
-// Name 返回服务名
+// Name 返回组件名，用于日志区分。
 func (s *Server) Name() string {
 	return "HTTP Server"
 }
 
-// Endpoint 返回对外可发现的 HTTP 端点 URL。
-//
-// 端口优先取自实际 listener（支持 Port=0），通配地址归一化为 127.0.0.1。
-func (s *Server) Endpoint() (*url.URL, error) {
-	if s == nil || s.server == nil {
-		return nil, errors.New("http server is nil")
-	}
-
-	host, port, err := net.SplitHostPort(s.server.Addr)
-	if err != nil {
-		return nil, fmt.Errorf("parse server address %q: %w", s.server.Addr, err)
-	}
-	host = normalizeHost(host)
-
-	// 优先使用 listener 实际端口（Port=0 动态分配场景）
-	if s.listener != nil {
-		if tcpAddr, ok := s.listener.Addr().(*net.TCPAddr); ok && tcpAddr.Port > 0 {
-			port = strconv.Itoa(tcpAddr.Port)
-		}
-	}
-	if port == "" {
-		return nil, fmt.Errorf("server address %q has empty port", s.server.Addr)
-	}
-
-	scheme := "http"
-	if s.enableTLS {
-		scheme = "https"
-	}
-	return &url.URL{
-		Scheme: scheme,
-		Host:   net.JoinHostPort(host, port),
-	}, nil
-}
-
-// Start 阻塞式启动 HTTP 服务，直至 Stop 被调用或发生错误。
-func (s *Server) Start(ctx context.Context) error {
+// Startup 阻塞式启动 HTTP 服务，直至 Shutdown 被调用或发生错误。
+func (s *Server) Startup(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -231,8 +189,8 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 优雅关闭服务。优先使用配置的 ShutdownTimeout，缺省时使用 defaultShutdownTimeout。
-func (s *Server) Stop(ctx context.Context) error {
+// Shutdown 优雅关闭服务。
+func (s *Server) Shutdown(ctx context.Context) error {
 	timeout := defaultShutdownTimeout
 	if s.cfg != nil && s.cfg.ShutdownTimeout > 0 {
 		timeout = s.cfg.ShutdownTimeout
@@ -264,16 +222,6 @@ func (s *Server) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.isRunning
-}
-
-// normalizeHost 将通配/空地址归一化为 127.0.0.1，并去除 IPv6 方括号。
-func normalizeHost(host string) string {
-	host = strings.Trim(host, "[]")
-	switch host {
-	case "", "0.0.0.0", "::":
-		return "127.0.0.1"
-	}
-	return host
 }
 
 func orDuration(d, def time.Duration) time.Duration {

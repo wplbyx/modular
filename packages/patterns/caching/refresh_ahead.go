@@ -42,7 +42,7 @@ func NewRefreshAhead(c cache.Cache, ttl time.Duration, refreshBefore time.Durati
 		stopCh:      make(chan struct{}),
 	}
 
-	// Start background refresher
+	// Startup background refresher
 	ra.wg.Add(1)
 	go ra.refreshLoop()
 

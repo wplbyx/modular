@@ -116,7 +116,7 @@ func InitTokenManager(key string) error {
 // Generate 生成Token（使用全局管理器）
 func Generate(deviceSN string) (string, error) {
 	if defaultManager == nil {
-		return "", errors.New("token manager not initialized, please call Init() first")
+		return "", errors.New("token manager not initialized, please call Setup() first")
 	}
 	return defaultManager.Generate(deviceSN)
 }
@@ -124,7 +124,7 @@ func Generate(deviceSN string) (string, error) {
 // Parse 解析Token（使用全局管理器）
 func Parse(token string) (string, error) {
 	if defaultManager == nil {
-		return "", errors.New("token manager not initialized, please call Init() first")
+		return "", errors.New("token manager not initialized, please call Setup() first")
 	}
 	return defaultManager.Parse(token)
 }

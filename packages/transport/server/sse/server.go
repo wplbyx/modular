@@ -130,7 +130,7 @@ func (s *SSEServer) Connect() gin.HandlerFunc {
 
 			case msg, ok := <-client.MsgChan:
 				if !ok {
-					// 通道被关闭（服务端主动 Stop 或踢下线）
+					// 通道被关闭（服务端主动 Shutdown 或踢下线）
 					return
 				}
 

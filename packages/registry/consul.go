@@ -2,27 +2,28 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/consul/api"
+
+	"modular/packages/core"
 )
 
 type RegistryOptions func()
 
-// Registry 实现了Registrar和Discovery接口
+// Registry 实现了 Registrar 和 Discovery 接口
 type Registry struct {
-	client  *api.Client // consul 客户端连接，连接到consul服务器
-	address string      // consul 地址
+	client  *api.Client
+	address string
 }
 
 var _ Registrar = (*Registry)(nil)
-
 var _ Discovery = (*Registry)(nil)
 
-// NewConsulRegistry 创建一个新的Consul注册中心实例
+// NewConsulRegistry 创建一个新的 Consul 注册中心实例
 func NewConsulRegistry(addr string) (*Registry, error) {
 	config := api.DefaultConfig()
 	config.Address = addr
@@ -38,125 +39,64 @@ func NewConsulRegistry(addr string) (*Registry, error) {
 	}, nil
 }
 
-// =================
-
-// Register 客户端调用http,主动注册服务到Consul
-func (c *Registry) Register(ctx context.Context, service *ServiceNode) error {
-	if service == nil {
+// Register 注册服务到 Consul。
+// 一个 ServiceNode 可能包含多个 Transport（如同时暴露 HTTP 和 gRPC），
+// 每个 Transport 注册为一条独立的 Consul 服务记录，ID 以 transport 后缀区分。
+func (c *Registry) Register(ctx context.Context, node *core.ServiceNode) error {
+	if node == nil {
 		return fmt.Errorf("service node cannot be nil")
 	}
-	if len(service.Endpoints) == 0 {
-		return fmt.Errorf("service node endpoints cannot be empty")
+
+	for _, t := range node.Transports {
+		reg := &api.AgentServiceRegistration{
+			ID:      transportID(node.ID, t.Protocol),
+			Name:    node.Name,
+			Address: t.Address,
+			Port:    t.Port,
+			Meta:    buildMeta(node, t),
+			Tags: []string{
+				fmt.Sprintf("version=%s", node.Version),
+				fmt.Sprintf("protocol=%s", t.Protocol),
+			},
+			Check: consulHealthCheck(t),
+		}
+
+		if err := c.client.Agent().ServiceRegister(reg); err != nil {
+			return fmt.Errorf("register transport %s: %w", t.Protocol, err)
+		}
 	}
 
-	protocol, address, port, err := parseEndpoint(service.Endpoints[0])
-	if err != nil {
-		return err
-	}
-	if service.Address != "" {
-		address = service.Address
-	}
-	if service.Port != 0 {
-		port = service.Port
-	}
-
-	meta := make(map[string]string, len(service.Metadata)+1)
-	for k, v := range service.Metadata {
-		meta[k] = v
-	}
-	if meta["protocol"] == "" {
-		meta["protocol"] = protocol
-	}
-
-	reg := &api.AgentServiceRegistration{
-		ID:      service.ID,
-		Name:    service.Name,
-		Address: address,
-		Port:    port,
-		Meta:    meta,
-		Tags: []string{
-			fmt.Sprintf("version=%s", service.Version),
-		},
-		Check: consulHealthCheck(protocol, address, port, meta),
-	}
-
-	return c.client.Agent().ServiceRegister(reg)
+	return nil
 }
 
-// Unregister 客户端调用http,主动从Consul注销服务
-func (c *Registry) Unregister(ctx context.Context, service *ServiceNode) error {
-	if service == nil || service.ID == "" {
+// Unregister 从 Consul 注销服务的所有 Transport 记录
+func (c *Registry) Unregister(ctx context.Context, node *core.ServiceNode) error {
+	if node == nil || node.ID == "" {
 		return fmt.Errorf("service node or service ID cannot be nil")
 	}
 
-	return c.client.Agent().ServiceDeregister(service.ID)
+	var errs error
+	for _, t := range node.Transports {
+		id := transportID(node.ID, t.Protocol)
+		if err := c.client.Agent().ServiceDeregister(id); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("deregister transport %s: %w", t.Protocol, err))
+		}
+	}
+	return errs
 }
 
-// GetService 从Consul获取服务实例列表
-func (c *Registry) GetService(ctx context.Context, serviceName string) ([]*ServiceNode, error) {
+// GetService 从 Consul 获取服务实例列表
+func (c *Registry) GetService(ctx context.Context, serviceName string) ([]*core.ServiceNode, error) {
 	services, _, err := c.client.Health().Service(serviceName, "", true, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	var nodes []*ServiceNode
-	for _, service := range services {
-		// 提取版本信息
-		version := ""
-		for _, tag := range service.Service.Tags {
-			if strings.HasPrefix(tag, "version=") {
-				version = strings.TrimPrefix(tag, "version=")
-				break
-			}
-		}
-
-		node := &ServiceNode{
-			ID:       service.Service.ID,
-			Name:     service.Service.Service,
-			Version:  version,
-			Metadata: service.Service.Meta,
-			Endpoints: []string{
-				fmt.Sprintf("%s://%s:%d", getProtocol(service.Service.Port, service.Service.Meta), service.Service.Address, service.Service.Port),
-			},
-		}
-		nodes = append(nodes, node)
-	}
-
-	return nodes, nil
+	return consulToServiceNodes(services), nil
 }
 
-// Subscribe 监听服务实例变化（没什么大的作用）
-func (c *Registry) Subscribe(ctx context.Context, serviceName string) error {
-	// 创建一个新的查询参数，设置WaitIndex为0将获取最新的索引
-	params := &api.QueryOptions{
-		WaitIndex: 0,
-		WaitTime:  5 * time.Minute,
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			// 查询服务并等待变化
-			services, meta, err := c.client.Health().Service(serviceName, "", true, params)
-			if err != nil {
-				return err
-			}
-
-			// 更新WaitIndex以监听后续变化
-			params.WaitIndex = meta.LastIndex
-
-			// 这里可以处理服务变化，例如发送事件或更新本地缓存
-			// 实际使用中应该通过回调函数或通道将变化通知给调用者
-			fmt.Printf("Service %s changed, new instances: %d\n", serviceName, len(services))
-		}
-	}
-}
-
-// Watch 监听服务实例变化，返回变化通道
-func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*ServiceNode, error) {
-	ch := make(chan []*ServiceNode, 10)
+// Watch 监控服务实例变化，返回变化通道
+func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*core.ServiceNode, error) {
+	ch := make(chan []*core.ServiceNode, 10)
 
 	go func() {
 		defer close(ch)
@@ -171,19 +111,12 @@ func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*Ser
 			case <-ctx.Done():
 				return
 			default:
-				// 查询服务并等待变化
 				services, meta, err := c.client.Health().Service(serviceName, "", true, params)
 				if err != nil {
 					continue
 				}
-
-				// 更新WaitIndex以监听后续变化
 				params.WaitIndex = meta.LastIndex
-
-				// 转换为ServiceNode
-				nodes := c.convertToServiceNodes(services)
-
-				// 发送到通道
+				nodes := consulToServiceNodes(services)
 				select {
 				case ch <- nodes:
 				case <-ctx.Done():
@@ -196,99 +129,78 @@ func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*Ser
 	return ch, nil
 }
 
-// convertToServiceNodes 将Consul服务转换为ServiceNode
-func (c *Registry) convertToServiceNodes(services []*api.ServiceEntry) []*ServiceNode {
-	var nodes []*ServiceNode
-	for _, service := range services {
-		// 提取版本信息
+// transportID 为单个 Transport 生成 Consul 服务 ID
+func transportID(baseID, protocol string) string {
+	return fmt.Sprintf("%s-%s", baseID, protocol)
+}
+
+// buildMeta 合并 node.Metadata 与 transport 级别的 health_path
+func buildMeta(node *core.ServiceNode, t core.Transport) map[string]string {
+	meta := make(map[string]string)
+	for k, v := range node.Metadata {
+		meta[k] = v
+	}
+	meta["protocol"] = t.Protocol
+	if t.HealthPath != "" {
+		meta["health_path"] = t.HealthPath
+	}
+	return meta
+}
+
+// consulToServiceNodes 将 Consul 服务条目转换为 ServiceNode
+func consulToServiceNodes(services []*api.ServiceEntry) []*core.ServiceNode {
+	var nodes []*core.ServiceNode
+	for _, entry := range services {
 		version := ""
-		for _, tag := range service.Service.Tags {
+		protocol := entry.Service.Meta["protocol"]
+		for _, tag := range entry.Service.Tags {
 			if strings.HasPrefix(tag, "version=") {
 				version = strings.TrimPrefix(tag, "version=")
-				break
 			}
 		}
 
-		node := &ServiceNode{
-			ID:       service.Service.ID,
-			Name:     service.Service.Service,
-			Version:  version,
-			Metadata: service.Service.Meta,
-			Endpoints: []string{
-				fmt.Sprintf("%s://%s:%d", getProtocol(service.Service.Port, service.Service.Meta), service.Service.Address, service.Service.Port),
-			},
+		t := core.Transport{
+			Protocol: protocol,
+			Address:  entry.Service.Address,
+			Port:     entry.Service.Port,
 		}
-		nodes = append(nodes, node)
+		if hp, ok := entry.Service.Meta["health_path"]; ok {
+			t.HealthPath = hp
+		}
+
+		nodes = append(nodes, &core.ServiceNode{
+			Identity: core.Identity{
+				Name:    entry.Service.Service,
+				Version: version,
+			},
+			ID:         entry.Service.ID,
+			Transports: []core.Transport{t},
+			Metadata:   entry.Service.Meta,
+		})
 	}
 	return nodes
 }
 
-// 解析服务端点，提取地址和端口
-func parseEndpoint(endpoint string) (string, string, int, error) {
-	parts := strings.SplitN(endpoint, "://", 2)
-	if len(parts) != 2 {
-		return "", "", 0, fmt.Errorf("invalid endpoint format: %s", endpoint)
-	}
-
-	host, port, err := net.SplitHostPort(parts[1])
-	if err != nil {
-		return "", "", 0, err
-	}
-
-	portInt := 0
-	if _, err := fmt.Sscanf(port, "%d", &portInt); err != nil {
-		return "", "", 0, fmt.Errorf("invalid endpoint port %q: %w", port, err)
-	}
-
-	return strings.ToLower(parts[0]), host, portInt, nil
-}
-
-func getProtocol(port int, metadata ...map[string]string) string {
-	if len(metadata) > 0 && metadata[0] != nil {
-		if protocol := metadata[0]["protocol"]; protocol != "" {
-			return protocol
-		}
-	}
-	switch port {
-	case 80, 8080:
-		return "http"
-	case 443:
-		return "https"
-	case 50051:
-		return "grpc"
-	default:
-		return "http"
-	}
-}
-
-func consulHealthCheck(protocol, address string, port int, metadata map[string]string) *api.AgentServiceCheck {
+// consulHealthCheck 根据 transport 配置构建 Consul 健康检查
+func consulHealthCheck(t core.Transport) *api.AgentServiceCheck {
 	check := &api.AgentServiceCheck{
-		Timeout:                        defaultMeta(metadata, "health_timeout", "5s"),
-		Interval:                       defaultMeta(metadata, "health_interval", "10s"),
-		DeregisterCriticalServiceAfter: defaultMeta(metadata, "deregister_after", "30s"),
+		Timeout:                        "5s",
+		Interval:                       "10s",
+		DeregisterCriticalServiceAfter: "30s",
 	}
 
-	switch strings.ToLower(protocol) {
+	switch strings.ToLower(t.Protocol) {
 	case "http", "https":
-		path := defaultMeta(metadata, "health_path", "/check")
-		check.HTTP = fmt.Sprintf("%s://%s:%d%s", protocol, address, port, path)
+		path := t.HealthPath
+		if path == "" {
+			path = "/health"
+		}
+		check.HTTP = fmt.Sprintf("%s://%s:%d%s", t.Protocol, t.Address, t.Port, path)
 	case "grpc":
-		check.GRPC = fmt.Sprintf("%s:%d", address, port)
-	case "tcp", "mqtt", "kafka":
-		check.TCP = fmt.Sprintf("%s:%d", address, port)
+		check.GRPC = fmt.Sprintf("%s:%d", t.Address, t.Port)
 	default:
-		check.TCP = fmt.Sprintf("%s:%d", address, port)
+		check.TCP = fmt.Sprintf("%s:%d", t.Address, t.Port)
 	}
 
 	return check
-}
-
-func defaultMeta(metadata map[string]string, key, fallback string) string {
-	if metadata == nil {
-		return fallback
-	}
-	if value := metadata[key]; value != "" {
-		return value
-	}
-	return fallback
 }

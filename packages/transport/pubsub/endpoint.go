@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"modular/packages/core"
 	"sync"
-
-	"modular/packages/transport"
 )
 
 var (
-	_ transport.Endpoint = (*SubscriberEndpoint)(nil)
-	_ Subscriber         = (*SubscriberEndpoint)(nil)
+	_ core.Endpoint = (*SubscriberEndpoint)(nil)
+	_ Subscriber    = (*SubscriberEndpoint)(nil)
 )
 
 // SubscriberEndpoint adapts a pub/sub client into an application-managed
@@ -94,7 +93,7 @@ func (e *SubscriberEndpoint) Unsubscribe(ctx context.Context, topic string) erro
 	return nil
 }
 
-func (e *SubscriberEndpoint) Start(ctx context.Context) error {
+func (e *SubscriberEndpoint) Startup(ctx context.Context) error {
 	if conn, ok := e.subscriber.(connector); ok {
 		if err := conn.Connect(ctx); err != nil {
 			return fmt.Errorf("connect pubsub subscriber: %w", err)
@@ -119,7 +118,7 @@ func (e *SubscriberEndpoint) Start(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (e *SubscriberEndpoint) Stop(ctx context.Context) error {
+func (e *SubscriberEndpoint) Shutdown(ctx context.Context) error {
 	e.mu.Lock()
 	if !e.started {
 		e.mu.Unlock()
@@ -142,7 +141,7 @@ func (e *SubscriberEndpoint) Stop(ctx context.Context) error {
 }
 
 func (e *SubscriberEndpoint) Close() error {
-	return e.Stop(context.Background())
+	return e.Shutdown(context.Background())
 }
 
 func (e *SubscriberEndpoint) closeSubscriber(ctx context.Context) error {

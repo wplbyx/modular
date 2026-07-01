@@ -21,30 +21,42 @@ import (
 )
 
 type OpenTelemetry struct {
-	Res *resource.Resource
+	res *resource.Resource
 	Tp  *trace.TracerProvider
 	Mp  *metric.MeterProvider
 	Lp  *log.LoggerProvider
 }
 
 func NewOpenTelemetry(ctx context.Context, cfg *config.Application, telemetry *config.Telemetry) (*OpenTelemetry, error) {
-	res := resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(cfg.Name), semconv.ServiceVersion(cfg.Version))
 	ot := new(OpenTelemetry)
-	ot.Res = res
-	if err := ot.newTracerProvider(ctx, telemetry, res); err != nil {
+	ot.res = resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(cfg.Name), semconv.ServiceVersion(cfg.Version))
+	if err := ot.newTracerProvider(ctx, telemetry, ot.res); err != nil {
 		return nil, err
 	}
-	if err := ot.newMetricProvider(ctx, telemetry, res); err != nil {
+	if err := ot.newMetricProvider(ctx, telemetry, ot.res); err != nil {
 		return nil, err
 	}
-	if err := ot.newLoggerProvider(ctx, telemetry, res); err != nil {
+	if err := ot.newLoggerProvider(ctx, telemetry, ot.res); err != nil {
 		return nil, err
 	}
 	return ot, nil
 }
 
-// Shutdown flushes and closes initialized OpenTelemetry providers.
-func (o *OpenTelemetry) Shutdown(ctx context.Context) error {
+// Name 实现 app.Resource 接口
+func (o *OpenTelemetry) Name() string { return "telemetry" }
+
+// Init 初始化 OTel providers。如果已通过 NewOpenTelemetry 初始化则跳过。
+func (o *OpenTelemetry) Setup(ctx context.Context) error {
+	if o.Tp != nil || o.Mp != nil || o.Lp != nil {
+		return nil
+	}
+	// 如果未通过 NewOpenTelemetry 预初始化，需要调用方自行设置 res 并调用各 provider 初始化方法
+	// 典型用法：先 NewOpenTelemetry(ctx, cfg, teleCfg) 完成初始化，再 WithResource(otel) 注册到 app
+	return nil
+}
+
+// Close flushes and closes initialized OpenTelemetry providers.
+func (o *OpenTelemetry) Close(ctx context.Context) error {
 	if o == nil {
 		return nil
 	}

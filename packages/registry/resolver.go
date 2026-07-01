@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"google.golang.org/grpc/resolver"
+
+	"modular/packages/core"
 )
 
-// gRPC服务发现解析器
+// gRPC 服务发现解析器
 type grpcResolver struct {
 	target   resolver.Target
 	cc       resolver.ClientConn
@@ -22,7 +24,7 @@ type grpcResolver struct {
 	wg       sync.WaitGroup
 }
 
-// NewGRPCResolverBuilder 创建gRPC解析器构建器
+// NewGRPCResolverBuilder 创建 gRPC 解析器构建器
 func NewGRPCResolverBuilder(registry *Registry) resolver.Builder {
 	return &grpcResolverBuilder{registry: registry}
 }
@@ -31,11 +33,9 @@ type grpcResolverBuilder struct {
 	registry *Registry
 }
 
-// Build 构建解析器
 func (b *grpcResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// 从target中提取服务名称
 	serviceName := extractServiceName(target)
 	if serviceName == "" {
 		cancel()
@@ -57,30 +57,25 @@ func (b *grpcResolverBuilder) Build(target resolver.Target, cc resolver.ClientCo
 	return r, nil
 }
 
-// Scheme 返回解析器支持的协议
 func (b *grpcResolverBuilder) Scheme() string {
 	return "consul"
 }
 
-// ResolveNow 立即解析
 func (r *grpcResolver) ResolveNow(resolver.ResolveNowOptions) {
 	r.resolve()
 }
 
-// Close 关闭解析器
 func (r *grpcResolver) Close() {
 	r.cancel()
 	r.wg.Wait()
 }
 
-// watch 监听服务变化
 func (r *grpcResolver) watch() {
 	defer r.wg.Done()
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	// 立即执行一次解析
 	r.resolve()
 
 	for {
@@ -93,7 +88,6 @@ func (r *grpcResolver) watch() {
 	}
 }
 
-// resolve 解析服务地址
 func (r *grpcResolver) resolve() {
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
@@ -105,15 +99,13 @@ func (r *grpcResolver) resolve() {
 	}
 
 	var addresses []resolver.Address
-	for _, service := range services {
-		// 解析grpc端点
-		for _, endpoint := range service.Endpoints {
-			if strings.HasPrefix(endpoint, "grpc://") {
-				addr := strings.TrimPrefix(endpoint, "grpc://")
+	for _, svc := range services {
+		for _, t := range svc.Transports {
+			if strings.EqualFold(t.Protocol, "grpc") {
 				addresses = append(addresses, resolver.Address{
-					Addr:       addr,
-					ServerName: service.Name,
-					Metadata:   createMetadata(service),
+					Addr:       fmt.Sprintf("%s:%d", t.Address, t.Port),
+					ServerName: svc.Name,
+					Metadata:   createMetadata(svc),
 				})
 			}
 		}
@@ -129,40 +121,34 @@ func (r *grpcResolver) resolve() {
 	})
 }
 
-// extractServiceName 从target中提取服务名称
 func extractServiceName(target resolver.Target) string {
-	// target.URL.Host 格式: "consul://service-name"
-	// 或者直接是服务名称
 	if target.URL.Host != "" {
 		return target.URL.Host
 	}
 	return target.URL.Path
 }
 
-// createMetadata 创建gRPC地址元数据
-func createMetadata(service *ServiceNode) *json.RawMessage {
+func createMetadata(svc *core.ServiceNode) *json.RawMessage {
 	metadata := make(map[string]interface{})
-	metadata["id"] = service.ID
-	metadata["version"] = service.Version
-	metadata["name"] = service.Name
+	metadata["id"] = svc.ID
+	metadata["version"] = svc.Version
+	metadata["name"] = svc.Name
 
-	if service.Metadata != nil {
-		for k, v := range service.Metadata {
-			metadata[k] = v
-		}
+	for k, v := range svc.Metadata {
+		metadata[k] = v
 	}
 
 	data, _ := json.Marshal(metadata)
-	var raw json.RawMessage = data
+	raw := json.RawMessage(data)
 	return &raw
 }
 
-// RegisterConsulResolver 注册Consul解析器
+// RegisterConsulResolver 注册 Consul 解析器
 func RegisterConsulResolver(registry *Registry) {
 	resolver.Register(NewGRPCResolverBuilder(registry))
 }
 
-// BuildConsulTarget 构建Consul目标地址
+// BuildConsulTarget 构建 Consul 目标地址
 func BuildConsulTarget(serviceName string) string {
 	return fmt.Sprintf("consul:///%s", serviceName)
 }

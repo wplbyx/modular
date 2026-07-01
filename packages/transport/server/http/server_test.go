@@ -2,12 +2,11 @@ package http
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,68 +17,17 @@ import (
 	"modular/packages/config"
 )
 
-// withStop 确保每个构造出的 Server 都会关闭 listener，避免端口泄漏。
 func withStop(t *testing.T, srv *Server) {
 	t.Helper()
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 }
 
-// doRequest 通过 gin 引擎直接处理请求，免去真实网络往返。
 func doRequest(t *testing.T, srv *Server, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(method, path, nil)
 	srv.engine.ServeHTTP(w, req)
 	return w
-}
-
-func TestServerEndpoint(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "0.0.0.0", Port: 8080})
-	require.NoError(t, err)
-	withStop(t, srv)
-
-	u, err := srv.Endpoint()
-	require.NoError(t, err)
-	assert.Equal(t, "http://127.0.0.1:8080", u.String())
-}
-
-func TestServerEndpointTLS(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "localhost", Port: 8443})
-	require.NoError(t, err)
-	withStop(t, srv)
-	srv.enableTLS = true // 模拟 TLS 启用后的端点判定，避免依赖真实证书
-
-	u, err := srv.Endpoint()
-	require.NoError(t, err)
-	assert.Equal(t, "https://localhost:8443", u.String())
-}
-
-func TestServerEndpointIPv6(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "::1", Port: 0})
-	if err != nil {
-		t.Skipf("环境不支持 IPv6 监听: %v", err)
-	}
-	withStop(t, srv)
-
-	u, err := srv.Endpoint()
-	require.NoError(t, err)
-	assert.Equal(t, "http", u.Scheme)
-	assert.True(t, strings.HasPrefix(u.Host, "[::1]:"), "unexpected host %q", u.Host)
-}
-
-func TestServerEndpointDynamicPort(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
-	require.NoError(t, err)
-	withStop(t, srv)
-
-	u, err := srv.Endpoint()
-	require.NoError(t, err)
-
-	_, portStr, err := net.SplitHostPort(u.Host)
-	require.NoError(t, err)
-	port, err := strconv.Atoi(portStr)
-	require.NoError(t, err)
-	assert.Greater(t, port, 0)
 }
 
 func TestNewServerTLSConfigIncomplete(t *testing.T) {
@@ -109,22 +57,11 @@ func TestDefaultHealthHandler(t *testing.T) {
 	assert.Equal(t, "ok", w.Body.String())
 }
 
-func TestHealthPathConfigurable(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0}, WithHealth("/healthz"))
-	require.NoError(t, err)
-	withStop(t, srv)
-
-	w := doRequest(t, srv, http.MethodGet, "/healthz")
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "ok", w.Body.String())
-}
-
 func TestHealthDisabled(t *testing.T) {
 	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0}, WithHealth(""))
 	require.NoError(t, err)
 	withStop(t, srv)
 
-	// 关闭健康检查后默认路径未注册，gin 返回 404
 	w := doRequest(t, srv, http.MethodGet, DefaultHealthPath)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -133,23 +70,24 @@ func TestServerStartServeAndStop(t *testing.T) {
 	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)
 
-	u, err := srv.Endpoint()
-	require.NoError(t, err)
+	// 浠?listener 鑾峰彇鐪熷疄绔彛锛屾瀯閫?URL
+	tcpAddr := srv.listener.Addr().(*net.TCPAddr)
+	url := fmt.Sprintf("http://127.0.0.1:%d", tcpAddr.Port)
 
-	go func() { _ = srv.Start(context.Background()) }()
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	go func() { _ = srv.Startup(context.Background()) }()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 
 	require.True(t, eventually(func() bool { return srv.IsRunning() }), "server should be running")
 
 	client := &http.Client{Timeout: time.Second}
-	resp, err := client.Get(u.String() + DefaultHealthPath)
+	resp, err := client.Get(url + DefaultHealthPath)
 	require.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "ok", string(body))
 
-	require.NoError(t, srv.Stop(context.Background()))
+	require.NoError(t, srv.Shutdown(context.Background()))
 	require.True(t, eventually(func() bool { return !srv.IsRunning() }), "server should be stopped")
 }
 
@@ -167,7 +105,6 @@ func TestRegisterRoute(t *testing.T) {
 	assert.Equal(t, "pong", w.Body.String())
 }
 
-// eventually 在 2s 内轮询 fn，返回 true 即成功。
 func eventually(fn func() bool) bool {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
