@@ -83,14 +83,14 @@ func (app *Application) Run() error {
 
 	// shutdown 在同一个超时预算内完成全部关闭步骤。
 	// goroutine 在 groupCtx 取消时触发 shutdown，解除其余 endpoint 的阻塞；
-	// group.Wait() 返回后也调一次，stopOnce 保证只执行一次。
-	shutdownCh := make(chan error, 1)
+	// group.Wait() 返回后也调一次，shutdownOnce 保证只执行一次。
+	var shutdownErr error
 	var shutdownOnce sync.Once
 	triggerShutdown := func() {
 		shutdownOnce.Do(func() {
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
 			defer shutdownCancel()
-			shutdownCh <- app.shutdown(shutdownCtx)
+			shutdownErr = app.shutdown(shutdownCtx)
 		})
 	}
 
@@ -99,20 +99,14 @@ func (app *Application) Run() error {
 
 	// 1. 初始化基础设施资源（FIFO），任一失败 → 关闭已初始化的资源后返回
 	if err := app.setupResources(ctx); err != nil {
-		//shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
-		//defer shutdownCancel()
-		//_ = app.shutdown(shutdownCtx)
 		triggerShutdown()
-		return err
+		return errors.Join(err, shutdownErr)
 	}
 
 	// 2. 注册服务节点（纯传值，app 不关心注册细节）
 	if err := app.registerNode(ctx); err != nil {
-		//shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
-		//defer shutdownCancel()
-		//_ = app.shutdown(shutdownCtx)
 		triggerShutdown()
-		return err
+		return errors.Join(err, shutdownErr)
 	}
 
 	// 3. 启动运行所有服务
@@ -135,19 +129,17 @@ func (app *Application) Run() error {
 		})
 	}
 
-	runErr := group.Wait()
-	triggerShutdown()
-	shutdownErr := <-shutdownCh
-
-	if runErr != nil {
+	if runErr := group.Wait(); runErr != nil {
 		log.GetLogger().Error("Application stopped with error", zap.Error(runErr))
 	}
+
+	triggerShutdown()
 	if shutdownErr != nil {
 		log.GetLogger().Error("Application shutdown error", zap.Error(shutdownErr))
 	}
 
 	log.GetLogger().Info("Application exited.")
-	return errors.Join(runErr, shutdownErr)
+	return shutdownErr
 }
 
 // Close 手动触发全部关闭步骤。

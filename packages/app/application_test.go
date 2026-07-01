@@ -351,6 +351,34 @@ func TestApplicationRunEndpointErrorPropagated(t *testing.T) {
 	}
 }
 
+// 提前返回路径现在会合并 shutdown 错误（而非丢弃），
+// 验证资源初始化失败时，Run 返回的错误同时包含 init 错误与 close 错误。
+func TestApplicationRunShutdownErrorJoinedOnEarlyReturn(t *testing.T) {
+	ctx := context.Background()
+	initErr := errors.New("init boom")
+	closeErr := errors.New("close boom")
+	res := &testResource{name: "db", initErr: initErr, closeErr: closeErr}
+
+	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+		WithResource(res),
+		WithEndpoint(&testEndpoint{started: make(chan struct{})}),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	runErr := application.Run()
+	if runErr == nil {
+		t.Fatal("Run() error = nil")
+	}
+	if !errors.Is(runErr, initErr) {
+		t.Fatalf("Run() error missing init error: %v", runErr)
+	}
+	if !errors.Is(runErr, closeErr) {
+		t.Fatalf("Run() error missing shutdown (close) error: %v", runErr)
+	}
+}
+
 // --- helpers ---
 
 type slowEndpoint struct {
