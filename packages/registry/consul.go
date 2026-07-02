@@ -12,8 +12,6 @@ import (
 	"modular/packages/core"
 )
 
-type RegistryOptions func()
-
 // Registry 实现了 Registrar 和 Discovery 接口
 type Registry struct {
 	client  *api.Client
@@ -147,7 +145,7 @@ func buildMeta(node *core.ServiceNode, t core.Transport) map[string]string {
 	return meta
 }
 
-// consulToServiceNodes 将 Consul 服务条目转换为 ServiceNode
+// consulToServiceNodes 将 Consul 服务条目转换回 ServiceNode
 func consulToServiceNodes(services []*api.ServiceEntry) []*core.ServiceNode {
 	var nodes []*core.ServiceNode
 	for _, entry := range services {

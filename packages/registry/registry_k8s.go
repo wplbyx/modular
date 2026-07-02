@@ -18,6 +18,12 @@ import (
 	"modular/packages/core"
 )
 
+var _ Discovery = (*K8sRegistry)(nil)
+
+// K8sRegistry 基于 Kubernetes Endpoints 实现服务发现。
+// 在 K8s 环境中，服务的注册由 Kubernetes 本身（Deployment+Service）完成，
+// 因此 Register/Unregister 是空操作。
+// 发现逻辑通过 Endpoints 资源实现。
 type K8sRegistry struct {
 	clientset kubernetes.Interface
 	namespace string
@@ -26,11 +32,14 @@ type K8sRegistry struct {
 	informers informers.SharedInformerFactory
 }
 
-func newK8sRegistry(namespace string) (*K8sRegistry, error) {
-	var config *rest.Config
-	var err error
+// NewK8sRegistry 创建 K8s 服务发现实例。
+// 优先使用 InClusterConfig，回退到本地 kubeconfig。
+func NewK8sRegistry(namespace string) (*K8sRegistry, error) {
+	if namespace == "" {
+		namespace = "default"
+	}
 
-	config, err = rest.InClusterConfig()
+	config, err := rest.InClusterConfig()
 	if err != nil {
 		log.Println("Not in cluster, trying to use local kubeconfig...")
 		kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().GetDefaultFilename()
@@ -46,41 +55,42 @@ func newK8sRegistry(namespace string) (*K8sRegistry, error) {
 	}
 
 	stopCh := make(chan struct{})
-	informers := informers.NewSharedInformerFactoryWithOptions(clientset, time.Minute, informers.WithNamespace(namespace))
+	informersFactory := informers.NewSharedInformerFactoryWithOptions(clientset, time.Minute, informers.WithNamespace(namespace))
 
 	return &K8sRegistry{
 		clientset: clientset,
 		namespace: namespace,
 		stopCh:    stopCh,
-		informers: informers,
+		informers: informersFactory,
 	}, nil
 }
 
-// Register 在 K8s 中是空操作
+// Register 在 K8s 中是空操作（由 K8s 平台自身完成注册）。
 func (r *K8sRegistry) Register(ctx context.Context, node *core.ServiceNode) error {
-	log.Println("K8s registry: Register is a no-op.")
 	return nil
 }
 
-// Unregister 在 K8s 中是空操作
+// Unregister 在 K8s 中是空操作。
 func (r *K8sRegistry) Unregister(ctx context.Context, node *core.ServiceNode) error {
-	log.Println("K8s registry: Unregister is a no-op.")
 	return nil
 }
 
-func (r *K8sRegistry) Discover(serviceName string) ([]*core.ServiceNode, error) {
-	endpoints, err := r.clientset.CoreV1().Endpoints(r.namespace).Get(context.TODO(), serviceName, metav1.GetOptions{})
+// GetService 从 K8s Endpoints 获取服务实例列表。
+func (r *K8sRegistry) GetService(ctx context.Context, serviceName string) ([]*core.ServiceNode, error) {
+	endpoints, err := r.clientset.CoreV1().Endpoints(r.namespace).Get(ctx, serviceName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get endpoints for service %s: %w", serviceName, err)
 	}
-	return endpointsToInstances(serviceName, endpoints), nil
+	return endpointsToServiceNodes(serviceName, endpoints), nil
 }
 
-func (r *K8sRegistry) Watch(serviceName string) (<-chan []*core.ServiceNode, <-chan struct{}, error) {
-	updateCh := make(chan []*core.ServiceNode, 1)
+// Watch 监控服务实例变化，返回变化通道。
+// 当 context 取消时，informer 停止并关闭通道。
+func (r *K8sRegistry) Watch(ctx context.Context, serviceName string) (<-chan []*core.ServiceNode, error) {
+	ch := make(chan []*core.ServiceNode, 1)
 	sendUpdate := func(nodes []*core.ServiceNode) {
 		select {
-		case updateCh <- nodes:
+		case ch <- nodes:
 		default:
 		}
 	}
@@ -89,15 +99,13 @@ func (r *K8sRegistry) Watch(serviceName string) (<-chan []*core.ServiceNode, <-c
 
 	_, err := endpointsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			ep := obj.(*corev1.Endpoints)
-			if ep.Name == serviceName {
-				sendUpdate(endpointsToInstances(serviceName, ep))
+			if ep, ok := obj.(*corev1.Endpoints); ok && ep.Name == serviceName {
+				sendUpdate(endpointsToServiceNodes(serviceName, ep))
 			}
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
-			ep := newObj.(*corev1.Endpoints)
-			if ep.Name == serviceName {
-				sendUpdate(endpointsToInstances(serviceName, ep))
+			if ep, ok := newObj.(*corev1.Endpoints); ok && ep.Name == serviceName {
+				sendUpdate(endpointsToServiceNodes(serviceName, ep))
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -107,29 +115,38 @@ func (r *K8sRegistry) Watch(serviceName string) (<-chan []*core.ServiceNode, <-c
 		},
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	go r.informers.Start(r.stopCh)
+	r.informers.Start(r.stopCh)
 
-	return updateCh, r.stopCh, nil
+	// 发送初始快照
+	go func() {
+		defer close(ch)
+		if nodes, err := r.GetService(ctx, serviceName); err == nil {
+			sendUpdate(nodes)
+		}
+		<-ctx.Done()
+	}()
+
+	return ch, nil
 }
 
+// Close 关闭 K8s informer。
 func (r *K8sRegistry) Close() error {
-	log.Println("Closing K8s registry...")
 	r.stopOnce.Do(func() {
 		close(r.stopCh)
 	})
 	return nil
 }
 
-// endpointsToInstances 将 K8s Endpoints 对象转换为 ServiceNode 列表
-func endpointsToInstances(serviceName string, ep *corev1.Endpoints) []*core.ServiceNode {
-	var instances []*core.ServiceNode
+// endpointsToServiceNodes 将 K8s Endpoints 对象转换为 ServiceNode 列表。
+func endpointsToServiceNodes(serviceName string, ep *corev1.Endpoints) []*core.ServiceNode {
+	var nodes []*core.ServiceNode
 	for _, subset := range ep.Subsets {
 		for _, addr := range subset.Addresses {
 			for _, port := range subset.Ports {
-				instances = append(instances, &core.ServiceNode{
+				nodes = append(nodes, &core.ServiceNode{
 					Identity: core.Identity{
 						Name: serviceName,
 					},
@@ -145,5 +162,5 @@ func endpointsToInstances(serviceName string, ep *corev1.Endpoints) []*core.Serv
 			}
 		}
 	}
-	return instances
+	return nodes
 }

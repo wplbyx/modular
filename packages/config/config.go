@@ -1,4 +1,4 @@
-package config
+﻿package config
 
 import (
 	"context"
@@ -175,24 +175,6 @@ func ValidateNode(object interface{}) error {
 	return nil // 验证通过
 }
 
-// // Load 加载并解析所有传入的配置节点
-// // 它会按顺序执行：读取配置文件 -> 绑定标志 -> 解析命令行 -> Unmarshal -> 验证
-// func (l *ConfigureLoader) Load(node Configurer) error {
-//
-//	// 5. 将 Viper 中的所有值 Unmarshal 到对应的配置节点
-//	// 此时的值已经融合了：配置文件默认值 + 环境变量 + 命令行参数
-//	if err := node.Bind(l.v); err != nil {
-//		return fmt.Errorf("failed to unmarshal final config for node %T: %w", node, err)
-//	}
-//
-//	// 6. 验证所有配置节点的有效性
-//	if err := node.Validate(); err != nil {
-//		return fmt.Errorf("failed to validate final config for node %T: %w", node, err)
-//	}
-//
-//	return nil
-// }
-
 // Watch 监听配置文件和远程配置的变更
 // 当配置变更时，会调用提供的 callback 函数
 func (l *ConfigureLoader) Watch(callback func(fsnotify.Event)) {
@@ -206,11 +188,6 @@ func (l *ConfigureLoader) Watch(callback func(fsnotify.Event)) {
 	l.v.OnConfigChange(callback)
 	log.Println("Watching for local config file changes...")
 
-	// // 如果设置了远程配置，则启动一个 goroutine 来监听远程变更
-	// l.v.WatchRemoteConfigOnChannel()
-	// if l.remote {
-	// 	go l.watchRemoteConfig(ctx, callback)
-	// }
 }
 
 // watchRemoteConfig 定期轮询远程配置中心

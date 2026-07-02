@@ -5,32 +5,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 
 	"google.golang.org/grpc/resolver"
 
 	"modular/packages/core"
 )
 
-// gRPC 服务发现解析器
-type grpcResolver struct {
+// gRPCResolver 使用服务发现后端（Consul/K8s）解析服务地址。
+type gRPCResolver struct {
 	target   resolver.Target
 	cc       resolver.ClientConn
-	registry *Registry
+	discovery Discovery
 	service  string
 	ctx      context.Context
 	cancel   context.CancelFunc
-	wg       sync.WaitGroup
 }
 
-// NewGRPCResolverBuilder 创建 gRPC 解析器构建器
-func NewGRPCResolverBuilder(registry *Registry) resolver.Builder {
-	return &grpcResolverBuilder{registry: registry}
+// NewGRPCResolverBuilder 创建 gRPC 解析器构建器。
+func NewGRPCResolverBuilder(discovery Discovery) resolver.Builder {
+	return &grpcResolverBuilder{discovery: discovery}
 }
 
 type grpcResolverBuilder struct {
-	registry *Registry
+	discovery Discovery
 }
 
 func (b *grpcResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
@@ -42,16 +39,15 @@ func (b *grpcResolverBuilder) Build(target resolver.Target, cc resolver.ClientCo
 		return nil, fmt.Errorf("invalid service name in target: %s", target.URL.Host)
 	}
 
-	r := &grpcResolver{
+	r := &gRPCResolver{
 		target:   target,
 		cc:       cc,
-		registry: b.registry,
+		discovery: b.discovery,
 		service:  serviceName,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
 
-	r.wg.Add(1)
 	go r.watch()
 
 	return r, nil
@@ -61,45 +57,39 @@ func (b *grpcResolverBuilder) Scheme() string {
 	return "consul"
 }
 
-func (r *grpcResolver) ResolveNow(resolver.ResolveNowOptions) {
-	r.resolve()
+func (r *gRPCResolver) ResolveNow(resolver.ResolveNowOptions) {
+	// 使用阻塞式 watch，ResolveNow 不需要额外操作
 }
 
-func (r *grpcResolver) Close() {
+func (r *gRPCResolver) Close() {
 	r.cancel()
-	r.wg.Wait()
 }
 
-func (r *grpcResolver) watch() {
-	defer r.wg.Done()
-
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	r.resolve()
-
-	for {
-		select {
-		case <-r.ctx.Done():
-			return
-		case <-ticker.C:
-			r.resolve()
-		}
-	}
-}
-
-func (r *grpcResolver) resolve() {
-	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
-	defer cancel()
-
-	services, err := r.registry.GetService(ctx, r.service)
+// watch 使用 Discovery.Watch 的阻塞式通道监听服务变化。
+func (r *gRPCResolver) watch() {
+	ch, err := r.discovery.Watch(r.ctx, r.service)
 	if err != nil {
 		r.cc.ReportError(err)
 		return
 	}
 
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case nodes, ok := <-ch:
+			if !ok {
+				return
+			}
+			r.update(nodes)
+		}
+	}
+}
+
+// update 将 ServiceNode 列表转换为 gRPC resolver.Address 并更新连接状态。
+func (r *gRPCResolver) update(nodes []*core.ServiceNode) {
 	var addresses []resolver.Address
-	for _, svc := range services {
+	for _, svc := range nodes {
 		for _, t := range svc.Transports {
 			if strings.EqualFold(t.Protocol, "grpc") {
 				addresses = append(addresses, resolver.Address{
@@ -143,12 +133,12 @@ func createMetadata(svc *core.ServiceNode) *json.RawMessage {
 	return &raw
 }
 
-// RegisterConsulResolver 注册 Consul 解析器
-func RegisterConsulResolver(registry *Registry) {
-	resolver.Register(NewGRPCResolverBuilder(registry))
+// RegisterConsulResolver 注册 Consul 解析器。
+func RegisterConsulResolver(discovery Discovery) {
+	resolver.Register(NewGRPCResolverBuilder(discovery))
 }
 
-// BuildConsulTarget 构建 Consul 目标地址
+// BuildConsulTarget 构建 Consul 目标地址。
 func BuildConsulTarget(serviceName string) string {
 	return fmt.Sprintf("consul:///%s", serviceName)
 }

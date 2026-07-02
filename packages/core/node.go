@@ -65,7 +65,7 @@ func (n *ServiceNode) generateID() string {
 }
 
 // GenerateID 从多个字符串片段生成合法的服务 ID。
-// 非字母数字字符统一替换为 "-"，连续分隔符合并，首尾去除多余的 "-"。
+// 非字母数字字符统一替换为 "-"，连缀分隔符合并，首尾去除多余的 "-"。
 func GenerateID(parts ...string) string {
 	joined := strings.Join(parts, "-")
 	var b strings.Builder
