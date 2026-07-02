@@ -53,7 +53,7 @@ func TestGenerateID(t *testing.T) {
 
 func TestNewServiceNode(t *testing.T) {
 	node := NewServiceNode(
-		Identity{Name: "user-service", Version: "v1.0"},
+		"user-service", "v1.0",
 		Transport{Protocol: "http", Address: "127.0.0.1", Port: 8080, HealthPath: "/health"},
 		Transport{Protocol: "grpc", Address: "127.0.0.1", Port: 9090},
 	)

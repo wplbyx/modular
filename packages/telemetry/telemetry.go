@@ -27,9 +27,9 @@ type OpenTelemetry struct {
 	Lp  *log.LoggerProvider
 }
 
-func NewOpenTelemetry(ctx context.Context, cfg *config.Application, telemetry *config.Telemetry) (*OpenTelemetry, error) {
+func NewOpenTelemetry(ctx context.Context, name, version string, telemetry *config.Telemetry) (*OpenTelemetry, error) {
 	ot := new(OpenTelemetry)
-	ot.res = resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(cfg.Name), semconv.ServiceVersion(cfg.Version))
+	ot.res = resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(name), semconv.ServiceVersion(version))
 	if err := ot.newTracerProvider(ctx, telemetry, ot.res); err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (o *OpenTelemetry) Setup(ctx context.Context) error {
 		return nil
 	}
 	// 如果未通过 NewOpenTelemetry 预初始化，需要调用方自行设置 res 并调用各 provider 初始化方法
-	// 典型用法：先 NewOpenTelemetry(ctx, cfg, teleCfg) 完成初始化，再 WithResource(otel) 注册到 app
+	// 典型用法：先 NewOpenTelemetry(ctx, name, version, teleCfg) 完成初始化，再 WithResource(otel) 注册到 app
 	return nil
 }
 

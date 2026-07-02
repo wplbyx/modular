@@ -12,7 +12,6 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"modular/packages/config"
 )
 
 // WithOutputConsole 控制台日志输出
@@ -90,12 +89,12 @@ func WithOutputFiles(ctx context.Context) LoggerManagerOption {
 }
 
 // WithOutputTelemetry 输出到远程仓库
-func WithOutputTelemetry(c *config.Application, lp *log.LoggerProvider) LoggerManagerOption {
+func WithOutputTelemetry(name string, lp *log.LoggerProvider) LoggerManagerOption {
 	return func(manager *LoggerManager) {
-		if c == nil || lp == nil {
+		if lp == nil {
 			return
 		}
-		core := otelzap.NewCore(c.Name, otelzap.WithLoggerProvider(lp))
+		core := otelzap.NewCore(name, otelzap.WithLoggerProvider(lp))
 		manager.cores = append(manager.cores, core)
 	}
 }

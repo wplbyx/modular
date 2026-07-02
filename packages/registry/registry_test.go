@@ -39,7 +39,7 @@ func TestConsulHealthCheckByProtocol(t *testing.T) {
 
 func TestNewServiceNodeUsage(t *testing.T) {
 	node := core.NewServiceNode(
-		core.Identity{Name: "test-service", Version: "v1.0.0"},
+		"test-service", "v1.0.0",
 		core.Transport{Protocol: "http", Address: "127.0.0.1", Port: 8080},
 	)
 	assert.Equal(t, "test-service", node.Name)

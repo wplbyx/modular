@@ -147,10 +147,8 @@ func endpointsToServiceNodes(serviceName string, ep *corev1.Endpoints) []*core.S
 		for _, addr := range subset.Addresses {
 			for _, port := range subset.Ports {
 				nodes = append(nodes, &core.ServiceNode{
-					Identity: core.Identity{
-						Name: serviceName,
-					},
-					ID: fmt.Sprintf("%s-%s", serviceName, addr.TargetRef.Name),
+					Name: serviceName,
+					ID:   fmt.Sprintf("%s-%s", serviceName, addr.TargetRef.Name),
 					Transports: []core.Transport{
 						{
 							Protocol: port.Name,

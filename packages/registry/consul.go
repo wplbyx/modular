@@ -12,7 +12,7 @@ import (
 	"modular/packages/core"
 )
 
-// Registry 实现了 Registrar 和 Discovery 接口
+// Registry 瀹炵幇浜?Registrar 鍜?Discovery 鎺ュ彛
 type Registry struct {
 	client  *api.Client
 	address string
@@ -21,7 +21,7 @@ type Registry struct {
 var _ Registrar = (*Registry)(nil)
 var _ Discovery = (*Registry)(nil)
 
-// NewConsulRegistry 创建一个新的 Consul 注册中心实例
+// NewConsulRegistry 鍒涘缓涓€涓柊鐨?Consul 娉ㄥ唽涓績瀹炰緥
 func NewConsulRegistry(addr string) (*Registry, error) {
 	config := api.DefaultConfig()
 	config.Address = addr
@@ -37,9 +37,8 @@ func NewConsulRegistry(addr string) (*Registry, error) {
 	}, nil
 }
 
-// Register 注册服务到 Consul。
-// 一个 ServiceNode 可能包含多个 Transport（如同时暴露 HTTP 和 gRPC），
-// 每个 Transport 注册为一条独立的 Consul 服务记录，ID 以 transport 后缀区分。
+// Register 娉ㄥ唽鏈嶅姟鍒?Consul銆?// 涓€涓?ServiceNode 鍙兘鍖呭惈澶氫釜 Transport锛堝鍚屾椂鏆撮湶 HTTP 鍜?gRPC锛夛紝
+// 姣忎釜 Transport 娉ㄥ唽涓轰竴鏉＄嫭绔嬬殑 Consul 鏈嶅姟璁板綍锛孖D 浠?transport 鍚庣紑鍖哄垎銆?
 func (c *Registry) Register(ctx context.Context, node *core.ServiceNode) error {
 	if node == nil {
 		return fmt.Errorf("service node cannot be nil")
@@ -67,7 +66,7 @@ func (c *Registry) Register(ctx context.Context, node *core.ServiceNode) error {
 	return nil
 }
 
-// Unregister 从 Consul 注销服务的所有 Transport 记录
+// Unregister 浠?Consul 娉ㄩ攢鏈嶅姟鐨勬墍鏈?Transport 璁板綍
 func (c *Registry) Unregister(ctx context.Context, node *core.ServiceNode) error {
 	if node == nil || node.ID == "" {
 		return fmt.Errorf("service node or service ID cannot be nil")
@@ -83,7 +82,7 @@ func (c *Registry) Unregister(ctx context.Context, node *core.ServiceNode) error
 	return errs
 }
 
-// GetService 从 Consul 获取服务实例列表
+// GetService 浠?Consul 鑾峰彇鏈嶅姟瀹炰緥鍒楄〃
 func (c *Registry) GetService(ctx context.Context, serviceName string) ([]*core.ServiceNode, error) {
 	services, _, err := c.client.Health().Service(serviceName, "", true, nil)
 	if err != nil {
@@ -92,7 +91,7 @@ func (c *Registry) GetService(ctx context.Context, serviceName string) ([]*core.
 	return consulToServiceNodes(services), nil
 }
 
-// Watch 监控服务实例变化，返回变化通道
+// Watch 鐩戞帶鏈嶅姟瀹炰緥鍙樺寲锛岃繑鍥炲彉鍖栭€氶亾
 func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*core.ServiceNode, error) {
 	ch := make(chan []*core.ServiceNode, 10)
 
@@ -127,12 +126,12 @@ func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*cor
 	return ch, nil
 }
 
-// transportID 为单个 Transport 生成 Consul 服务 ID
+// transportID 涓哄崟涓?Transport 鐢熸垚 Consul 鏈嶅姟 ID
 func transportID(baseID, protocol string) string {
 	return fmt.Sprintf("%s-%s", baseID, protocol)
 }
 
-// buildMeta 合并 node.Metadata 与 transport 级别的 health_path
+// buildMeta 鍚堝苟 node.Metadata 涓?transport 绾у埆鐨?health_path
 func buildMeta(node *core.ServiceNode, t core.Transport) map[string]string {
 	meta := make(map[string]string)
 	for k, v := range node.Metadata {
@@ -145,7 +144,7 @@ func buildMeta(node *core.ServiceNode, t core.Transport) map[string]string {
 	return meta
 }
 
-// consulToServiceNodes 将 Consul 服务条目转换回 ServiceNode
+// consulToServiceNodes 灏?Consul 鏈嶅姟鏉＄洰杞崲鍥?ServiceNode
 func consulToServiceNodes(services []*api.ServiceEntry) []*core.ServiceNode {
 	var nodes []*core.ServiceNode
 	for _, entry := range services {
@@ -167,10 +166,8 @@ func consulToServiceNodes(services []*api.ServiceEntry) []*core.ServiceNode {
 		}
 
 		nodes = append(nodes, &core.ServiceNode{
-			Identity: core.Identity{
-				Name:    entry.Service.Service,
-				Version: version,
-			},
+			Name:       entry.Service.Service,
+			Version:    version,
 			ID:         entry.Service.ID,
 			Transports: []core.Transport{t},
 			Metadata:   entry.Service.Meta,
@@ -179,7 +176,7 @@ func consulToServiceNodes(services []*api.ServiceEntry) []*core.ServiceNode {
 	return nodes
 }
 
-// consulHealthCheck 根据 transport 配置构建 Consul 健康检查
+// consulHealthCheck 鏍规嵁 transport 閰嶇疆鏋勫缓 Consul 鍋ュ悍妫€鏌?
 func consulHealthCheck(t core.Transport) *api.AgentServiceCheck {
 	check := &api.AgentServiceCheck{
 		Timeout:                        "5s",

@@ -37,7 +37,7 @@ func NewMigrationTool(db *bunlib.DB, migrationsFS embed.FS) *MigrationTool {
 
 // NewBunMigration creates a migration tool using the package-level Bun connection.
 func NewBunMigration(migrationsFS embed.FS) *MigrationTool {
-	return NewMigrationTool(GetBunDB(), migrationsFS)
+	return NewMigrationTool(GetDB(), migrationsFS)
 }
 
 // WithOutputDir changes where the create command writes SQL migration files.

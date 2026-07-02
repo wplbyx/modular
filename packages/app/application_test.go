@@ -154,7 +154,7 @@ func TestApplicationRegistersServiceNode(t *testing.T) {
 
 	endpoint := &testEndpoint{started: make(chan struct{})}
 	node := core.NewServiceNode(
-		core.Identity{Name: "holo", Version: "v1.2.3"},
+		"holo", "v1.2.3",
 		core.Transport{Protocol: "http", Address: "127.0.0.1", Port: 8080, HealthPath: "/health"},
 	)
 	reg := &testRegistrar{}
@@ -203,7 +203,7 @@ func TestApplicationRegisterFailureDoesNotStartEndpoint(t *testing.T) {
 	ctx := context.Background()
 	endpoint := &testEndpoint{started: make(chan struct{})}
 	node := core.NewServiceNode(
-		core.Identity{Name: "holo"},
+		"holo", "",
 		core.Transport{Protocol: "grpc", Address: "127.0.0.1", Port: 50051},
 	)
 	reg := &testRegistrar{registerErr: errors.New("registry unavailable")}

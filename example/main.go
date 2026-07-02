@@ -53,7 +53,7 @@ func main() {
 	// 由 core.NewServiceNode 从身份与传输配置构造，ID 自动生成。
 	// 当注入 Registrar（如 consul.Registry）时，Application 负责在启停时注册/反注册。
 	node := core.NewServiceNode(
-		core.Identity{Name: "example-service", Version: "v1.0.0"},
+		"example-service", "v1.0.0",
 		core.Transport{Protocol: "http", Address: "127.0.0.1", Port: 18080, HealthPath: "/health"},
 	)
 

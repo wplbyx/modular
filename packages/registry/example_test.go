@@ -18,7 +18,7 @@ func ExampleRegistrar() {
 
 	// 从配置构建 ServiceNode（一个实例可以包含多个 Transport）
 	node := core.NewServiceNode(
-		core.Identity{Name: "hello-service", Version: "v1.0.0"},
+		"hello-service", "v1.0.0",
 		core.Transport{Protocol: "grpc", Address: "127.0.0.1", Port: 18001},
 	)
 

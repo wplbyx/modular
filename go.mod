@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.5.1
-	github.com/avast/retry-go v3.0.0+incompatible
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gin-contrib/cors v1.7.7

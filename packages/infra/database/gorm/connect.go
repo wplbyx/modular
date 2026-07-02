@@ -1,7 +1,6 @@
 package gorm
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,35 +9,26 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
+	gormlib "gorm.io/gorm"
 
 	"modular/packages/config"
 	"modular/packages/infra/database"
 )
 
-// Ensure GormDB implements Database interface
-var _ database.Database = (*GormDB)(nil)
+// globalDB is the package-level connection, set by NewGormConnection.
+var globalDB *gormlib.DB
 
-// Global database connection
-var globalDB *GormDB
-
-// GormDB wraps gorm.DB with the Database interface
-type GormDB struct {
-	db *gorm.DB
-}
-
-// NewGormConnection creates a new GORM database connection
-func NewGormConnection(cfg *config.Database) (*GormDB, error) {
+// NewGormConnection creates a GORM database connection and stores it as the global instance.
+func NewGormConnection(cfg *config.Database) (*gormlib.DB, error) {
 	if cfg == nil {
 		return nil, errors.New("database config is nil")
 	}
 
 	var (
 		err  error
-		conn gorm.Dialector
+		conn gormlib.Dialector
 	)
 
-	// Build connection string based on DSN type
 	switch cfg.Dsn {
 	case database.DSNSqlite:
 		conn = sqlite.Open(cfg.Path)
@@ -73,15 +63,13 @@ func NewGormConnection(cfg *config.Database) (*GormDB, error) {
 		return nil, fmt.Errorf("unsupported database dsn: %s", cfg.Dsn)
 	}
 
-	// Open connection
-	db, err := gorm.Open(conn, &gorm.Config{
+	db, err := gormlib.Open(conn, &gormlib.Config{
 		SkipDefaultTransaction: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open gorm connection: %w", err)
 	}
 
-	// Configure connection pool
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get underlying sql.DB: %w", err)
@@ -91,48 +79,15 @@ func NewGormConnection(cfg *config.Database) (*GormDB, error) {
 	sqlDB.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 	sqlDB.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 
-	// Test connection
 	if err = sqlDB.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	gormDB := &GormDB{db: db}
-	globalDB = gormDB
-	return gormDB, nil
+	globalDB = db
+	return db, nil
 }
 
-// GetDB returns the underlying gorm.DB
-func (g *GormDB) GetDB() *gorm.DB {
-	return g.db
-}
-
-// Ping tests the database connection
-func (g *GormDB) Ping(ctx context.Context) error {
-	sqlDB, err := g.db.DB()
-	if err != nil {
-		return err
-	}
-	return sqlDB.PingContext(ctx)
-}
-
-// Close closes the database connection
-func (g *GormDB) Close() error {
-	sqlDB, err := g.db.DB()
-	if err != nil {
-		return err
-	}
-	return sqlDB.Close()
-}
-
-// GetGormDB returns the global GormDB instance
-func GetGormDB() *GormDB {
+// GetDB returns the global GORM connection, or nil if NewGormConnection has not been called.
+func GetDB() *gormlib.DB {
 	return globalDB
-}
-
-// GetDB returns the underlying gorm.DB from global instance
-func GetDB() *gorm.DB {
-	if globalDB == nil {
-		return nil
-	}
-	return globalDB.db
 }
