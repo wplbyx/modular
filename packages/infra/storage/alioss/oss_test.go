@@ -1,4 +1,4 @@
-package aliyunoss
+package alioss
 
 import (
 	"bytes"

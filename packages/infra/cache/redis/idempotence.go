@@ -127,15 +127,6 @@ func (l *IdempotentLock) Run(ctx context.Context, key string, fn func(context.Co
 	return err
 }
 
-// RunIdempotent executes fn with an idempotent lock using this Redis cache.
-func (c *RedisCache) RunIdempotent(ctx context.Context, key string, fn func(context.Context, func(context.Context) (bool, error)) error, opts ...IdempotentOption) error {
-	lock, err := NewIdempotentLock(c.client, opts...)
-	if err != nil {
-		return err
-	}
-	return lock.Run(ctx, key, fn)
-}
-
 func (l *IdempotentLock) renewLoop(ctx context.Context, key, value string, errCh chan<- error) {
 	interval := l.ttl / 3
 	if interval < 100*time.Millisecond {

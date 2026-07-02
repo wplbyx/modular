@@ -11,33 +11,43 @@ import (
 	"go.opentelemetry.io/otel/sdk/log"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-
 )
+
+// newEncoderConfig 返回统一的生产环境 EncoderConfig
+func newEncoderConfig() zapcore.EncoderConfig {
+	cfg := zap.NewProductionEncoderConfig()
+	cfg.TimeKey = "timestamp"
+	cfg.EncodeTime = zapcore.TimeEncoderOfLayout(time.DateTime)
+	return cfg
+}
+
+// relativeCallerEncoder 返回一个将 caller 绝对路径转为相对路径的 EncoderCaller
+func relativeCallerEncoder(projectRoot string) zapcore.CallerEncoder {
+	return func(caller zapcore.EntryCaller, enc zapcore.PrimitiveArrayEncoder) {
+		if !caller.Defined {
+			return
+		}
+
+		fullPath := caller.FullPath()
+		if relativePath, err := filepath.Rel(projectRoot, fullPath); err == nil {
+			enc.AppendString(relativePath)
+			return
+		}
+		enc.AppendString(fullPath)
+	}
+}
 
 // WithOutputConsole 控制台日志输出
 func WithOutputConsole() LoggerManagerOption {
 	return func(manager *LoggerManager) {
 		projectRoot, _ := os.Getwd()
-		encoderConfig := zap.NewProductionEncoderConfig()
-		encoderConfig.TimeKey = "timestamp"
-		encoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.DateTime)
-		encoderConfig.EncodeCaller = func(caller zapcore.EntryCaller, enc zapcore.PrimitiveArrayEncoder) {
-			if !caller.Defined {
-				return
-			}
 
-			// 获取完整绝对路径, 尝试转换为相对路径
-			fullPath := caller.FullPath()
-			if relativePath, err := filepath.Rel(projectRoot, fullPath); err == nil {
-				enc.AppendString(relativePath)
-				return
-			}
-			enc.AppendString(fullPath)
-		}
+		cfg := newEncoderConfig()
+		cfg.EncodeCaller = relativeCallerEncoder(projectRoot)
 
-		encoder := zapcore.NewConsoleEncoder(encoderConfig)
+		encoder := zapcore.NewConsoleEncoder(cfg)
 		syncer := zapcore.AddSync(os.Stdout)
-		core := zapcore.NewCore(encoder, syncer, parseLevel(manager.config.Level))
+		core := zapcore.NewCore(encoder, syncer, manager.level)
 		manager.cores = append(manager.cores, core)
 	}
 }
@@ -46,26 +56,13 @@ func WithOutputConsole() LoggerManagerOption {
 func WithOutputFiles(ctx context.Context) LoggerManagerOption {
 	return func(manager *LoggerManager) {
 		projectRoot, _ := os.Getwd()
-		encoderConfig := zap.NewProductionEncoderConfig()
-		encoderConfig.TimeKey = "timestamp"
-		encoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.DateTime)
-		encoderConfig.EncodeCaller = func(caller zapcore.EntryCaller, enc zapcore.PrimitiveArrayEncoder) {
-			if !caller.Defined {
-				return
-			}
 
-			// 获取完整绝对路径, 尝试转换为相对路径
-			fullPath := caller.FullPath()
-			if relativePath, err := filepath.Rel(projectRoot, fullPath); err == nil {
-				enc.AppendString(relativePath)
-				return
-			}
-			enc.AppendString(fullPath)
-		}
-		encoder := zapcore.NewConsoleEncoder(encoderConfig)
+		cfg := newEncoderConfig()
+		cfg.EncodeCaller = relativeCallerEncoder(projectRoot)
+
+		encoder := zapcore.NewConsoleEncoder(cfg)
 
 		// 解析文件名基础路径
-		// 假设 c.File.Filename 是 "./logs/app.log"
 		baseName := manager.config.File.Filename
 		if strings.HasSuffix(baseName, ".log") {
 			baseName = strings.TrimSuffix(baseName, ".log")
@@ -82,13 +79,13 @@ func WithOutputFiles(ctx context.Context) LoggerManagerOption {
 		)
 
 		syncer := zapcore.AddSync(writer)
-
-		core := zapcore.NewCore(encoder, syncer, parseLevel(manager.config.Level))
+		core := zapcore.NewCore(encoder, syncer, manager.level)
 		manager.cores = append(manager.cores, core)
+		manager.closers = append(manager.closers, writer)
 	}
 }
 
-// WithOutputTelemetry 输出到远程仓库
+// WithOutputTelemetry 输出到远程端
 func WithOutputTelemetry(name string, lp *log.LoggerProvider) LoggerManagerOption {
 	return func(manager *LoggerManager) {
 		if lp == nil {

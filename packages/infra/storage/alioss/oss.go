@@ -1,37 +1,37 @@
-package aliyunoss
+package alioss
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"modular/packages/infra/storage"
 	"net/http"
 	"path"
 	"strings"
 	"sync"
 
-	aliyunoss "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
-	osscredentials "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
+	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
+	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 	"golang.org/x/sync/errgroup"
 
 	"modular/packages/config"
+	"modular/packages/infra/storage"
 )
 
 var _ storage.Storage = (*OssStorage)(nil)
 
-// ossClient 隔离 v2 Client，便于测试 mock。*aliyunoss.Client 天然满足该接口。
+// ossClient 隔离 v2 Client，便于测试 mock。*oss.Client 天然满足该接口。
 type ossClient interface {
-	PutObject(context.Context, *aliyunoss.PutObjectRequest, ...func(*aliyunoss.Options)) (*aliyunoss.PutObjectResult, error)
-	GetObject(context.Context, *aliyunoss.GetObjectRequest, ...func(*aliyunoss.Options)) (*aliyunoss.GetObjectResult, error)
-	DeleteObject(context.Context, *aliyunoss.DeleteObjectRequest, ...func(*aliyunoss.Options)) (*aliyunoss.DeleteObjectResult, error)
-	HeadObject(context.Context, *aliyunoss.HeadObjectRequest, ...func(*aliyunoss.Options)) (*aliyunoss.HeadObjectResult, error)
-	DeleteMultipleObjects(context.Context, *aliyunoss.DeleteMultipleObjectsRequest, ...func(*aliyunoss.Options)) (*aliyunoss.DeleteMultipleObjectsResult, error)
-	ListObjectsV2(context.Context, *aliyunoss.ListObjectsV2Request, ...func(*aliyunoss.Options)) (*aliyunoss.ListObjectsV2Result, error)
-	InitiateMultipartUpload(context.Context, *aliyunoss.InitiateMultipartUploadRequest, ...func(*aliyunoss.Options)) (*aliyunoss.InitiateMultipartUploadResult, error)
-	UploadPart(context.Context, *aliyunoss.UploadPartRequest, ...func(*aliyunoss.Options)) (*aliyunoss.UploadPartResult, error)
-	CompleteMultipartUpload(context.Context, *aliyunoss.CompleteMultipartUploadRequest, ...func(*aliyunoss.Options)) (*aliyunoss.CompleteMultipartUploadResult, error)
-	AbortMultipartUpload(context.Context, *aliyunoss.AbortMultipartUploadRequest, ...func(*aliyunoss.Options)) (*aliyunoss.AbortMultipartUploadResult, error)
+	PutObject(context.Context, *oss.PutObjectRequest, ...func(*oss.Options)) (*oss.PutObjectResult, error)
+	GetObject(context.Context, *oss.GetObjectRequest, ...func(*oss.Options)) (*oss.GetObjectResult, error)
+	DeleteObject(context.Context, *oss.DeleteObjectRequest, ...func(*oss.Options)) (*oss.DeleteObjectResult, error)
+	HeadObject(context.Context, *oss.HeadObjectRequest, ...func(*oss.Options)) (*oss.HeadObjectResult, error)
+	DeleteMultipleObjects(context.Context, *oss.DeleteMultipleObjectsRequest, ...func(*oss.Options)) (*oss.DeleteMultipleObjectsResult, error)
+	ListObjectsV2(context.Context, *oss.ListObjectsV2Request, ...func(*oss.Options)) (*oss.ListObjectsV2Result, error)
+	InitiateMultipartUpload(context.Context, *oss.InitiateMultipartUploadRequest, ...func(*oss.Options)) (*oss.InitiateMultipartUploadResult, error)
+	UploadPart(context.Context, *oss.UploadPartRequest, ...func(*oss.Options)) (*oss.UploadPartResult, error)
+	CompleteMultipartUpload(context.Context, *oss.CompleteMultipartUploadRequest, ...func(*oss.Options)) (*oss.CompleteMultipartUploadResult, error)
+	AbortMultipartUpload(context.Context, *oss.AbortMultipartUploadRequest, ...func(*oss.Options)) (*oss.AbortMultipartUploadResult, error)
 }
 
 // applyIOOptions 将可选参数合并为 IOOptions。
@@ -65,9 +65,9 @@ func NewOSSStorage(cfg *config.Storage) (*OssStorage, error) {
 	}
 	endpoint := normalizeEndpoint(oc.Endpoint, oc.DisableSSL)
 
-	sdkCfg := aliyunoss.LoadDefaultConfig().
+	sdkCfg := oss.LoadDefaultConfig().
 		WithRegion(oc.Region).
-		WithCredentialsProvider(osscredentials.NewStaticCredentialsProvider(oc.AccessKeyID, oc.AccessKeySecret, oc.SecurityToken)).
+		WithCredentialsProvider(credentials.NewStaticCredentialsProvider(oc.AccessKeyID, oc.AccessKeySecret, oc.SecurityToken)).
 		WithUseCName(oc.UseCName).
 		WithDisableSSL(oc.DisableSSL)
 	if endpoint != "" {
@@ -84,7 +84,7 @@ func NewOSSStorage(cfg *config.Storage) (*OssStorage, error) {
 	}
 
 	return &OssStorage{
-		client:        aliyunoss.NewClient(sdkCfg),
+		client:        oss.NewClient(sdkCfg),
 		bucket:        oc.Bucket,
 		region:        oc.Region,
 		endpoint:      endpoint,
@@ -114,9 +114,9 @@ func (s *OssStorage) GetUsefulUrl(key string) string {
 
 // Exists 检查对象是否存在。
 func (s *OssStorage) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := s.client.HeadObject(ctx, &aliyunoss.HeadObjectRequest{
-		Bucket: aliyunoss.Ptr(s.bucket),
-		Key:    aliyunoss.Ptr(s.buildObjectKey(key)),
+	_, err := s.client.HeadObject(ctx, &oss.HeadObjectRequest{
+		Bucket: oss.Ptr(s.bucket),
+		Key:    oss.Ptr(s.buildObjectKey(key)),
 	})
 	if err == nil {
 		return true, nil
@@ -130,13 +130,13 @@ func (s *OssStorage) Exists(ctx context.Context, key string) (bool, error) {
 // Upload 上传单个文件。
 func (s *OssStorage) Upload(ctx context.Context, key string, body io.Reader, opts ...storage.IOOption) error {
 	o := applyIOOptions(opts)
-	req := &aliyunoss.PutObjectRequest{
-		Bucket: aliyunoss.Ptr(s.bucket),
-		Key:    aliyunoss.Ptr(s.buildObjectKey(key)),
+	req := &oss.PutObjectRequest{
+		Bucket: oss.Ptr(s.bucket),
+		Key:    oss.Ptr(s.buildObjectKey(key)),
 		Body:   body,
 	}
 	if o.ContentType != "" {
-		req.ContentType = aliyunoss.Ptr(o.ContentType)
+		req.ContentType = oss.Ptr(o.ContentType)
 	}
 	if len(o.Meta) > 0 {
 		req.Metadata = o.Meta
@@ -149,9 +149,9 @@ func (s *OssStorage) Upload(ctx context.Context, key string, body io.Reader, opt
 
 // Delete 删除单个文件。
 func (s *OssStorage) Delete(ctx context.Context, key string, _ ...storage.IOOption) error {
-	if _, err := s.client.DeleteObject(ctx, &aliyunoss.DeleteObjectRequest{
-		Bucket: aliyunoss.Ptr(s.bucket),
-		Key:    aliyunoss.Ptr(s.buildObjectKey(key)),
+	if _, err := s.client.DeleteObject(ctx, &oss.DeleteObjectRequest{
+		Bucket: oss.Ptr(s.bucket),
+		Key:    oss.Ptr(s.buildObjectKey(key)),
 	}); err != nil {
 		return fmt.Errorf("delete oss object %s: %w", key, err)
 	}
@@ -160,9 +160,9 @@ func (s *OssStorage) Delete(ctx context.Context, key string, _ ...storage.IOOpti
 
 // Download 下载单个文件，调用方需关闭返回的 io.ReadCloser。
 func (s *OssStorage) Download(ctx context.Context, key string, _ ...storage.IOOption) (io.ReadCloser, error) {
-	out, err := s.client.GetObject(ctx, &aliyunoss.GetObjectRequest{
-		Bucket: aliyunoss.Ptr(s.bucket),
-		Key:    aliyunoss.Ptr(s.buildObjectKey(key)),
+	out, err := s.client.GetObject(ctx, &oss.GetObjectRequest{
+		Bucket: oss.Ptr(s.bucket),
+		Key:    oss.Ptr(s.buildObjectKey(key)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get oss object %s: %w", key, err)
@@ -172,9 +172,9 @@ func (s *OssStorage) Download(ctx context.Context, key string, _ ...storage.IOOp
 
 // Stat 获取元信息。
 func (s *OssStorage) Stat(ctx context.Context, key string) (storage.ObjectItem, error) {
-	res, err := s.client.HeadObject(ctx, &aliyunoss.HeadObjectRequest{
-		Bucket: aliyunoss.Ptr(s.bucket),
-		Key:    aliyunoss.Ptr(s.buildObjectKey(key)),
+	res, err := s.client.HeadObject(ctx, &oss.HeadObjectRequest{
+		Bucket: oss.Ptr(s.bucket),
+		Key:    oss.Ptr(s.buildObjectKey(key)),
 	})
 	if err != nil {
 		return storage.ObjectItem{}, err
@@ -234,19 +234,19 @@ func (s *OssStorage) BatchDelete(ctx context.Context, keys []string, opts ...sto
 		if end > len(keys) {
 			end = len(keys)
 		}
-		objects := make([]aliyunoss.ObjectIdentifier, 0, end-start)
+		objects := make([]oss.ObjectIdentifier, 0, end-start)
 		for _, k := range keys[start:end] {
 			if k == "" {
 				continue
 			}
-			objects = append(objects, aliyunoss.ObjectIdentifier{Key: aliyunoss.Ptr(s.buildObjectKey(k))})
+			objects = append(objects, oss.ObjectIdentifier{Key: oss.Ptr(s.buildObjectKey(k))})
 		}
 		if len(objects) == 0 {
 			continue
 		}
-		res, err := s.client.DeleteMultipleObjects(ctx, &aliyunoss.DeleteMultipleObjectsRequest{
-			Bucket: aliyunoss.Ptr(s.bucket),
-			Delete: &aliyunoss.Delete{Objects: objects, Quiet: o.Quiet},
+		res, err := s.client.DeleteMultipleObjects(ctx, &oss.DeleteMultipleObjectsRequest{
+			Bucket: oss.Ptr(s.bucket),
+			Delete: &oss.Delete{Objects: objects, Quiet: o.Quiet},
 		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("batch[%d-%d]: %w", start, end-1, err))
@@ -307,10 +307,10 @@ func (s *OssStorage) PrefixIterator(ctx context.Context, prefix string, callback
 	}
 	var continuationToken string
 	for {
-		res, err := s.client.ListObjectsV2(ctx, &aliyunoss.ListObjectsV2Request{
-			Bucket:            aliyunoss.Ptr(s.bucket),
-			Prefix:            aliyunoss.Ptr(fullPrefix),
-			ContinuationToken: aliyunoss.Ptr(continuationToken),
+		res, err := s.client.ListObjectsV2(ctx, &oss.ListObjectsV2Request{
+			Bucket:            oss.Ptr(s.bucket),
+			Prefix:            oss.Ptr(fullPrefix),
+			ContinuationToken: oss.Ptr(continuationToken),
 			MaxKeys:           1000,
 		})
 		if err != nil {
@@ -342,14 +342,14 @@ func (s *OssStorage) PrefixIterator(ctx context.Context, prefix string, callback
 // InitiateMultipartUpload 初始化分片上传。session.Key 存完整 objectKey。
 func (s *OssStorage) InitiateMultipartUpload(ctx context.Context, key string) (storage.MultipartUploadSession, error) {
 	objKey := s.buildObjectKey(key)
-	res, err := s.client.InitiateMultipartUpload(ctx, &aliyunoss.InitiateMultipartUploadRequest{
-		Bucket: aliyunoss.Ptr(s.bucket),
-		Key:    aliyunoss.Ptr(objKey),
+	res, err := s.client.InitiateMultipartUpload(ctx, &oss.InitiateMultipartUploadRequest{
+		Bucket: oss.Ptr(s.bucket),
+		Key:    oss.Ptr(objKey),
 	})
 	if err != nil {
 		return storage.MultipartUploadSession{}, fmt.Errorf("InitiateMultipartUpload: %w", err)
 	}
-	return storage.MultipartUploadSession{UploadID: aliyunoss.ToString(res.UploadId), Key: objKey}, nil
+	return storage.MultipartUploadSession{UploadID: oss.ToString(res.UploadId), Key: objKey}, nil
 }
 
 // MultipartUpload 上传单个分片。
@@ -357,17 +357,17 @@ func (s *OssStorage) MultipartUpload(ctx context.Context, session storage.Multip
 	if partNumber < 1 {
 		return storage.UploadPartResponse{}, errors.New("partNumber must be >= 1")
 	}
-	res, err := s.client.UploadPart(ctx, &aliyunoss.UploadPartRequest{
-		Bucket:     aliyunoss.Ptr(s.bucket),
-		Key:        aliyunoss.Ptr(session.Key),
-		UploadId:   aliyunoss.Ptr(session.UploadID),
+	res, err := s.client.UploadPart(ctx, &oss.UploadPartRequest{
+		Bucket:     oss.Ptr(s.bucket),
+		Key:        oss.Ptr(session.Key),
+		UploadId:   oss.Ptr(session.UploadID),
 		PartNumber: int32(partNumber),
 		Body:       body,
 	})
 	if err != nil {
 		return storage.UploadPartResponse{}, fmt.Errorf("UploadPart %d: %w", partNumber, err)
 	}
-	return storage.UploadPartResponse{PartNumber: partNumber, ETag: aliyunoss.ToString(res.ETag)}, nil
+	return storage.UploadPartResponse{PartNumber: partNumber, ETag: oss.ToString(res.ETag)}, nil
 }
 
 // CompleteMultipartUpload 完成分片上传。
@@ -375,25 +375,25 @@ func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storag
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
-	ossParts := make([]aliyunoss.UploadPart, 0, len(parts))
+	ossParts := make([]oss.UploadPart, 0, len(parts))
 	for _, p := range parts {
-		ossParts = append(ossParts, aliyunoss.UploadPart{PartNumber: int32(p.PartNumber), ETag: aliyunoss.Ptr(p.ETag)})
+		ossParts = append(ossParts, oss.UploadPart{PartNumber: int32(p.PartNumber), ETag: oss.Ptr(p.ETag)})
 	}
-	_, err := s.client.CompleteMultipartUpload(ctx, &aliyunoss.CompleteMultipartUploadRequest{
-		Bucket:                  aliyunoss.Ptr(s.bucket),
-		Key:                     aliyunoss.Ptr(session.Key),
-		UploadId:                aliyunoss.Ptr(session.UploadID),
-		CompleteMultipartUpload: &aliyunoss.CompleteMultipartUpload{Parts: ossParts},
+	_, err := s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
+		Bucket:                  oss.Ptr(s.bucket),
+		Key:                     oss.Ptr(session.Key),
+		UploadId:                oss.Ptr(session.UploadID),
+		CompleteMultipartUpload: &oss.CompleteMultipartUpload{Parts: ossParts},
 	})
 	return err
 }
 
 // CancelMultipartUpload 取消分片上传。
 func (s *OssStorage) CancelMultipartUpload(ctx context.Context, session storage.MultipartUploadSession) error {
-	_, err := s.client.AbortMultipartUpload(ctx, &aliyunoss.AbortMultipartUploadRequest{
-		Bucket:   aliyunoss.Ptr(s.bucket),
-		Key:      aliyunoss.Ptr(session.Key),
-		UploadId: aliyunoss.Ptr(session.UploadID),
+	_, err := s.client.AbortMultipartUpload(ctx, &oss.AbortMultipartUploadRequest{
+		Bucket:   oss.Ptr(s.bucket),
+		Key:      oss.Ptr(session.Key),
+		UploadId: oss.Ptr(session.UploadID),
 	})
 	return err
 }
@@ -401,7 +401,7 @@ func (s *OssStorage) CancelMultipartUpload(ctx context.Context, session storage.
 // --- 辅助 ---
 
 func isOSSNotFound(err error) bool {
-	var se *aliyunoss.ServiceError
+	var se *oss.ServiceError
 	if errors.As(err, &se) {
 		return se.StatusCode == http.StatusNotFound || se.Code == "NoSuchKey" || se.Code == "NoSuchBucket"
 	}

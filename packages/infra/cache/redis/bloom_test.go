@@ -2,33 +2,33 @@ package redis
 
 import "testing"
 
-func TestNewBloomConfig(t *testing.T) {
-	cfg, err := newBloomConfig(1_000_000, 0.02)
+func TestNewBloomParams(t *testing.T) {
+	p, err := NewBloomParams(1_000_000, 0.02)
 	if err != nil {
-		t.Fatalf("newBloomConfig() error = %v", err)
+		t.Fatalf("NewBloomParams() error = %v", err)
 	}
-	if cfg.bits == 0 || cfg.hashes == 0 {
-		t.Fatalf("newBloomConfig() = %+v", cfg)
+	if p.Bits == 0 || p.Hashes == 0 {
+		t.Fatalf("NewBloomParams() = %+v", p)
 	}
 }
 
 func TestBloomOffsets(t *testing.T) {
-	cfg, err := newBloomConfig(1000, 0.01)
+	p, err := NewBloomParams(1000, 0.01)
 	if err != nil {
-		t.Fatalf("newBloomConfig() error = %v", err)
+		t.Fatalf("NewBloomParams() error = %v", err)
 	}
 
-	first, err := bloomOffsets(cfg, []byte("device-1"))
+	first, err := bloomOffsets(p, []byte("device-1"))
 	if err != nil {
 		t.Fatalf("bloomOffsets() error = %v", err)
 	}
-	second, err := bloomOffsets(cfg, []byte("device-1"))
+	second, err := bloomOffsets(p, []byte("device-1"))
 	if err != nil {
 		t.Fatalf("bloomOffsets() second error = %v", err)
 	}
 
-	if len(first) != int(cfg.hashes) {
-		t.Fatalf("bloomOffsets() len = %d, want %d", len(first), cfg.hashes)
+	if len(first) != int(p.Hashes) {
+		t.Fatalf("bloomOffsets() len = %d, want %d", len(first), p.Hashes)
 	}
 	for i := range first {
 		if first[i] != second[i] {
