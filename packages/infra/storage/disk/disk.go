@@ -161,7 +161,7 @@ func (s *DiskStorage) BatchUpload(ctx context.Context, tasks []storage.UploadTas
 	if len(tasks) == 0 {
 		return nil
 	}
-	o := storage.applyIOOptions(opts)
+	o := storage.ApplyIOOptions(opts)
 	concurrency := o.ConcurrentNum
 	if concurrency <= 0 {
 		concurrency = 5

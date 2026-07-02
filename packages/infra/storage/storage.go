@@ -1,4 +1,4 @@
-package storage
+﻿package storage
 
 import (
 	"context"
@@ -133,3 +133,14 @@ var ErrUnsupportedStorageType = fmt.Errorf("unsupported storage type")
 //		return nil, fmt.Errorf("%w: %s", ErrUnsupportedStorageType, cfg.Type)
 //	}
 //}
+
+// ApplyIOOptions merges variable options into a final IOOptions.
+func ApplyIOOptions(opts []IOOption) IOOptions {
+	o := IOOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o
+}

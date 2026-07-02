@@ -129,7 +129,8 @@ func (app *Application) Run() error {
 		})
 	}
 
-	if runErr := group.Wait(); runErr != nil {
+	runErr := group.Wait()
+	if runErr != nil {
 		log.GetLogger().Error("Application stopped with error", zap.Error(runErr))
 	}
 
@@ -139,7 +140,7 @@ func (app *Application) Run() error {
 	}
 
 	log.GetLogger().Info("Application exited.")
-	return shutdownErr
+	return errors.Join(runErr, shutdownErr)
 }
 
 // Close 手动触发全部关闭步骤。
