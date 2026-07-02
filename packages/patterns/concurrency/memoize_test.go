@@ -37,16 +37,14 @@ func TestMemoizerGetOrLoadCachesValue(t *testing.T) {
 }
 
 func TestMemoizerExpiresValue(t *testing.T) {
-	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
-	m := NewMemoizer[string, int](time.Second)
-	m.now = func() time.Time { return now }
+	m := NewMemoizer[string, int](50 * time.Millisecond)
 
 	m.Set("key", 10)
 	if got, ok := m.Get("key"); !ok || got != 10 {
 		t.Fatalf("Get() before expiration = %d, %v", got, ok)
 	}
 
-	now = now.Add(2 * time.Second)
+	time.Sleep(100 * time.Millisecond)
 	if got, ok := m.Get("key"); ok || got != 0 {
 		t.Fatalf("Get() after expiration = %d, %v", got, ok)
 	}

@@ -11,11 +11,10 @@ import (
 type Memoizer[K comparable, V any] struct {
 	mu    sync.RWMutex
 	ttl   time.Duration
-	now   func() time.Time
-	items map[K]memoItem[V]
+	items map[K]MemoItem[V]
 }
 
-type memoItem[V any] struct {
+type MemoItem[V any] struct {
 	value     V
 	expiresAt time.Time
 }
@@ -23,8 +22,7 @@ type memoItem[V any] struct {
 func NewMemoizer[K comparable, V any](ttl time.Duration) *Memoizer[K, V] {
 	return &Memoizer[K, V]{
 		ttl:   ttl,
-		now:   time.Now,
-		items: make(map[K]memoItem[V]),
+		items: make(map[K]MemoItem[V]),
 	}
 }
 
@@ -37,7 +35,9 @@ func (m *Memoizer[K, V]) Get(key K) (V, bool) {
 	if !ok {
 		return zero, false
 	}
-	if !item.expiresAt.IsZero() && m.now().After(item.expiresAt) {
+
+	now := time.Now()
+	if !item.expiresAt.IsZero() && now.After(item.expiresAt) {
 		m.Delete(key)
 		return zero, false
 	}
@@ -47,14 +47,14 @@ func (m *Memoizer[K, V]) Get(key K) (V, bool) {
 func (m *Memoizer[K, V]) Set(key K, value V) {
 	expiresAt := time.Time{}
 	if m.ttl > 0 {
-		expiresAt = m.now().Add(m.ttl)
+		expiresAt = time.Now().Add(m.ttl)
 	}
 
 	m.mu.Lock()
 	if m.items == nil {
-		m.items = make(map[K]memoItem[V])
+		m.items = make(map[K]MemoItem[V])
 	}
-	m.items[key] = memoItem[V]{value: value, expiresAt: expiresAt}
+	m.items[key] = MemoItem[V]{value: value, expiresAt: expiresAt}
 	m.mu.Unlock()
 }
 
@@ -89,7 +89,7 @@ func (m *Memoizer[K, V]) Delete(key K) {
 
 func (m *Memoizer[K, V]) Clear() {
 	m.mu.Lock()
-	m.items = make(map[K]memoItem[V])
+	m.items = make(map[K]MemoItem[V])
 	m.mu.Unlock()
 }
 
