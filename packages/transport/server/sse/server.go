@@ -30,10 +30,10 @@ type Client struct {
 // Server 是一个 SSE (Server-Sent Events) 服务，实现 core.Endpoint 接口。
 // SSE 是单向推送（服务器 -> 浏览器），适合实时通知、消息推送等场景。
 type Server struct {
-	mu          sync.RWMutex
-	clients     map[string]*Client
-	bufferSize  int
-	started     bool
+	mu         sync.RWMutex
+	clients    map[string]*Client
+	bufferSize int
+	started    bool
 }
 
 // NewServer 创建一个新的 SSE 服务实例。

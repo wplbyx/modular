@@ -3,66 +3,56 @@ package caching
 import (
 	"context"
 	"time"
-
-	"modular/packages/infra/cache"
 )
 
-// CacheAside implements the Cache-Aside pattern
-// Read: Check cache -> If miss, read from DB -> Write to cache -> Return
-// Write: Update DB -> Invalidate cache
+// CacheAside 实现 Cache-Aside（旁路缓存）模式。
+// 读：查缓存 -> 未命中则从源加载 -> 回写缓存 -> 返回
+// 写：更新源 -> 失效缓存
 type CacheAside struct {
-	cache cache.Cache
-	ttl   cache.TTL
+	cache KVCache
+	ttl   time.Duration
 }
 
-// NewCacheAside creates a new CacheAside instance
-func NewCacheAside(c cache.Cache, ttl time.Duration) *CacheAside {
+// NewCacheAside 创建 CacheAside 实例
+func NewCacheAside(c KVCache, ttl time.Duration) *CacheAside {
 	return &CacheAside{
 		cache: c,
-		ttl:   cache.TTL(ttl),
+		ttl:   ttl,
 	}
 }
 
-// Get retrieves data using cache-aside pattern
+// Get 使用 cache-aside 模式读取数据
 func (ca *CacheAside) Get(ctx context.Context, key string, loader func() (string, error)) (string, error) {
-	// Try to get from cache first
 	val, err := ca.cache.Get(ctx, key)
 	if err == nil {
 		return val, nil
 	}
 
-	// Cache miss - load from source
 	data, err := loader()
 	if err != nil {
 		return "", err
 	}
 
-	// Store in cache
 	if err := ca.cache.Set(ctx, key, data, ca.ttl); err != nil {
-		// Log error but don't fail the operation
 	}
 
 	return data, nil
 }
 
-// Set updates both cache and source
+// Set 同时更新缓存和源
 func (ca *CacheAside) Set(ctx context.Context, key string, value string, writer func() error) error {
-	// Write to source first
 	if err := writer(); err != nil {
 		return err
 	}
 
-	// Invalidate cache
 	return ca.cache.Del(ctx, key)
 }
 
-// Delete removes from both cache and source
+// Delete 同时从缓存和源删除
 func (ca *CacheAside) Delete(ctx context.Context, key string, deleter func() error) error {
-	// Delete from source first
 	if err := deleter(); err != nil {
 		return err
 	}
 
-	// Remove from cache
 	return ca.cache.Del(ctx, key)
 }

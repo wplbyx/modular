@@ -13,12 +13,12 @@ import (
 
 // gRPCResolver 使用服务发现后端（Consul/K8s）解析服务地址。
 type gRPCResolver struct {
-	target   resolver.Target
-	cc       resolver.ClientConn
+	target    resolver.Target
+	cc        resolver.ClientConn
 	discovery Discovery
-	service  string
-	ctx      context.Context
-	cancel   context.CancelFunc
+	service   string
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // NewGRPCResolverBuilder 创建 gRPC 解析器构建器。
@@ -40,12 +40,12 @@ func (b *grpcResolverBuilder) Build(target resolver.Target, cc resolver.ClientCo
 	}
 
 	r := &gRPCResolver{
-		target:   target,
-		cc:       cc,
+		target:    target,
+		cc:        cc,
 		discovery: b.discovery,
-		service:  serviceName,
-		ctx:      ctx,
-		cancel:   cancel,
+		service:   serviceName,
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 
 	go r.watch()

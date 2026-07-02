@@ -6,16 +6,14 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"modular/packages/infra/cache"
 )
 
-// WriteBehind implements the Write-Behind (Write-Back) pattern
-// Write: Update cache immediately -> Async write to DB
-// Read: Check cache -> If miss, read from DB -> Write to cache
+// WriteBehind 实现 Write-Behind（异步写回）模式。
+// 写：立即更新缓存 -> 异步写入源
+// 读：查缓存 -> 未命中则从源读取 -> 回写缓存
 type WriteBehind struct {
-	cache         cache.Cache
-	ttl           cache.TTL
+	cache         KVCache
+	ttl           time.Duration
 	queue         chan writeTask
 	wg            sync.WaitGroup
 	pending       sync.WaitGroup
@@ -41,14 +39,14 @@ func WithWriteBehindWriter(writer WriteBehindWriter) WriteBehindOption {
 	}
 }
 
-// NewWriteBehind creates a new WriteBehind instance
-func NewWriteBehind(c cache.Cache, ttl time.Duration, queueSize int, opts ...WriteBehindOption) *WriteBehind {
+// NewWriteBehind 创建 WriteBehind 实例
+func NewWriteBehind(c KVCache, ttl time.Duration, queueSize int, opts ...WriteBehindOption) *WriteBehind {
 	if queueSize <= 0 {
 		queueSize = 1
 	}
 	wb := &WriteBehind{
 		cache:  c,
-		ttl:    cache.TTL(ttl),
+		ttl:    ttl,
 		queue:  make(chan writeTask, queueSize),
 		stopCh: make(chan struct{}),
 	}

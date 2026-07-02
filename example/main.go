@@ -64,10 +64,10 @@ func main() {
 		Mode:    "dev",
 		Version: "v1.0.0",
 	},
-		app.WithResource(db),        // 基础设施（Setup FIFO / Close LIFO）
-		app.WithResource(cache),    // 注册两个 resource 以观察 LIFO 关闭顺序
+		app.WithResource(db),         // 基础设施（Setup FIFO / Close LIFO）
+		app.WithResource(cache),      // 注册两个 resource 以观察 LIFO 关闭顺序
 		app.WithEndpoint(httpServer), // 传输入口（Startup 阻塞，Shutdown 解除）
-		app.WithServiceNode(node),  // 服务注册元数据（Registrar 可选）
+		app.WithServiceNode(node),    // 服务注册元数据（Registrar 可选）
 		// app.WithRegistrar(consul), // 接入真实注册中心时取消注释
 	)
 	if err != nil {

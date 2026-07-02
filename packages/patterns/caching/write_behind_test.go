@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"modular/packages/infra/cache"
 )
 
 func TestWriteBehindSetFlushesDefaultWriter(t *testing.T) {
@@ -105,7 +103,7 @@ func (c *memoryCache) Get(_ context.Context, key string) (string, error) {
 	return value, nil
 }
 
-func (c *memoryCache) Set(_ context.Context, key string, value string, _ cache.TTL) error {
+func (c *memoryCache) Set(_ context.Context, key string, value string, _ time.Duration) error {
 	c.mu.Lock()
 	c.items[key] = value
 	c.mu.Unlock()
@@ -126,6 +124,6 @@ func (c *memoryCache) Exists(_ context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
-func (c *memoryCache) Expire(context.Context, string, cache.TTL) error {
+func (c *memoryCache) Expire(_ context.Context, _ string, _ time.Duration) error {
 	return nil
 }

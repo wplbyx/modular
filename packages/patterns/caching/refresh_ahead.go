@@ -4,16 +4,14 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"modular/packages/infra/cache"
 )
 
-// RefreshAhead implements the Refresh-Ahead pattern
-// Proactively refresh cache before expiration
+// RefreshAhead 实现 Refresh-Ahead（提前刷新）模式。
+// 在缓存过期前主动刷新，避免读请求命中过期缓存。
 type RefreshAhead struct {
-	cache       cache.Cache
-	ttl         cache.TTL
-	refreshTime time.Duration // Time before expiration to refresh
+	cache       KVCache
+	ttl         time.Duration
+	refreshTime time.Duration // 过期前的提前刷新时间
 	entries     sync.Map      // key -> *refreshEntry
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
@@ -27,8 +25,8 @@ type refreshEntry struct {
 	mu        sync.RWMutex
 }
 
-// NewRefreshAhead creates a new RefreshAhead instance
-func NewRefreshAhead(c cache.Cache, ttl time.Duration, refreshBefore time.Duration) *RefreshAhead {
+// NewRefreshAhead 创建 RefreshAhead 实例
+func NewRefreshAhead(c KVCache, ttl time.Duration, refreshBefore time.Duration) *RefreshAhead {
 	if refreshBefore <= 0 {
 		refreshBefore = ttl / 2
 	}
@@ -37,12 +35,11 @@ func NewRefreshAhead(c cache.Cache, ttl time.Duration, refreshBefore time.Durati
 	}
 	ra := &RefreshAhead{
 		cache:       c,
-		ttl:         cache.TTL(ttl),
+		ttl:         ttl,
 		refreshTime: refreshBefore,
 		stopCh:      make(chan struct{}),
 	}
 
-	// Startup background refresher
 	ra.wg.Add(1)
 	go ra.refreshLoop()
 
@@ -73,7 +70,7 @@ func (ra *RefreshAhead) trackEntry(key string, loader func() (string, error)) {
 	entry := &refreshEntry{
 		key:       key,
 		loader:    loader,
-		expiresAt: time.Now().Add(time.Duration(ra.ttl)),
+		expiresAt: time.Now().Add(ra.ttl),
 	}
 	ra.entries.Store(key, entry)
 }
@@ -104,7 +101,7 @@ func (ra *RefreshAhead) refreshEntry(ctx context.Context, entry *refreshEntry) {
 	_ = ra.cache.Set(ctx, entry.key, data, ra.ttl)
 
 	entry.mu.Lock()
-	entry.expiresAt = time.Now().Add(time.Duration(ra.ttl))
+	entry.expiresAt = time.Now().Add(ra.ttl)
 	entry.mu.Unlock()
 }
 
@@ -128,7 +125,7 @@ func (ra *RefreshAhead) refreshLoop() {
 	}
 }
 
-// Stop stops the background refresher
+// Stop 停止后台刷新器
 func (ra *RefreshAhead) Stop() {
 	ra.stopOnce.Do(func() {
 		close(ra.stopCh)

@@ -13,25 +13,20 @@ import (
 	"modular/packages/infra/cache"
 )
 
-// Global client used by packages that need direct Redis access during wiring.
+// globalClient 是全局 Redis 客户端，供需要直接访问 Redis 的包在装配阶段使用。
 var globalClient *RedisCache
 
-// RedisCache implements cache.FullCacheWithBloom interface
+// RedisCache 封装 redis.UniversalClient，同时实现 cache.BloomFilter 接口。
+// 它保留完整的 Get/Set/Del 等方法供直接调用，但这些方法不再绑定到任何接口 ——
+// 消费方可以直接使用，也可以通过 GetClient() 拿到原生客户端。
 type RedisCache struct {
 	client redis.UniversalClient
 	bloom  map[string]bloomConfig
 	mu     sync.RWMutex
 }
 
-// Ensure RedisCache implements the interfaces
-var (
-	_ cache.Cache              = (*RedisCache)(nil)
-	_ cache.HashCache          = (*RedisCache)(nil)
-	_ cache.SortedSetCache     = (*RedisCache)(nil)
-	_ cache.BloomFilter        = (*RedisCache)(nil)
-	_ cache.FullCache          = (*RedisCache)(nil)
-	_ cache.FullCacheWithBloom = (*RedisCache)(nil)
-)
+// 确保 RedisCache 实现布隆过滤器接口
+var _ cache.BloomFilter = (*RedisCache)(nil)
 
 func GetClient() redis.UniversalClient {
 	if globalClient == nil {
