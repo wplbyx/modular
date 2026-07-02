@@ -8,13 +8,10 @@ import (
 
 func TestSubscriberEndpointWithSubscriberOnly(t *testing.T) {
 	sub := &testSubscriber{subscribed: make(chan string, 1)}
-	endpoint, err := NewSubscriberEndpoint("events", sub)
-	if err != nil {
-		t.Fatalf("NewSubscriberEndpoint() error = %v", err)
-	}
-	if err := endpoint.Subscribe(context.Background(), "topic", func(context.Context, Message) error { return nil }); err != nil {
-		t.Fatalf("Subscribe() error = %v", err)
-	}
+	endpoint := NewSubscriberEndpoint(
+		"events", sub, "topic",
+		func(context.Context, Message) error { return nil },
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -46,13 +43,12 @@ func TestSubscriberEndpointWithConnector(t *testing.T) {
 	sub := &testConnectorSubscriber{
 		testSubscriber: testSubscriber{subscribed: make(chan string, 1)},
 	}
-	endpoint, err := NewSubscriberEndpoint("events", sub)
-	if err != nil {
-		t.Fatalf("NewSubscriberEndpoint() error = %v", err)
-	}
-	if err := endpoint.Subscribe(context.Background(), "topic", func(context.Context, Message) error { return nil }); err != nil {
-		t.Fatalf("Subscribe() error = %v", err)
-	}
+	endpoint := NewSubscriberEndpoint(
+		"events", sub, "topic",
+		func(context.Context, Message) error { return nil },
+		WithConnect(sub.Connect),
+		WithDisconnect(sub.Disconnect),
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -66,8 +62,8 @@ func TestSubscriberEndpointWithConnector(t *testing.T) {
 	if err := endpoint.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
-	if sub.connects != 1 || sub.disconnects != 1 || sub.closed {
-		t.Fatalf("connects=%d disconnects=%d closed=%v", sub.connects, sub.disconnects, sub.closed)
+	if sub.connects != 1 || sub.disconnects != 1 || !sub.closed {
+		t.Fatalf("expected connects=1 disconnects=1 closed=true, got connects=%d disconnects=%d closed=%v", sub.connects, sub.disconnects, sub.closed)
 	}
 }
 

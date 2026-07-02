@@ -104,16 +104,4 @@ func NewCompositeResilience(
 
 	return Chain(middlewares...)
 }
-
-// Example usage:
-//
-// circuitBreaker := NewCircuitBreaker(CircuitBreakerConfig{Name: "serviceA"})
-// rateLimiter := NewRateLimiter(RateLimiterConfig{Name: "serviceA", Rate: 100})
-// bulkhead := NewBulkhead(BulkheadConfig{Name: "serviceA"})
-// retry := NewRetry(RetryConfig{Name: "serviceA"})
-//
-// resilientExecutor := NewCompositeResilience(circuitBreaker, rateLimiter, bulkhead, retry)
-// err := resilientExecutor(func(ctx context.Context) error {
-//     // 调用服务的代码
-//     return callService(ctx)
-// })(ctx)
+
