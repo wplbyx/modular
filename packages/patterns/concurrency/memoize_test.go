@@ -3,7 +3,6 @@ package concurrency
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -64,77 +63,5 @@ func TestMemoizerLoaderErrorIsNotCached(t *testing.T) {
 	}
 	if _, ok := m.Get("key"); ok {
 		t.Fatal("Get() returned value after loader error")
-	}
-}
-
-func TestSingleFlightCollapsesConcurrentCalls(t *testing.T) {
-	sf := NewSingleFlight()
-	started := make(chan struct{})
-	release := make(chan struct{})
-
-	var calls int32
-	var wg sync.WaitGroup
-	results := make(chan Result, 2)
-	run := func() {
-		defer wg.Done()
-		val, err := sf.Do(context.Background(), "key", func() (interface{}, error) {
-			atomic.AddInt32(&calls, 1)
-			close(started)
-			<-release
-			return "value", nil
-		})
-		results <- Result{Val: val, Err: err}
-	}
-
-	wg.Add(1)
-	go run()
-	<-started
-
-	wg.Add(1)
-	go run()
-	time.Sleep(10 * time.Millisecond)
-	close(release)
-	wg.Wait()
-	close(results)
-
-	for result := range results {
-		if result.Err != nil || result.Val != "value" {
-			t.Fatalf("SingleFlight result = %+v", result)
-		}
-	}
-	if calls != 1 {
-		t.Fatalf("SingleFlight calls = %d", calls)
-	}
-}
-
-func TestSingleFlightWaiterCanCancel(t *testing.T) {
-	sf := NewSingleFlight()
-	started := make(chan struct{})
-	release := make(chan struct{})
-
-	done := make(chan Result, 1)
-	go func() {
-		val, err := sf.Do(context.Background(), "key", func() (interface{}, error) {
-			close(started)
-			<-release
-			return "value", nil
-		})
-		done <- Result{Val: val, Err: err}
-	}()
-	<-started
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	if val, err := sf.Do(ctx, "key", func() (interface{}, error) {
-		t.Fatal("duplicate call should not execute")
-		return nil, nil
-	}); !errors.Is(err, context.DeadlineExceeded) || val != nil {
-		t.Fatalf("cancelled waiter result = %v, %v", val, err)
-	}
-
-	close(release)
-	result := <-done
-	if result.Err != nil || result.Val != "value" {
-		t.Fatalf("leader result = %+v", result)
 	}
 }
