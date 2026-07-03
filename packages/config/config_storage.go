@@ -17,7 +17,7 @@ type Storage struct {
 // DiskStorageConfig 本地磁盘存储配置
 type DiskStorageConfig struct {
 	RootDir string `mapstructure:"RootDir"` // 存储根目录（绝对路径，跨平台）
-	BaseUrl string `mapstructure:"BaseUrl"` // 访问域名（用于 GetUsefulUrl：baseUrl + key）
+	BaseUrl string `mapstructure:"BaseUrl"` // 访问域名（用于 GetUrl：baseUrl + key）
 }
 
 // OSSStorageConfig 阿里云 OSS 对象存储配置

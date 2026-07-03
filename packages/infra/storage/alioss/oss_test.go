@@ -3,83 +3,81 @@ package alioss
 import (
 	"bytes"
 	"context"
-	"errors"
+	"fmt"
 	"io"
-	"modular/packages/infra/storage"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"modular/packages/infra/storage"
+
 	aliyunoss "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
+	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mockOSSClient 实现 ossClient，按需覆盖单个方法。
-type mockOSSClient struct {
-	putObject      func(context.Context, *aliyunoss.PutObjectRequest) (*aliyunoss.PutObjectResult, error)
-	getObject      func(context.Context, *aliyunoss.GetObjectRequest) (*aliyunoss.GetObjectResult, error)
-	deleteObject   func(context.Context, *aliyunoss.DeleteObjectRequest) (*aliyunoss.DeleteObjectResult, error)
-	headObject     func(context.Context, *aliyunoss.HeadObjectRequest) (*aliyunoss.HeadObjectResult, error)
-	deleteMulti    func(context.Context, *aliyunoss.DeleteMultipleObjectsRequest) (*aliyunoss.DeleteMultipleObjectsResult, error)
-	listV2         func(context.Context, *aliyunoss.ListObjectsV2Request) (*aliyunoss.ListObjectsV2Result, error)
-	initMultipart  func(context.Context, *aliyunoss.InitiateMultipartUploadRequest) (*aliyunoss.InitiateMultipartUploadResult, error)
-	uploadPart     func(context.Context, *aliyunoss.UploadPartRequest) (*aliyunoss.UploadPartResult, error)
-	completeMulti  func(context.Context, *aliyunoss.CompleteMultipartUploadRequest) (*aliyunoss.CompleteMultipartUploadResult, error)
-	abortMultipart func(context.Context, *aliyunoss.AbortMultipartUploadRequest) (*aliyunoss.AbortMultipartUploadResult, error)
+// newTestStorage 起一个本地 httptest.Server，构造指向它的真实 *oss.Client。
+// 与官方 SDK 自测（client_mock_test.go）同款：用 WithEndpoint 把请求劫持到本地。
+func newTestStorage(t *testing.T, h http.HandlerFunc) *OssStorage {
+	t.Helper()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	cfg := aliyunoss.LoadDefaultConfig().
+		WithRegion("cn-hangzhou").
+		WithCredentialsProvider(credentials.NewAnonymousCredentialsProvider()).
+		WithEndpoint(srv.URL)
+	return &OssStorage{
+		client:        aliyunoss.NewClient(cfg),
+		bucket:        "test-bucket",
+		region:        "cn-hangzhou",
+		endpoint:      "",
+		useCName:      false,
+		publicBaseURL: "https://cdn.example.com",
+		baseDir:       "prefix",
+	}
 }
 
-func (m *mockOSSClient) PutObject(ctx context.Context, r *aliyunoss.PutObjectRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.PutObjectResult, error) {
-	return m.putObject(ctx, r)
-}
-func (m *mockOSSClient) GetObject(ctx context.Context, r *aliyunoss.GetObjectRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.GetObjectResult, error) {
-	return m.getObject(ctx, r)
-}
-func (m *mockOSSClient) DeleteObject(ctx context.Context, r *aliyunoss.DeleteObjectRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.DeleteObjectResult, error) {
-	return m.deleteObject(ctx, r)
-}
-func (m *mockOSSClient) HeadObject(ctx context.Context, r *aliyunoss.HeadObjectRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.HeadObjectResult, error) {
-	return m.headObject(ctx, r)
-}
-func (m *mockOSSClient) DeleteMultipleObjects(ctx context.Context, r *aliyunoss.DeleteMultipleObjectsRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.DeleteMultipleObjectsResult, error) {
-	return m.deleteMulti(ctx, r)
-}
-func (m *mockOSSClient) ListObjectsV2(ctx context.Context, r *aliyunoss.ListObjectsV2Request, _ ...func(*aliyunoss.Options)) (*aliyunoss.ListObjectsV2Result, error) {
-	return m.listV2(ctx, r)
-}
-func (m *mockOSSClient) InitiateMultipartUpload(ctx context.Context, r *aliyunoss.InitiateMultipartUploadRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.InitiateMultipartUploadResult, error) {
-	return m.initMultipart(ctx, r)
-}
-func (m *mockOSSClient) UploadPart(ctx context.Context, r *aliyunoss.UploadPartRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.UploadPartResult, error) {
-	return m.uploadPart(ctx, r)
-}
-func (m *mockOSSClient) CompleteMultipartUpload(ctx context.Context, r *aliyunoss.CompleteMultipartUploadRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.CompleteMultipartUploadResult, error) {
-	return m.completeMulti(ctx, r)
-}
-func (m *mockOSSClient) AbortMultipartUpload(ctx context.Context, r *aliyunoss.AbortMultipartUploadRequest, _ ...func(*aliyunoss.Options)) (*aliyunoss.AbortMultipartUploadResult, error) {
-	return m.abortMultipart(ctx, r)
-}
-
-func newMockOSSStorage(c ossClient) *OssStorage {
-	return &OssStorage{client: c, bucket: "bk", region: "cn-hangzhou", endpoint: "", useCName: false, publicBaseURL: "https://cdn.example.com", baseDir: "prefix"}
+// writeOSSError 回报一个 OSS 风格的 XML 错误（如 404 NoSuchKey）。
+func writeOSSError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("X-Oss-Request-Id", "test-req-id")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>%s</Code>
+  <Message>not found</Message>
+  <RequestId>test-req-id</RequestId>
+</Error>`, code)
 }
 
 func TestOSS_UploadDownloadDelete(t *testing.T) {
-	var gotKey string
-	m := &mockOSSClient{
-		putObject: func(_ context.Context, r *aliyunoss.PutObjectRequest) (*aliyunoss.PutObjectResult, error) {
-			gotKey = *r.Key
-			return &aliyunoss.PutObjectResult{}, nil
-		},
-		getObject: func(_ context.Context, r *aliyunoss.GetObjectRequest) (*aliyunoss.GetObjectResult, error) {
-			return &aliyunoss.GetObjectResult{Body: io.NopCloser(bytes.NewReader([]byte("hello")))}, nil
-		},
-		deleteObject: func(_ context.Context, r *aliyunoss.DeleteObjectRequest) (*aliyunoss.DeleteObjectResult, error) {
-			return &aliyunoss.DeleteObjectResult{}, nil
-		},
-	}
-	s := newMockOSSStorage(m)
-	require.NoError(t, s.Upload(context.Background(), "a/b.txt", bytes.NewReader([]byte("hello"))))
-	assert.Equal(t, "prefix/a/b.txt", gotKey) // baseDir 前缀生效
+	var gotPath string
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut: // Upload → PUT /test-bucket/{objectKey}
+			gotPath = r.URL.Path
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("ETag", "etag-1")
+			w.WriteHeader(http.StatusOK)
+		case http.MethodGet: // Download → GET /test-bucket/{objectKey}
+			w.Header().Set("Content-Length", "5")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("hello"))
+		case http.MethodDelete: // Delete → DELETE /test-bucket/{objectKey}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	})
 
+	// Upload：路径应以 objectKey（含 baseDir 前缀）结尾
+	require.NoError(t, s.Upload(context.Background(), "a/b.txt", bytes.NewReader([]byte("hello"))))
+	assert.True(t, strings.HasSuffix(gotPath, "prefix/a/b.txt"), "path=%s", gotPath)
+
+	// Download：应拿到上传内容
 	rc, err := s.Download(context.Background(), "a/b.txt")
 	require.NoError(t, err)
 	b, _ := io.ReadAll(rc)
@@ -89,41 +87,51 @@ func TestOSS_UploadDownloadDelete(t *testing.T) {
 	require.NoError(t, s.Delete(context.Background(), "a/b.txt"))
 }
 
-func TestOSS_Exists_Stat(t *testing.T) {
-	notFound := &aliyunoss.ServiceError{StatusCode: 404, Code: "NoSuchKey"}
-	m := &mockOSSClient{
-		headObject: func(_ context.Context, r *aliyunoss.HeadObjectRequest) (*aliyunoss.HeadObjectResult, error) {
-			// 实现会把 key 拼成完整 objectKey（baseDir="prefix" 前缀）
-			if *r.Key == "prefix/missing" {
-				return nil, notFound
-			}
-			return &aliyunoss.HeadObjectResult{ContentLength: 42}, nil
-		},
-	}
-	s := newMockOSSStorage(m)
+func TestOSS_Exists_GetMeta(t *testing.T) {
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		// Exists / GetMeta 都走 HeadObject，路径形如 /test-bucket/prefix/{key}
+		if r.Method != http.MethodHead {
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "prefix/missing") {
+			writeOSSError(w, http.StatusNotFound, "NoSuchKey")
+			return
+		}
+		w.Header().Set("Content-Length", "42")
+		w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// missing → NotFound 被识别为 false（不报错）
 	exists, err := s.Exists(context.Background(), "missing")
 	require.NoError(t, err)
 	assert.False(t, exists)
 
+	// present → true
 	exists, err = s.Exists(context.Background(), "present")
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	item, err := s.Stat(context.Background(), "present")
+	// GetMeta → Content-Length 透传为 Size
+	item, err := s.GetMeta(context.Background(), "present")
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), item.Size)
 }
 
 func TestOSS_BatchDelete_Quiet(t *testing.T) {
 	var seenQuiet bool
-	m := &mockOSSClient{
-		deleteMulti: func(_ context.Context, r *aliyunoss.DeleteMultipleObjectsRequest) (*aliyunoss.DeleteMultipleObjectsResult, error) {
-			seenQuiet = r.Delete.Quiet
-			// 静默模式不返回已删除列表
-			return &aliyunoss.DeleteMultipleObjectsResult{}, nil
-		},
-	}
-	s := newMockOSSStorage(m)
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		// POST /?delete= 请求 body XML 里带 <Quiet>...</Quiet>
+		body, _ := io.ReadAll(r.Body)
+		seenQuiet = strings.Contains(string(body), "<Quiet>true</Quiet>")
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		// quiet 模式不返回已删除列表
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><DeleteResult></DeleteResult>`))
+	})
+
 	deleted, err := s.BatchDelete(context.Background(), []string{"a", "b"}, storage.WithQuiet(true))
 	require.NoError(t, err)
 	assert.True(t, seenQuiet)
@@ -132,50 +140,52 @@ func TestOSS_BatchDelete_Quiet(t *testing.T) {
 
 func TestOSS_BatchDelete_Verbose(t *testing.T) {
 	var seenQuiet bool
-	m := &mockOSSClient{
-		deleteMulti: func(_ context.Context, r *aliyunoss.DeleteMultipleObjectsRequest) (*aliyunoss.DeleteMultipleObjectsResult, error) {
-			seenQuiet = r.Delete.Quiet
-			// 非静默模式：服务端返回已删除对象完整 objectKey（含 baseDir 前缀）
-			return &aliyunoss.DeleteMultipleObjectsResult{
-				DeletedObjects: []aliyunoss.DeletedInfo{
-					{Key: aliyunoss.Ptr("prefix/a")},
-					{Key: aliyunoss.Ptr("prefix/b")},
-				},
-			}, nil
-		},
-	}
-	s := newMockOSSStorage(m)
-	// 注意：不设置 WithQuiet(true)，走 verbose 分支
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenQuiet = strings.Contains(string(body), "<Quiet>true</Quiet>")
+		// 非 quiet 模式：服务端回完整 objectKey（含 baseDir 前缀）
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<DeleteResult>
+  <Deleted><Key>prefix/a</Key></Deleted>
+  <Deleted><Key>prefix/b</Key></Deleted>
+</DeleteResult>`))
+	})
+
+	// 不设 WithQuiet → 走 verbose 分支
 	deleted, err := s.BatchDelete(context.Background(), []string{"a", "b"})
 	require.NoError(t, err)
 	assert.False(t, seenQuiet)
-	// baseDir("prefix")+"/" 前缀被剥离，还原为相对 key
+	// baseDir("prefix")+"/" 前缀被剥离
 	assert.Equal(t, []string{"a", "b"}, deleted)
 }
 
 func TestOSS_PrefixIterator_Pagination(t *testing.T) {
 	calls := 0
-	m := &mockOSSClient{
-		listV2: func(_ context.Context, r *aliyunoss.ListObjectsV2Request) (*aliyunoss.ListObjectsV2Result, error) {
-			calls++
-			if calls == 1 {
-				return &aliyunoss.ListObjectsV2Result{
-					IsTruncated:           true,
-					NextContinuationToken: aliyunoss.Ptr("tok2"),
-					Contents: []aliyunoss.ObjectProperties{
-						{Key: aliyunoss.Ptr("prefix/1"), Size: 10},
-					},
-				}, nil
-			}
-			return &aliyunoss.ListObjectsV2Result{
-				IsTruncated: false,
-				Contents: []aliyunoss.ObjectProperties{
-					{Key: aliyunoss.Ptr("prefix/2"), Size: 20},
-				},
-			}, nil
-		},
-	}
-	s := newMockOSSStorage(m)
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		// GET /?list-type=2&... ，第二页带 continuation-token=tok2
+		calls++
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		if calls == 1 {
+			// 第一页：截断，给 NextContinuationToken + 一条 key
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult>
+  <IsTruncated>true</IsTruncated>
+  <NextContinuationToken>tok2</NextContinuationToken>
+  <Contents><Key>prefix/1</Key><Size>10</Size></Contents>
+</ListBucketResult>`))
+			return
+		}
+		// 第二页：收尾
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult>
+  <IsTruncated>false</IsTruncated>
+  <Contents><Key>prefix/2</Key><Size>20</Size></Contents>
+</ListBucketResult>`))
+	})
+
 	var keys []string
 	err := s.PrefixIterator(context.Background(), "prefix", func(_ context.Context, items ...storage.ObjectItem) error {
 		for _, it := range items {
@@ -184,30 +194,49 @@ func TestOSS_PrefixIterator_Pagination(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	// mock 返回完整 objectKey "prefix/1"、"prefix/2"；PrefixIterator 剥离 baseDir("prefix")+"/" 前缀后得到相对 key "1"、"2"
+	// 返回完整 objectKey "prefix/1"/"prefix/2"，剥离 baseDir 前缀后得 "1"/"2"
 	assert.Equal(t, []string{"1", "2"}, keys)
 	assert.Equal(t, 2, calls)
 }
 
 func TestOSS_MultipartFlow(t *testing.T) {
-	m := &mockOSSClient{
-		initMultipart: func(_ context.Context, r *aliyunoss.InitiateMultipartUploadRequest) (*aliyunoss.InitiateMultipartUploadResult, error) {
-			return &aliyunoss.InitiateMultipartUploadResult{Bucket: aliyunoss.Ptr("bk"), Key: r.Key, UploadId: aliyunoss.Ptr("uid-1")}, nil
-		},
-		uploadPart: func(_ context.Context, r *aliyunoss.UploadPartRequest) (*aliyunoss.UploadPartResult, error) {
-			return &aliyunoss.UploadPartResult{ETag: aliyunoss.Ptr("etag-" + (*r.UploadId))}, nil
-		},
-		completeMulti: func(_ context.Context, r *aliyunoss.CompleteMultipartUploadRequest) (*aliyunoss.CompleteMultipartUploadResult, error) {
-			if *r.UploadId != "uid-1" {
-				return nil, errors.New("bad upload id")
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		// POST /{key}?uploads=            → InitiateMultipartUpload
+		// PUT  /{key}?partNumber=&uploadId= → UploadPart
+		// POST /{key}?uploadId=            → CompleteMultipartUpload
+		// DELETE /{key}?uploadId=          → AbortMultipartUpload
+		switch {
+		case r.Method == http.MethodPost && r.URL.Query().Has("uploads"):
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<InitiateMultipartUploadResult>
+  <Bucket>test-bucket</Bucket>
+  <Key>prefix/big/file</Key>
+  <UploadId>uid-1</UploadId>
+</InitiateMultipartUploadResult>`)
+		case r.Method == http.MethodPut && r.URL.Query().Has("uploadId"):
+			// UploadPart：回 ETag 头（原样透传，不加引号）
+			_, _ = io.Copy(io.Discard, r.Body)
+			uid := r.URL.Query().Get("uploadId")
+			w.Header().Set("ETag", "etag-"+uid)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Query().Has("uploadId"):
+			// CompleteMultipartUpload：校验 uploadId
+			if r.URL.Query().Get("uploadId") != "uid-1" {
+				writeOSSError(w, http.StatusBadRequest, "InvalidArgument")
+				return
 			}
-			return &aliyunoss.CompleteMultipartUploadResult{}, nil
-		},
-		abortMultipart: func(_ context.Context, r *aliyunoss.AbortMultipartUploadRequest) (*aliyunoss.AbortMultipartUploadResult, error) {
-			return &aliyunoss.AbortMultipartUploadResult{}, nil
-		},
-	}
-	s := newMockOSSStorage(m)
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodDelete && r.URL.Query().Has("uploadId"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	})
+
 	ctx := context.Background()
 	sess, err := s.InitiateMultipartUpload(ctx, "big/file")
 	require.NoError(t, err)

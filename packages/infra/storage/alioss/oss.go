@@ -20,23 +20,9 @@ import (
 
 var _ storage.Storage = (*OssStorage)(nil)
 
-// ossClient 隔离 v2 Client，便于测试 mock。*oss.Client 天然满足该接口。
-type ossClient interface {
-	PutObject(context.Context, *oss.PutObjectRequest, ...func(*oss.Options)) (*oss.PutObjectResult, error)
-	GetObject(context.Context, *oss.GetObjectRequest, ...func(*oss.Options)) (*oss.GetObjectResult, error)
-	DeleteObject(context.Context, *oss.DeleteObjectRequest, ...func(*oss.Options)) (*oss.DeleteObjectResult, error)
-	HeadObject(context.Context, *oss.HeadObjectRequest, ...func(*oss.Options)) (*oss.HeadObjectResult, error)
-	DeleteMultipleObjects(context.Context, *oss.DeleteMultipleObjectsRequest, ...func(*oss.Options)) (*oss.DeleteMultipleObjectsResult, error)
-	ListObjectsV2(context.Context, *oss.ListObjectsV2Request, ...func(*oss.Options)) (*oss.ListObjectsV2Result, error)
-	InitiateMultipartUpload(context.Context, *oss.InitiateMultipartUploadRequest, ...func(*oss.Options)) (*oss.InitiateMultipartUploadResult, error)
-	UploadPart(context.Context, *oss.UploadPartRequest, ...func(*oss.Options)) (*oss.UploadPartResult, error)
-	CompleteMultipartUpload(context.Context, *oss.CompleteMultipartUploadRequest, ...func(*oss.Options)) (*oss.CompleteMultipartUploadResult, error)
-	AbortMultipartUpload(context.Context, *oss.AbortMultipartUploadRequest, ...func(*oss.Options)) (*oss.AbortMultipartUploadResult, error)
-}
-
-// applyIOOptions 将可选参数合并为 IOOptions。
-func applyIOOptions(opts []storage.IOOption) *storage.IOOptions {
-	o := &storage.IOOptions{}
+// applyIOOptions 将可选参数合并为 IOConfigOption。
+func applyIOOptions(opts []storage.IOConfigOptionFunc) *storage.IOConfigOption {
+	o := &storage.IOConfigOption{}
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -45,7 +31,7 @@ func applyIOOptions(opts []storage.IOOption) *storage.IOOptions {
 
 // OssStorage 是 Storage 的阿里云 OSS（v2 SDK）实现。
 type OssStorage struct {
-	client        ossClient
+	client        *oss.Client
 	bucket        string
 	region        string
 	endpoint      string
@@ -104,7 +90,7 @@ func (s *OssStorage) buildObjectKey(key string) string {
 }
 
 // GetUsefulUrl 生成可直接访问的完整 URL。
-func (s *OssStorage) GetUsefulUrl(key string) string {
+func (s *OssStorage) GetUrl(key string) string {
 	if key == "" {
 		return ""
 	}
@@ -128,7 +114,7 @@ func (s *OssStorage) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 // Upload 上传单个文件。
-func (s *OssStorage) Upload(ctx context.Context, key string, body io.Reader, opts ...storage.IOOption) error {
+func (s *OssStorage) Upload(ctx context.Context, key string, body io.Reader, opts ...storage.IOConfigOptionFunc) error {
 	o := applyIOOptions(opts)
 	req := &oss.PutObjectRequest{
 		Bucket: oss.Ptr(s.bucket),
@@ -148,7 +134,7 @@ func (s *OssStorage) Upload(ctx context.Context, key string, body io.Reader, opt
 }
 
 // Delete 删除单个文件。
-func (s *OssStorage) Delete(ctx context.Context, key string, _ ...storage.IOOption) error {
+func (s *OssStorage) Delete(ctx context.Context, key string, _ ...storage.IOConfigOptionFunc) error {
 	if _, err := s.client.DeleteObject(ctx, &oss.DeleteObjectRequest{
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(s.buildObjectKey(key)),
@@ -159,7 +145,7 @@ func (s *OssStorage) Delete(ctx context.Context, key string, _ ...storage.IOOpti
 }
 
 // Download 下载单个文件，调用方需关闭返回的 io.ReadCloser。
-func (s *OssStorage) Download(ctx context.Context, key string, _ ...storage.IOOption) (io.ReadCloser, error) {
+func (s *OssStorage) Download(ctx context.Context, key string, _ ...storage.IOConfigOptionFunc) (io.ReadCloser, error) {
 	out, err := s.client.GetObject(ctx, &oss.GetObjectRequest{
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(s.buildObjectKey(key)),
@@ -171,7 +157,7 @@ func (s *OssStorage) Download(ctx context.Context, key string, _ ...storage.IOOp
 }
 
 // Stat 获取元信息。
-func (s *OssStorage) Stat(ctx context.Context, key string) (storage.ObjectItem, error) {
+func (s *OssStorage) GetMeta(ctx context.Context, key string) (storage.ObjectItem, error) {
 	res, err := s.client.HeadObject(ctx, &oss.HeadObjectRequest{
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(s.buildObjectKey(key)),
@@ -187,7 +173,7 @@ func (s *OssStorage) Stat(ctx context.Context, key string) (storage.ObjectItem, 
 }
 
 // BatchUpload 批量上传（errgroup 并发，错误聚合）。
-func (s *OssStorage) BatchUpload(ctx context.Context, tasks []storage.UploadTask, opts ...storage.IOOption) error {
+func (s *OssStorage) BatchUpload(ctx context.Context, tasks []storage.UploadTask, opts ...storage.IOConfigOptionFunc) error {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -217,7 +203,7 @@ func (s *OssStorage) BatchUpload(ctx context.Context, tasks []storage.UploadTask
 }
 
 // BatchDelete 批量删除，返回成功删除的 key（相对路径）。
-func (s *OssStorage) BatchDelete(ctx context.Context, keys []string, opts ...storage.IOOption) ([]string, error) {
+func (s *OssStorage) BatchDelete(ctx context.Context, keys []string, opts ...storage.IOConfigOptionFunc) ([]string, error) {
 	o := applyIOOptions(opts)
 	prefix := ""
 	if s.baseDir != "" {
@@ -267,7 +253,7 @@ func (s *OssStorage) BatchDelete(ctx context.Context, keys []string, opts ...sto
 }
 
 // DeleteByPrefix 按前缀删除（PrefixIterator + 每 1000 条 BatchDelete）。
-func (s *OssStorage) DeleteByPrefix(ctx context.Context, prefix string, opts ...storage.IOOption) error {
+func (s *OssStorage) DeleteByPrefix(ctx context.Context, prefix string, opts ...storage.IOConfigOptionFunc) error {
 	if prefix == "" {
 		return errors.New("DeleteByPrefix: prefix must not be empty")
 	}
@@ -371,7 +357,7 @@ func (s *OssStorage) MultipartUpload(ctx context.Context, session storage.Multip
 }
 
 // CompleteMultipartUpload 完成分片上传。
-func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storage.MultipartUploadSession, parts []storage.UploadPartResponse, _ ...storage.IOOption) error {
+func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storage.MultipartUploadSession, parts []storage.UploadPartResponse, _ ...storage.IOConfigOptionFunc) error {
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}

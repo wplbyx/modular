@@ -7,15 +7,7 @@ import (
 	"math/big"
 )
 
-func RandomHex(length int) string {
-	value, err := RandomHexE(length)
-	if err != nil {
-		panic(err)
-	}
-	return value
-}
-
-func RandomHexE(length int) (string, error) {
+func RandomHex(length int) (string, error) {
 	if length <= 0 {
 		return "", nil
 	}
@@ -27,39 +19,15 @@ func RandomHexE(length int) (string, error) {
 	return hex.EncodeToString(buf)[:length], nil
 }
 
-func RandomCode(length int) string {
-	value, err := RandomCodeE(length)
-	if err != nil {
-		panic(err)
-	}
-	return value
+func RandomCode(length int) (string, error) {
+	return random("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", length)
 }
 
-func RandomCodeE(length int) (string, error) {
-	return randomE("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", length)
+func RandomNumber(length int) (string, error) {
+	return random("0123456789", length)
 }
 
-func RandomNumber(length int) string {
-	value, err := RandomNumberE(length)
-	if err != nil {
-		panic(err)
-	}
-	return value
-}
-
-func RandomNumberE(length int) (string, error) {
-	return randomE("0123456789", length)
-}
-
-func random(bytes string, length int) string {
-	value, err := randomE(bytes, length)
-	if err != nil {
-		panic(err)
-	}
-	return value
-}
-
-func randomE(bytes string, length int) (string, error) {
+func random(bytes string, length int) (string, error) {
 	if length <= 0 || len(bytes) == 0 {
 		return "", nil
 	}

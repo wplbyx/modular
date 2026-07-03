@@ -9,6 +9,7 @@ const (
 )
 
 // IndexDefinition represents a database index for migration tooling.
+
 type IndexDefinition struct {
 	Name    string
 	Columns []string

@@ -43,8 +43,8 @@ type UploadPartResponse struct {
 // Functional Options
 // ==========================================
 
-// IOOptions 封装通用上传/下载/删除的可选参数。
-type IOOptions struct {
+// IOConfigOption 封装通用上传/下载/删除的可选参数。
+type IOConfigOption struct {
 	Quiet         bool              // 批量删除时是否开启静默模式（OSS quiet 模式下服务端不返回已删除对象列表，故 BatchDelete 返回空切片）
 	ContentType   string            // 上传媒体类型，如 "image/png"
 	VersionID     string            // 操作指定版本的对象
@@ -52,32 +52,32 @@ type IOOptions struct {
 	Meta          map[string]string // 自定义元数据
 }
 
-// IOOption 配置 IOOptions。
-type IOOption func(*IOOptions)
+// IOConfigOptionFunc 配置 IOConfigOption。
+type IOConfigOptionFunc func(*IOConfigOption)
 
 // WithQuiet 设置批量删除是否开启静默模式。
-func WithQuiet(quiet bool) IOOption {
-	return func(o *IOOptions) { o.Quiet = quiet }
+func WithQuiet(quiet bool) IOConfigOptionFunc {
+	return func(o *IOConfigOption) { o.Quiet = quiet }
 }
 
 // WithContentType 设置上传文件的 Content-Type。
-func WithContentType(contentType string) IOOption {
-	return func(o *IOOptions) { o.ContentType = contentType }
+func WithContentType(contentType string) IOConfigOptionFunc {
+	return func(o *IOConfigOption) { o.ContentType = contentType }
 }
 
 // WithVersionID 操作指定历史版本的文件。
-func WithVersionID(versionID string) IOOption {
-	return func(o *IOOptions) { o.VersionID = versionID }
+func WithVersionID(versionID string) IOConfigOptionFunc {
+	return func(o *IOConfigOption) { o.VersionID = versionID }
 }
 
 // WithConcurrency 设置批处理内部并发数。
-func WithConcurrency(num int) IOOption {
-	return func(o *IOOptions) { o.ConcurrentNum = num }
+func WithConcurrency(num int) IOConfigOptionFunc {
+	return func(o *IOConfigOption) { o.ConcurrentNum = num }
 }
 
 // WithMeta 设置上传或分片完成时附加的自定义元数据。
-func WithMeta(meta map[string]string) IOOption {
-	return func(o *IOOptions) {
+func WithMeta(meta map[string]string) IOConfigOptionFunc {
+	return func(o *IOConfigOption) {
 		if o.Meta == nil {
 			o.Meta = make(map[string]string)
 		}
@@ -94,24 +94,24 @@ func WithMeta(meta map[string]string) IOOption {
 // Storage 是统一的存储抽象接口（disk / oss 均完整实现）。
 type Storage interface {
 	// --- 路径与元信息 ---
-	GetUsefulUrl(key string) string
-	Stat(ctx context.Context, key string) (ObjectItem, error)
+	GetUrl(key string) string
+	GetMeta(ctx context.Context, key string) (ObjectItem, error)
 
 	// --- 基础单文件 CRUD ---
 	Exists(ctx context.Context, key string) (bool, error)
-	Upload(ctx context.Context, key string, body io.Reader, opts ...IOOption) error
-	Delete(ctx context.Context, key string, opts ...IOOption) error
-	Download(ctx context.Context, key string, opts ...IOOption) (io.ReadCloser, error)
+	Upload(ctx context.Context, key string, body io.Reader, opts ...IOConfigOptionFunc) error
+	Delete(ctx context.Context, key string, opts ...IOConfigOptionFunc) error
+	Download(ctx context.Context, key string, opts ...IOConfigOptionFunc) (io.ReadCloser, error)
 
 	// --- 批量与高级 ---
-	BatchUpload(ctx context.Context, tasks []UploadTask, opts ...IOOption) error
-	BatchDelete(ctx context.Context, keys []string, opts ...IOOption) ([]string, error)
-	DeleteByPrefix(ctx context.Context, prefix string, opts ...IOOption) error
+	BatchUpload(ctx context.Context, tasks []UploadTask, opts ...IOConfigOptionFunc) error
+	BatchDelete(ctx context.Context, keys []string, opts ...IOConfigOptionFunc) ([]string, error)
+	DeleteByPrefix(ctx context.Context, prefix string, opts ...IOConfigOptionFunc) error
 	PrefixIterator(ctx context.Context, prefix string, callback ListCallback) error
 
 	// --- 大文件分片上传 ---
 	InitiateMultipartUpload(ctx context.Context, key string) (MultipartUploadSession, error)
-	CompleteMultipartUpload(ctx context.Context, session MultipartUploadSession, parts []UploadPartResponse, opts ...IOOption) error
+	CompleteMultipartUpload(ctx context.Context, session MultipartUploadSession, parts []UploadPartResponse, opts ...IOConfigOptionFunc) error
 	CancelMultipartUpload(ctx context.Context, session MultipartUploadSession) error
 	MultipartUpload(ctx context.Context, session MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (UploadPartResponse, error)
 }
@@ -134,9 +134,9 @@ var ErrUnsupportedStorageType = fmt.Errorf("unsupported storage type")
 //	}
 //}
 
-// ApplyIOOptions merges variable options into a final IOOptions.
-func ApplyIOOptions(opts []IOOption) IOOptions {
-	o := IOOptions{}
+// ApplyIOOptions merges variable options into a final IOConfigOption.
+func ApplyIOOptions(opts []IOConfigOptionFunc) IOConfigOption {
+	o := IOConfigOption{}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&o)

@@ -45,7 +45,7 @@ func NewOpenTelemetry(ctx context.Context, name, version string, telemetry *conf
 // Name 实现 app.Resource 接口
 func (o *OpenTelemetry) Name() string { return "telemetry" }
 
-// Init 初始化 OTel providers。如果已通过 NewOpenTelemetry 初始化则跳过。
+// Setup 初始化 OTel providers。如果已通过 NewOpenTelemetry 初始化则跳过。
 func (o *OpenTelemetry) Setup(ctx context.Context) error {
 	if o.Tp != nil || o.Mp != nil || o.Lp != nil {
 		return nil

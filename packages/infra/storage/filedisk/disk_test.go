@@ -1,4 +1,4 @@
-package disk
+package filedisk
 
 import (
 	"bytes"
@@ -131,19 +131,19 @@ func TestNewDiskStorage(t *testing.T) {
 	})
 }
 
-// ---------- safeFilePath ----------
+// ---------- GenKeyToFilePath ----------
 
 func TestSafeFilePath(t *testing.T) {
 	s := newTestStorage(t)
 
 	t.Run("empty key", func(t *testing.T) {
-		_, err := s.safeFilePath("")
+		_, err := s.GenKeyToFilePath("")
 		errContains(t, err, "key is empty")
 	})
 
 	t.Run("path traversal escapes root", func(t *testing.T) {
 		for _, key := range []string{"../secret", "../../etc/passwd", "a/../../escape"} {
-			_, err := s.safeFilePath(key)
+			_, err := s.GenKeyToFilePath(key)
 			if err == nil {
 				t.Fatalf("expected escape error for key %q", key)
 			}
@@ -154,20 +154,20 @@ func TestSafeFilePath(t *testing.T) {
 	})
 
 	t.Run("normal key under root", func(t *testing.T) {
-		p, err := s.safeFilePath("a/b/c.txt")
+		p, err := s.GenKeyToFilePath("a/b/c.txt")
 		noErr(t, err)
 		want := filepath.Join(s.rootDir, "a", "b", "c.txt")
 		assertEq(t, p, want)
 	})
 }
 
-// ---------- GetUsefulUrl ----------
+// ---------- GetUrl ----------
 
 func TestGetUsefulUrl(t *testing.T) {
 	s := newTestStorage(t)
-	assertEq(t, s.GetUsefulUrl(""), "")
-	assertEq(t, s.GetUsefulUrl("a/b.txt"), "cdn.example.com/a/b.txt")
-	assertEq(t, s.GetUsefulUrl("/a/b.txt"), "cdn.example.com/a/b.txt")
+	assertEq(t, s.GetUrl(""), "")
+	assertEq(t, s.GetUrl("a/b.txt"), "cdn.example.com/a/b.txt")
+	assertEq(t, s.GetUrl("/a/b.txt"), "cdn.example.com/a/b.txt")
 }
 
 // ---------- Exists ----------
@@ -231,7 +231,7 @@ func TestDelete(t *testing.T) {
 	mustErr(t, s.Delete(ctx, "../escape"))
 }
 
-// ---------- Stat ----------
+// ---------- GetMeta ----------
 
 func TestStat(t *testing.T) {
 	ctx := context.Background()
@@ -240,13 +240,13 @@ func TestStat(t *testing.T) {
 	body := []byte("stat-me-body")
 	noErr(t, s.Upload(ctx, "stat/me.txt", bytes.NewReader(body)))
 
-	item, err := s.Stat(ctx, "stat/me.txt")
+	item, err := s.GetMeta(ctx, "stat/me.txt")
 	noErr(t, err)
 	assertEq(t, item.Key, "stat/me.txt")
 	assertEq(t, item.Size, int64(len(body)))
 	assertNotEq(t, item.LastModified, int64(0))
 
-	_, err = s.Stat(ctx, "missing")
+	_, err = s.GetMeta(ctx, "missing")
 	mustErr(t, err)
 }
 
@@ -268,7 +268,7 @@ func TestBatchUpload(t *testing.T) {
 		}
 		noErr(t, s.BatchUpload(ctx, tasks))
 		for _, tk := range tasks {
-			p, _ := s.safeFilePath(tk.Key)
+			p, _ := s.GenKeyToFilePath(tk.Key)
 			if _, err := os.Stat(p); err != nil {
 				t.Fatalf("file %s not uploaded: %v", tk.Key, err)
 			}
@@ -283,7 +283,7 @@ func TestBatchUpload(t *testing.T) {
 		err := s.BatchUpload(ctx, tasks)
 		mustErr(t, err)
 		errContains(t, err, "escape")
-		p, _ := s.safeFilePath("batch2/ok.txt")
+		p, _ := s.GenKeyToFilePath("batch2/ok.txt")
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("valid task should still be uploaded: %v", err)
 		}
@@ -353,7 +353,7 @@ func TestDeleteByPrefix(t *testing.T) {
 		noErr(t, s.DeleteByPrefix(ctx, "tree/"))
 
 		for _, k := range files {
-			p, _ := s.safeFilePath(k)
+			p, _ := s.GenKeyToFilePath(k)
 			if _, err := os.Stat(p); !os.IsNotExist(err) {
 				t.Fatalf("file %s should be deleted (err=%v)", k, err)
 			}
@@ -444,7 +444,7 @@ func TestInitiateMultipartUpload(t *testing.T) {
 		noErr(t, err)
 		assertNotEq(t, sess.UploadID, "")
 		assertEq(t, sess.Key, "big/file.bin")
-		info, err := os.Stat(s.multipartDir(sess.UploadID))
+		info, err := os.Stat(s.MultipartTempDir(sess.UploadID))
 		noErr(t, err)
 		if !info.IsDir() {
 			t.Fatal("multipart temp dir not created")
@@ -505,7 +505,7 @@ func TestCompleteMultipartUpload(t *testing.T) {
 		got := readFile(t, filepath.Join(s.rootDir, "cmp", "ordered.bin"))
 		bytesEq(t, got, append(append([]byte{}, p1...), p2...))
 
-		if _, err := os.Stat(s.multipartDir(sess.UploadID)); !os.IsNotExist(err) {
+		if _, err := os.Stat(s.MultipartTempDir(sess.UploadID)); !os.IsNotExist(err) {
 			t.Fatalf("temp dir should be removed after complete (err=%v)", err)
 		}
 	})
@@ -522,7 +522,7 @@ func TestCancelMultipartUpload(t *testing.T) {
 	_, err = s.MultipartUpload(ctx, sess, 1, 4, strings.NewReader("part"))
 	noErr(t, err)
 
-	mpDir := s.multipartDir(sess.UploadID)
+	mpDir := s.MultipartTempDir(sess.UploadID)
 	if _, err := os.Stat(mpDir); err != nil {
 		t.Fatalf("temp dir should exist before cancel: %v", err)
 	}
