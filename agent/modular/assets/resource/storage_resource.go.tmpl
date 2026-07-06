@@ -1,0 +1,60 @@
+// internal/infra/storage_resource.go - template for the `resource storage` command.
+// Wraps a disk or oss backend as a core.Resource. The storage.NewStorage
+// factory is commented out in the library, so construct the backend directly:
+//   disk -> filedisk.NewDiskStorage(cfg)
+//   oss  -> alioss.NewOSSStorage(cfg)   (OSS v2 SDK only)
+// Inject the returned storage.Storage into repositories.
+// Tokens: {{PROJECT}}
+package infra
+
+import (
+	"context"
+	"fmt"
+
+	"modular/packages/config"
+	"modular/packages/core"
+	"modular/packages/infra/storage"
+	"modular/packages/infra/storage/alioss"
+	"modular/packages/infra/storage/filedisk"
+)
+
+type StorageResource struct {
+	cfg     *config.Storage
+	storage storage.Storage
+}
+
+func NewStorageResource(cfg *config.Storage) *StorageResource {
+	return &StorageResource{cfg: cfg}
+}
+
+func (r *StorageResource) Name() string { return "storage" }
+
+func (r *StorageResource) Setup(ctx context.Context) error {
+	switch r.cfg.Type {
+	case "disk":
+		s, err := filedisk.NewDiskStorage(r.cfg)
+		if err != nil {
+			return fmt.Errorf("disk storage setup: %w", err)
+		}
+		r.storage = s
+	case "oss":
+		s, err := alioss.NewOSSStorage(r.cfg)
+		if err != nil {
+			return fmt.Errorf("oss storage setup: %w", err)
+		}
+		r.storage = s
+	default:
+		return fmt.Errorf("%w: %s", storage.ErrUnsupportedStorageType, r.cfg.Type)
+	}
+	return nil
+}
+
+func (r *StorageResource) Close(ctx context.Context) error {
+	// storage.Storage has no Close method; nothing to release for disk/oss.
+	return nil
+}
+
+// Storage exposes the backend for repository injection.
+func (r *StorageResource) Storage() storage.Storage { return r.storage }
+
+var _ core.Resource = (*StorageResource)(nil)

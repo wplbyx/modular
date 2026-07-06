@@ -1,0 +1,28 @@
+// internal/{{DOMAIN}}/api/event.go - template for the `service {{DOMAIN}}` command.
+// Tokens: {{DOMAIN}}, {{PROJECT}}
+package api
+
+import (
+	"context"
+
+	"{{PROJECT}}/internal/{{DOMAIN}}/service"
+)
+
+// Handler is the domain's inbound event handler signature.
+// cmd/ adapts this into a pubsub.MessageHandler via pubsub.AsMessageHandler
+// (or directly), then wraps it with pubsub.NewSubscriberEndpoint to make a
+// core.Endpoint. api/ stays free of transport imports - the wiring lives in cmd/.
+type Handler func(ctx context.Context, topic string, payload []byte, headers map[string]string) error
+
+// NewEventHandler builds a Handler for the domain service.
+// Add one constructor per topic the domain subscribes to.
+func NewEventHandler(svc *service.Service) Handler {
+	return func(ctx context.Context, topic string, payload []byte, headers map[string]string) error {
+		_ = svc
+		_ = ctx
+		_ = topic
+		_ = payload
+		_ = headers
+		return nil
+	}
+}

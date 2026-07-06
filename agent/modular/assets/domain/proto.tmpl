@@ -1,0 +1,26 @@
+// proto/{{DOMAIN}}.proto - template for the `service {{DOMAIN}}` command.
+// Placeholder tokens the agent fills:
+//   {{DOMAIN}}        snake_case name (order, user) -> file + proto package
+//   {{DOMAIN_PASCAL}} PascalCase (Order, User)      -> service name
+//   {{GO_PACKAGE}}    e.g. {{project}}/common/{{DOMAIN}}
+// After editing run `gen` to produce common/{{DOMAIN}}_pb.go.
+
+syntax = "proto3";
+
+package {{DOMAIN}};
+
+option go_package = "{{GO_PACKAGE}}";
+
+// {{DOMAIN_PASCAL}}Service is the only cross-module interface for this domain.
+// Other domains call it via the generated client; never import internal/.
+service {{DOMAIN_PASCAL}}Service {
+  // rpc Example(ExampleRequest) returns (ExampleResponse);
+}
+
+message ExampleRequest {
+  string id = 1;
+}
+
+message ExampleResponse {
+  string id = 1;
+}

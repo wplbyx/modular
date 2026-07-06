@@ -1,0 +1,28 @@
+// internal/{{DOMAIN}}/service/service.go - template for the `service {{DOMAIN}}` command.
+// Tokens: {{DOMAIN}}, {{DOMAIN_PASCAL}}, {{PROJECT}}, {{GO_PACKAGE}} (e.g. demo/common/order)
+package service
+
+import (
+	"context"
+
+	"{{GO_PACKAGE}}"
+)
+
+// Service implements common.{{DOMAIN_PASCAL}}ServiceServer (the generated pb interface).
+// It holds its OWN business repository interfaces as fields; concrete infra
+// implementations live in internal/{{DOMAIN}}/repository and are injected from cmd/.
+type Service struct {
+	common.{{DOMAIN_PASCAL}}ServiceServer
+	// repo Repository  // define this interface here, implement in repository/
+}
+
+// NewService constructs the service with its injected dependencies.
+// cmd/ builds the repos (wired to infra) and passes them here.
+func NewService(/* repo Repository */) *Service {
+	return &Service{}
+}
+
+// Example satisfies the pb interface. Replace with real rpc methods declared in proto.
+func (s *Service) Example(ctx context.Context, req *common.ExampleRequest) (*common.ExampleResponse, error) {
+	return &common.ExampleResponse{Id: req.Id}, nil
+}

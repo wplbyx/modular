@@ -1,0 +1,44 @@
+// internal/{{DOMAIN}}/api/http.go - template for the `service {{DOMAIN}}` command.
+// Tokens: {{DOMAIN}}, {{DOMAIN_PASCAL}}, {{GO_PACKAGE}}
+package api
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+
+	"{{GO_PACKAGE}}"
+	"{{PROJECT}}/internal/{{DOMAIN}}/service"
+)
+
+// HTTPRoutes returns a gin route-registration function for this domain.
+// Handlers here are thin adapters: parse request, call the pb service method,
+// write JSON. They wrap pb service calls into http.HandlerFunc, matching the
+// project's RouteRegister pattern (group routes, map each to a handler closure).
+// cmd/ attaches it via httpServer.RegisterRoute(HTTPRoutes(svc)).
+func HTTPRoutes(svc *service.Service) func(*gin.Engine) {
+	return func(router *gin.Engine) {
+		// group := router.Group("/api/{{DOMAIN}}")
+		// group.GET("/example", exampleHandler(svc))
+		_ = svc
+	}
+}
+
+// exampleHandler adapts a pb service call into a gin handler.
+// func exampleHandler(svc *service.Service) gin.HandlerFunc {
+// 	return func(c *gin.Context) {
+// 		var req common.ExampleRequest
+// 		if err := c.ShouldBindJSON(&req); err != nil {
+// 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// 			return
+// 		}
+// 		resp, err := svc.Example(c.Request.Context(), &req)
+// 		if err != nil {
+// 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+// 			return
+// 		}
+// 		c.JSON(http.StatusOK, resp)
+// 	}
+// }
+
+var _ http.HandlerFunc // keep net/http import meaningful until handlers are added

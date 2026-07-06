@@ -1,0 +1,4 @@
+interface:
+  display_name: "Modular Scaffold"
+  short_description: "Scaffold and wire Go services on the modular library"
+  default_prompt: "Use $modular to scaffold, wire, and operate this project on the modular library."

@@ -1,0 +1,51 @@
+// internal/infra/db_resource.go - template for the `resource db` command.
+// Wraps a bun or gorm connection as a core.Resource. cmd/ injects the
+// resulting *bun.DB / *gorm.DB into repositories. Prefer this injected
+// instance over the package-level GetDB() global.
+// Tokens: {{PROJECT}}
+package infra
+
+import (
+	"context"
+	"fmt"
+
+	"modular/packages/config"
+	"modular/packages/core"
+
+	// bun:
+	"modular/packages/infra/database/bun"
+	// OR gorm:
+	// "modular/packages/infra/database/gorm"
+)
+
+type DBResource struct {
+	cfg *config.Database
+	db  *bun.DB // or *gorm.DB if using gorm
+}
+
+func NewDBResource(cfg *config.Database) *DBResource {
+	return &DBResource{cfg: cfg}
+}
+
+func (r *DBResource) Name() string { return "database" }
+
+func (r *DBResource) Setup(ctx context.Context) error {
+	db, err := bun.NewBunConnection(r.cfg) // postgres only; use gorm.NewGormConnection for sqlite/mysql/postgres/clickhouse
+	if err != nil {
+		return fmt.Errorf("database setup: %w", err)
+	}
+	r.db = db
+	return nil
+}
+
+func (r *DBResource) Close(ctx context.Context) error {
+	if r.db == nil {
+		return nil
+	}
+	return r.db.Close()
+}
+
+// DB exposes the connection for repository injection.
+func (r *DBResource) DB() *bun.DB { return r.db }
+
+var _ core.Resource = (*DBResource)(nil)

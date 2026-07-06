@@ -1,0 +1,16 @@
+// internal/{{DOMAIN}}/api/grpc.go - template for the `service {{DOMAIN}}` command.
+// Tokens: {{DOMAIN}}, {{DOMAIN_PASCAL}}, {{GO_PACKAGE}}
+package api
+
+import (
+	"google.golang.org/grpc"
+
+	"{{GO_PACKAGE}}"
+	"{{PROJECT}}/internal/{{DOMAIN}}/service"
+)
+
+// RegisterGRPC wires the domain service onto a gRPC server.
+// cmd/ passes this to rpcserver.NewServer(cfg, RegisterGRPC, opts...).
+func RegisterGRPC(s grpc.ServiceRegistrar, svc *service.Service) {
+	common.Register{{DOMAIN_PASCAL}}ServiceServer(s, svc)
+}
