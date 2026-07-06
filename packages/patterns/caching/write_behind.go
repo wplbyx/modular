@@ -72,6 +72,7 @@ func (wb *WriteBehind) Get(ctx context.Context, key string, loader func() (strin
 		return "", err
 	}
 
+	// 缓存回写失败不影响读结果，显式忽略
 	_ = wb.cache.Set(ctx, key, data, wb.ttl)
 	return data, nil
 }

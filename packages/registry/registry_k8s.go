@@ -30,6 +30,7 @@ type K8sRegistry struct {
 	stopCh    chan struct{}
 	stopOnce  sync.Once
 	informers informers.SharedInformerFactory
+	startOnce sync.Once
 }
 
 // NewK8sRegistry 创建 K8s 服务发现实例。
@@ -86,6 +87,7 @@ func (r *K8sRegistry) GetService(ctx context.Context, serviceName string) ([]*co
 
 // Watch 监控服务实例变化，返回变化通道。
 // 当 context 取消时，informer 停止并关闭通道。
+// informers factory 仅在首次 Watch 时启动（通过 startOnce 保证）。
 func (r *K8sRegistry) Watch(ctx context.Context, serviceName string) (<-chan []*core.ServiceNode, error) {
 	ch := make(chan []*core.ServiceNode, 1)
 	sendUpdate := func(nodes []*core.ServiceNode) {
@@ -118,7 +120,10 @@ func (r *K8sRegistry) Watch(ctx context.Context, serviceName string) (<-chan []*
 		return nil, err
 	}
 
-	r.informers.Start(r.stopCh)
+	// informers factory 仅启动一次，避免多次 Watch 重复 Start
+	r.startOnce.Do(func() {
+		r.informers.Start(r.stopCh)
+	})
 
 	// 发送初始快照
 	go func() {

@@ -61,6 +61,7 @@ func (ra *RefreshAhead) Get(ctx context.Context, key string, loader func() (stri
 		return "", err
 	}
 
+	// 缓存回写失败不影响读结果，显式忽略
 	_ = ra.cache.Set(ctx, key, data, ra.ttl)
 	ra.trackEntry(key, loader)
 	return data, nil

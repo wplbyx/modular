@@ -33,6 +33,7 @@ func (wt *WriteThrough) Get(ctx context.Context, key string, loader func() (stri
 		return "", err
 	}
 
+	// 缓存回写失败不影响读结果，显式忽略
 	_ = wt.cache.Set(ctx, key, data, wt.ttl)
 	return data, nil
 }

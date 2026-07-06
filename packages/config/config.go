@@ -53,7 +53,7 @@ func WithEnvPrefix(prefix string, replaces ...*strings.Replacer) ConfigureLoader
 		if len(replaces) > 0 {
 			c.v.SetEnvKeyReplacer(replaces[0])
 		}
-		// // viper 自动读取环境变量序列化有坑，采用手动赋值
+		// viper 自动读取环境变量序列化有坑，采用手动赋值
 		// c.v.AutomaticEnv()
 
 		// 读取环境变量（手动赋值）
@@ -175,24 +175,18 @@ func ValidateNode(object interface{}) error {
 	return nil // 验证通过
 }
 
-// Watch 监听配置文件和远程配置的变更
-// 当配置变更时，会调用提供的 callback 函数
+// Watch 监听本地配置文件的变更。当文件发生变更时，调用提供的 callback 函数。
+// 内部使用 viper 的 WatchConfig + OnConfigChange 实现文件系统级监听。
 func (l *ConfigureLoader) Watch(callback func(fsnotify.Event)) {
-	// 创建一个 context 用于取消远程监听
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel() // 确保在函数退出时取消
-	println(ctx)
-
-	// 监听本地配置文件
-	l.v.WatchConfig()
 	l.v.OnConfigChange(callback)
+	l.v.WatchConfig()
 	log.Println("Watching for local config file changes...")
-
 }
 
-// watchRemoteConfig 定期轮询远程配置中心
-func (l *ConfigureLoader) watchRemoteConfig(ctx context.Context, callback func(e fsnotify.Event)) {
-	ticker := time.NewTicker(5 * time.Second) // 每5秒检查一次
+// WatchRemoteConfig 定期轮询远程配置中心（etcd/consul/firestore），
+// 当检测到变更时触发 callback。调用方负责通过 ctx 控制轮询生命周期。
+func (l *ConfigureLoader) WatchRemoteConfig(ctx context.Context, callback func(e fsnotify.Event)) {
+	ticker := time.NewTicker(5 * time.Second) // 每 5 秒检查一次
 	defer ticker.Stop()
 
 	for {

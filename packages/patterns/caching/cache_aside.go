@@ -33,8 +33,8 @@ func (ca *CacheAside) Get(ctx context.Context, key string, loader func() (string
 		return "", err
 	}
 
-	if err := ca.cache.Set(ctx, key, data, ca.ttl); err != nil {
-	}
+	// 缓存回写失败不影响读结果，但显式忽略而非空 if 块
+	_ = ca.cache.Set(ctx, key, data, ca.ttl)
 
 	return data, nil
 }

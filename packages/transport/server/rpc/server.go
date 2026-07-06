@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"sync"
@@ -19,6 +18,7 @@ import (
 
 	"modular/packages/config"
 	"modular/packages/core"
+	"modular/packages/log"
 )
 
 var _ core.Endpoint = (*Server)(nil)
@@ -34,7 +34,6 @@ type Server struct {
 	streamInts  []grpc.StreamServerInterceptor
 	mu          sync.RWMutex
 	isRunning   bool
-	shutdownCh  chan struct{}
 }
 
 // Option defines gRPC server configuration options
@@ -52,10 +51,9 @@ func NewServer(cfg *config.GRPC, register RegisterFunc, opts ...Option) (*Server
 	healthServer := health.NewServer()
 
 	s := &Server{
-		health:     healthServer,
-		config:     cfg,
-		isRunning:  false,
-		shutdownCh: make(chan struct{}),
+		health:    healthServer,
+		config:    cfg,
+		isRunning: false,
 	}
 
 	for _, opt := range opts {
@@ -142,7 +140,9 @@ func (s *Server) Name() string {
 
 // Startup starts the gRPC server
 func (s *Server) Startup(ctx context.Context) error {
-	errCh := make(chan error, 1)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	if s.isRunning {
@@ -158,21 +158,18 @@ func (s *Server) Startup(ctx context.Context) error {
 	s.isRunning = true
 	s.mu.Unlock()
 
-	go func() {
-		defer func() {
-			s.mu.Lock()
-			s.isRunning = false
-			s.mu.Unlock()
-			close(s.shutdownCh)
-		}()
+	log.Infof("gRPC server listening on %s", listener.Addr())
 
-		if err := s.grpcServer.Serve(listener); err != nil && err != grpc.ErrServerStopped {
-			errCh <- fmt.Errorf("gRPC server error: %w", err)
-		}
-		close(errCh)
-	}()
+	err = s.grpcServer.Serve(listener)
 
-	return <-errCh
+	s.mu.Lock()
+	s.isRunning = false
+	s.mu.Unlock()
+
+	if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		return fmt.Errorf("gRPC server error: %w", err)
+	}
+	return nil
 }
 
 // Shutdown gracefully stops the gRPC server
@@ -184,7 +181,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.mu.RUnlock()
 
-	log.Println("Gracefully stopping gRPC server...")
+	log.Infof("Gracefully stopping gRPC server...")
 
 	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
@@ -204,10 +201,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		log.Printf("gRPC server shutdown timeout, forcing stop: %v", ctx.Err())
+		log.Warnf("gRPC server shutdown timeout, forcing stop: %v", ctx.Err())
 		s.grpcServer.Stop()
 	case <-shutdownComplete:
-		log.Println("gRPC server gracefully stopped")
+		log.Infof("gRPC server gracefully stopped")
 	}
 
 	return nil
