@@ -1,217 +1,191 @@
 package video
 
 import (
+	"bufio"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
-// pgmMaxVal 是 16 位 PGM 的最大量化值（也是 header 中声明的 maxval）。
-const pgmMaxVal = 255
+const (
+	// DefaultHorizontalFOVDeg 是当前投影源的水平发散全角。
+	// 该角度描述投影光锥左右边缘之间的夹角，不再使用 DMax 这类经验距离参数。
+	DefaultHorizontalFOVDeg = 44.8
 
-// maxWallStretch 限制 L 型内折墙面的最大拉伸倍数。
-// zRel = 1/(1-|tan θ|) 在 θ 趋近 45° 时趋于无穷、超过 45° 后变负，
-// 物理上均无意义；此处把 |tan θ| 钳制到上限，保证 zRel ∈ (0, maxWallStretch]。
-const maxWallStretch = 10.0
+	// invalidRemapCoord 写入一个源视频尺寸之外的坐标，让 FFmpeg remap 用 fill 颜色填充。
+	// 这里不能把越界点 clamp 到边缘，否则会把顶部/底部像素拉成一条线。
+	invalidRemapCoord uint16 = 65535
+)
 
-// ProjectionMapper 完全体对象
-type ProjectionMapper struct {
-	Width         int     // 视频宽度 (像素)
-	Height        int     // 视频高度 (像素)
-	FOVHorizontal float64 // 投影仪水平视场角 (角度制)
-	VKeystone     float64 // 垂直梯形修正 (-0.5 ~ 0.5)
-	HOffset       float64 // 左右偏航修正 (-0.5 ~ 0.5)
+// DistortionModel 镜头畸变模型参数
+type DistortionModel struct {
+	K1, K2, K3 float64 // 径向畸变系数
+	P1, P2     float64 // 切向畸变系数
 }
 
-// GenerateRemapFiles 生成完美对齐的 PGM 映射文件。
-// 输出的两张图 (mapX/mapY) 为每个目标像素指明应去源图采样的坐标，
-// 可直接喂给 OpenCV cv::remap 或 FFmpeg remap 滤镜。
-func (pm *ProjectionMapper) GenerateRemapFiles(outMapX, outMapY string) error {
-	mapX, mapY, err := pm.computeMaps()
+// ProjectionMapper 投影映射核心对象
+type ProjectionMapper struct {
+	Width      int             // 视频宽度 (像素)
+	Height     int             // 视频高度 (像素)
+	HFovDeg    float64         // 投影源水平发散全角；为 0 时使用 DefaultHorizontalFOVDeg
+	Distortion DistortionModel // 镜头畸变参数
+}
+
+// GenerateRemap16Files 生成匹配 FFmpeg remap 滤镜的 16位 PGM 映射文件。
+func (pm *ProjectionMapper) GenerateRemap16Files(outMapXFile, outMapYFile string) error {
+	fovDeg, err := pm.effectiveHorizontalFOVDeg()
 	if err != nil {
 		return err
 	}
-	if err := pm.writePGM(outMapX, mapX); err != nil {
-		return err
-	}
-	return pm.writePGM(outMapY, mapY)
-}
 
-func (pm *ProjectionMapper) computeMaps() (mapX, mapY []uint8, err error) { // 改为 uint8
-	if pm.Width <= 0 || pm.Height <= 0 {
-		return nil, nil, fmt.Errorf("video: invalid dimensions")
-	}
-	halfW := float64(pm.Width) / 2.0
-	halfH := float64(pm.Height) / 2.0
-	fovRad := pm.FOVHorizontal * math.Pi / 180.0
+	targetW, targetH := pm.Width, pm.Height
 
-	mapX = make([]uint8, pm.Width*pm.Height) // 改为 uint8
-	mapY = make([]uint8, pm.Width*pm.Height) // 改为 uint8
+	mapXData := make([]uint16, targetW*targetH)
+	mapYData := make([]uint16, targetW*targetH)
 
-	for v := 0; v < pm.Height; v++ {
-		yNorm := (halfH - float64(v)) / halfH
-		for u := 0; u < pm.Width; u++ {
-			xNorm := (float64(u) - halfW) / halfW
+	centerX := float64(targetW-1) / 2.0
+	centerY := float64(targetH-1) / 2.0
+	tanHalfFOV := math.Tan((fovDeg / 2.0) * math.Pi / 180.0)
 
-			theta := (xNorm - pm.HOffset) * (fovRad / 2.0)
-			zRel := 1.0 + math.Abs(math.Tan(theta))
-			keystoneFactor := 1.0 + (yNorm * pm.VKeystone)
-
-			xSrcNorm := xNorm * zRel * keystoneFactor
-			ySrcNorm := yNorm * zRel
-
-			srcX := (xSrcNorm * halfW) + halfW
-			srcY := halfH - (ySrcNorm * halfH)
-
-			idx := v*pm.Width + u
-			// 量化函数内部会自动按 pgmMaxVal (255) 进行缩放
-			mapX[idx] = uint8(quantize(srcX, float64(pm.Width-1)))
-			mapY[idx] = uint8(quantize(srcY, float64(pm.Height-1)))
+	for y := 0; y < targetH; y++ {
+		for x := 0; x < targetW; x++ {
+			idx := y*targetW + x
+			srcX, srcY, ok := pm.mapLScreenPixel(x, y, tanHalfFOV)
+			if ok {
+				// 这里的镜头畸变和 L 屏几何预扭曲是两个独立环节。
+				// Distortion 为零时直接跳过；非零时只对仍在源视频范围内的采样点做修正。
+				srcX, srcY = pm.undistort(srcX, srcY, centerX, centerY)
+			}
+			mapXData[idx], mapYData[idx] = encodeRemap16(srcX, srcY, targetW, targetH, ok)
 		}
 	}
-	return mapX, mapY, nil
-}
 
-func (pm *ProjectionMapper) writePGM(filename string, data []uint8) error { // 改为 uint8
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
+	// 写入 PGM
+	if err := writePGM16(outMapXFile, targetW, targetH, mapXData); err != nil {
+		return fmt.Errorf("failed to write X map: %w", err)
 	}
-	defer file.Close()
-	header := fmt.Sprintf("P5\n%d %d\n%d\n", pm.Width, pm.Height, pgmMaxVal)
-	if _, err := file.WriteString(header); err != nil {
-		return err
+	if err := writePGM16(outMapYFile, targetW, targetH, mapYData); err != nil {
+		return fmt.Errorf("failed to write Y map: %w", err)
 	}
-	// 8位数据直接写入，彻底避开大端小端序的干扰
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
+
 	return nil
 }
 
-func quantize(src, maxSrc float64) int {
-	if src < 0 {
-		src = 0
-	} else if src > maxSrc {
-		src = maxSrc
+func (pm *ProjectionMapper) effectiveHorizontalFOVDeg() (float64, error) {
+	if pm.Width <= 1 {
+		return 0, fmt.Errorf("video width must be greater than 1: %d", pm.Width)
 	}
-	return int(math.Round((src / maxSrc) * float64(pgmMaxVal)))
+	if pm.Height <= 1 {
+		return 0, fmt.Errorf("video height must be greater than 1: %d", pm.Height)
+	}
+	if pm.Width > int(invalidRemapCoord) {
+		return 0, fmt.Errorf("video width exceeds 16-bit remap range: %d", pm.Width)
+	}
+	if pm.Height > int(invalidRemapCoord) {
+		return 0, fmt.Errorf("video height exceeds 16-bit remap range: %d", pm.Height)
+	}
+
+	fovDeg := pm.HFovDeg
+	if fovDeg == 0 {
+		fovDeg = DefaultHorizontalFOVDeg
+	}
+	if fovDeg < 0 {
+		return 0, fmt.Errorf("horizontal FOV must not be negative: %g", fovDeg)
+	}
+	if fovDeg >= 180 {
+		return 0, fmt.Errorf("horizontal FOV must be less than 180 degrees: %g", fovDeg)
+	}
+	return fovDeg, nil
 }
 
-// FFmpegRemapConfig 描述一次 remap 重映射渲染所需的 ffmpeg 参数。
-// 零值字段会回退到默认值：Interp→lanczos、Codec→libx264、CRF→18；
-// AudioCopy 默认通过 NewFFmpegRemapConfig 置为 true（直接拷贝音频）。
+func (pm *ProjectionMapper) mapLScreenPixel(x, y int, tanHalfFOV float64) (float64, float64, bool) {
+	widthMax := float64(pm.Width - 1)
+	heightMax := float64(pm.Height - 1)
+
+	// u/v 是输出帧坐标归一化到 [-1, 1] 后的位置。
+	// 输出帧就是投影机要播放的预扭曲画面；remap 需要反查该输出像素应从源视频哪里取样。
+	u := 2.0*float64(x)/widthMax - 1.0
+	v := 2.0*float64(y)/heightMax - 1.0
+
+	// tanHalfFOV = tan(水平发散全角 / 2)，表示投影光锥半角对应的水平射线斜率。
+	// 在 90 度等边 L 屏、投影源位于角平分线且屏幕足够大的假设下，真实投影距离会在归一化中抵消，
+	// 因此不再需要 DMax 这类经验距离参数。
+	q := math.Abs(u) * tanHalfFOV
+
+	// srcXNorm 是 L 屏展开方向上的源视频横坐标。
+	// q/(1+q) 来自投影射线与 90 度 L 屏平面的交点比例；
+	// 再除以边缘值 T/(1+T)，保证左右边缘仍映射到源视频左右边界。
+	edgeFoldRatio := tanHalfFOV / (1.0 + tanHalfFOV)
+	var srcXNorm float64
+	if edgeFoldRatio != 0 {
+		srcXNorm = math.Copysign((q/(1.0+q))/edgeFoldRatio, u)
+	}
+
+	// srcYNorm 表达垂直方向的预压缩。
+	// 中轴线最远，因此中心列需要压缩最多；越靠近左右两侧，屏幕越近，压缩逐渐减小。
+	// 当中心上下超出源视频范围时，保留越界，让 remap 填黑，形成预期的横向沙漏区域。
+	srcYNorm := v * (1.0 + tanHalfFOV) / (1.0 + q)
+
+	srcX := (srcXNorm + 1.0) * widthMax / 2.0
+	srcY := (srcYNorm + 1.0) * heightMax / 2.0
+	return srcX, srcY, isFinite(srcX) && isFinite(srcY)
+}
+
+func encodeRemap16(srcX, srcY float64, width, height int, ok bool) (uint16, uint16) {
+	if !ok || srcX < 0 || srcX > float64(width-1) || srcY < 0 || srcY > float64(height-1) {
+		return invalidRemapCoord, invalidRemapCoord
+	}
+	return uint16(math.Round(srcX)), uint16(math.Round(srcY))
+}
+
+func isFinite(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+// FFmpegRemapConfig 描述一次 classic CPU remap 调用需要的路径与编码参数。
+// classic remap 只支持 fill/format 选项，不支持 remap_opencl 的 interp 选项。
 type FFmpegRemapConfig struct {
-	Input     string        // 输入视频路径
-	MapX      string        // X 映射文件路径（PGM，由 GenerateRemapFiles 产出）
-	MapY      string        // Y 映射文件路径（PGM，由 GenerateRemapFiles 产出）
-	Output    string        // 输出视频路径
-	Interp    string        // 插值算法: linear|cubic|lanczos|nearest|spline；空则 lanczos
-	Codec     string        // 视频编码器，空则 libx264
-	CRF       int           // 恒定质量（libx264 取值 0-51），<=0 则 18
-	AudioCopy bool          // true 时追加 -c:a copy，跳过音频重编码
-	Docker    *DockerConfig // 非 nil 时以容器方式运行 ffmpeg，见 DockerConfig
+	Input  string // 输入视频路径
+	MapX   string // X 映射 PGM；应由 GenerateRemap16Files 生成
+	MapY   string // Y 映射 PGM；应由 GenerateRemap16Files 生成
+	Output string // 输出视频路径
+	Codec  string // 视频编码器，空则 libx264
+	CRF    int    // 恒定质量，<=0 则 18
+	Preset string // 编码预设，空则 fast
 }
 
-// DockerConfig 描述以容器方式运行 ffmpeg 的参数。配置后 Command 会以
-// `docker run --rm -v <hostPath>:<mountPath> [<extra>...] <image> ...` 形式运行，
-// 并把宿主机路径自动重映射到容器内挂载点（容器为 Linux，统一正斜杠）。
-type DockerConfig struct {
-	Image     string   // 镜像名，空则 jrottenberg/ffmpeg:latest
-	HostPath  string   // 宿主机挂载目录（Volume 源）；为空则不挂载，路径需已是容器内可见路径
-	MountPath string   // 容器内挂载目录（Volume 目标），空则 /data
-	ExtraArgs []string // 附加 docker run 参数，如 []string{"--network=host"}
-}
-
-// NewFFmpegRemapConfig 用四个必填路径构造一份带常用默认值（音频直接拷贝）的配置；
-// 返回值可继续按需修改 Interp/Codec/CRF 等字段，再调用 Command 生成命令。
-func NewFFmpegRemapConfig(input, mapX, mapY, output string) FFmpegRemapConfig {
-	return FFmpegRemapConfig{
-		Input:     input,
-		MapX:      mapX,
-		MapY:      mapY,
-		Output:    output,
-		AudioCopy: true,
-	}
-}
-
-// Command 组装可直接打印或交给 shell 执行的 ffmpeg 命令行字符串，等价于:
-//
-// 未配置 Docker 时直接以本机 ffmpeg 运行：
-//
-//	ffmpeg -i <input> -i <mapX> -i <mapY> \
-//	       -filter_complex "remap=interp=<interp>" -c:v <codec> -crf <crf> [-c:a copy] <output>
-//
-// 配置了 Docker（Docker 非 nil）时以容器方式运行，宿主机路径自动重映射到容器内挂载点：
-//
-//	docker run --rm -v <hostPath>:<mountPath> [<extra>...] <image> \
-//	       -i <容器内 input> -i <容器内 mapX> -i <容器内 mapY> \
-//	       -filter_complex "remap=interp=<interp>" -c:v <codec> -crf <crf> [-c:a copy] <容器内 output>
-//
-// 路径若含空格等 shell 元字符会自动转义。
+// Command 组装兼容 FFmpeg classic remap 的命令行。
+// map PGM 文件保持 P5/65535/BigEndian 写入；不要在滤镜图里强转 gray16le，
+// 那是 FFmpeg 解码后的内部像素格式，不是 PGM 文件的字节序设置。
 func (cfg FFmpegRemapConfig) Command() string {
-	interp := defaultStr(cfg.Interp, "lanczos")
 	codec := defaultStr(cfg.Codec, "libx264")
+	preset := defaultStr(cfg.Preset, "fast")
 	crf := cfg.CRF
 	if crf <= 0 {
 		crf = 18
 	}
-	input, mapX, mapY, output := cfg.Input, cfg.MapX, cfg.MapY, cfg.Output
-	args := make([]string, 0, 16)
-	if cfg.Docker != nil {
-		image := defaultStr(cfg.Docker.Image, "jrottenberg/ffmpeg:latest")
-		mountPath := defaultStr(cfg.Docker.MountPath, "/data")
-		hostPath := cfg.Docker.HostPath
 
-		// 宿主机路径映射为容器内路径（容器为 Linux，统一正斜杠）
-		input = remapContainerPath(input, hostPath, mountPath)
-		mapX = remapContainerPath(mapX, hostPath, mountPath)
-		mapY = remapContainerPath(mapY, hostPath, mountPath)
-		output = remapContainerPath(output, hostPath, mountPath)
-
-		runArgs := []string{"docker", "run", "--rm"}
-		if hostPath != "" {
-			runArgs = append(runArgs, "-v", shellQuote(hostPath+":"+mountPath))
-		}
-		for _, a := range cfg.Docker.ExtraArgs {
-			runArgs = append(runArgs, shellQuote(a))
-		}
-		runArgs = append(runArgs, image)
-		// 容器镜像以 ffmpeg 为 entrypoint，命令名由镜像提供，无需再写出 ffmpeg。
-		args = append(args, runArgs...)
-	} else {
-		args = append(args, "ffmpeg")
-	}
-	args = append(args,
-		"-i", shellQuote(input),
-		"-i", shellQuote(mapX),
-		"-i", shellQuote(mapY),
-		"-filter_complex", fmt.Sprintf(`"remap=interp=%s"`, interp),
+	args := []string{
+		"ffmpeg",
+		"-y",
+		"-i", shellQuote(cfg.Input),
+		"-loop", "1", "-i", shellQuote(cfg.MapX),
+		"-loop", "1", "-i", shellQuote(cfg.MapY),
+		"-filter_complex", shellQuote("[0:v]format=yuv444p[vid];[vid][1:v][2:v]remap=fill=black,format=yuv420p[outv]"),
+		"-map", shellQuote("[outv]"),
+		"-map", shellQuote("0:a?"),
 		"-c:v", codec,
 		"-crf", fmt.Sprintf("%d", crf),
-	)
-	if cfg.AudioCopy {
-		args = append(args, "-c:a", "copy")
+		"-preset", preset,
+		"-c:a", "copy",
 	}
-	args = append(args, shellQuote(output))
+	args = append(args, "-shortest", shellQuote(cfg.Output))
 	return strings.Join(args, " ")
 }
 
-// shellQuote 对含空格或 shell 元字符的参数做最小化 POSIX 转义；
-// 不含特殊字符时原样返回，保持命令可读。
-func shellQuote(s string) string {
-	if s == "" {
-		return `""`
-	}
-	if strings.ContainsAny(s, " \t\"'`$\\") {
-		return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-	}
-	return s
-}
-
-// defaultStr 在 v 为空时返回 def，否则原样返回 v。
 func defaultStr(v, def string) string {
 	if v == "" {
 		return def
@@ -219,24 +193,84 @@ func defaultStr(v, def string) string {
 	return v
 }
 
-// remapContainerPath 把宿主机路径映射为容器内路径：仅当 path 位于 hostPath 下时
-// 把前缀替换为 mountPath；不在挂载目录下的路径原样返回。统一输出正斜杠（容器为 Linux）。
-func remapContainerPath(path, hostPath, mountPath string) string {
-	p := filepath.ToSlash(path)
-	if hostPath == "" {
-		return p
+func shellQuote(s string) string {
+	if s == "" {
+		return `""`
 	}
-	hRoot := strings.TrimSuffix(filepath.ToSlash(hostPath), "/")
-	if p == hRoot {
-		return mountPath
+	if strings.ContainsAny(s, " \t\"'`$\\;[]?&|()<>") {
+		return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 	}
-	if strings.HasPrefix(p, hRoot+"/") {
-		return joinSlash(mountPath, strings.TrimPrefix(p, hRoot+"/"))
-	}
-	return p
+	return s
 }
 
-// joinSlash 以正斜杠连接两段路径，去除拼接处多余分隔符。
-func joinSlash(base, rel string) string {
-	return strings.TrimSuffix(base, "/") + "/" + strings.TrimPrefix(rel, "/")
+// undistort 镜头畸变变换（将理想投影坐标转换为受镜头畸变影响的实际视频像素坐标）
+func (pm *ProjectionMapper) undistort(srcX, srcY, cx, cy float64) (float64, float64) {
+	// 如果没有任何镜头畸变参数，直接返回理想几何坐标，防止不必要的浮点运算
+	if pm.Distortion.K1 == 0 && pm.Distortion.K2 == 0 && pm.Distortion.K3 == 0 && pm.Distortion.P1 == 0 && pm.Distortion.P2 == 0 {
+		return srcX, srcY
+	}
+
+	// 归一化到相机坐标系
+	f := (float64(pm.Width) + float64(pm.Height)) / 2.0
+	x := (srcX - cx) / f
+	y := (srcY - cy) / f
+
+	// 修正：采用标准的不动点迭代法（Fixed-point iteration）求解逆畸变
+	distX, distY := x, y
+	for i := 0; i < 8; i++ { // 8次迭代足以收敛到极致精度
+		r2 := distX*distX + distY*distY
+
+		// 径向畸变因子
+		radial := 1.0 + pm.Distortion.K1*r2 + pm.Distortion.K2*r2*r2 + pm.Distortion.K3*r2*r2*r2
+		// 切向畸变因子
+		tangX := 2.0*pm.Distortion.P1*distX*distY + pm.Distortion.P2*(r2+2.0*distX*distX)
+		tangY := 2.0*pm.Distortion.P2*distX*distY + pm.Distortion.P1*(r2+2.0*distY*distY)
+
+		// 计算当前猜测下的理想坐标
+		idealX := distX*radial + tangX
+		idealY := distY*radial + tangY
+
+		// 修正猜测值：当前值 - (计算出的理想值 - 真实的理想值)
+		distX = distX - (idealX - x)
+		distY = distY - (idealY - y)
+	}
+
+	// 映射回像素坐标
+	return distX*f + cx, distY*f + cy
+}
+
+// writePGM16 将 uint16 数组写入为符合 FFmpeg 要求的 16位 PGM P5 格式文件。
+// PGM 规范要求 maxval 大于 255 时每个样本按大端字节序写入；这里不能改成小端。
+// FFmpeg 会先按 PGM 解码，再把 16-bit 单通道帧交给 remap，滤镜图中也不需要 format=gray16le。
+func writePGM16(filename string, w, h int, data []uint16) (err error) {
+	if len(data) != w*h {
+		return fmt.Errorf("PGM data length mismatch: got %d, want %d", len(data), w*h)
+	}
+
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
+
+	writer := bufio.NewWriter(file)
+
+	// PGM P5 头部。16位格式的最大值必须声明为 65535
+	if _, err := fmt.Fprintf(writer, "P5\n%d %d\n65535\n", w, h); err != nil {
+		return err
+	}
+
+	// 写入二进制像素数据
+	buf := make([]byte, 2)
+	for _, val := range data {
+		binary.BigEndian.PutUint16(buf, val)
+		_, err := writer.Write(buf)
+		if err != nil {
+			return err
+		}
+	}
+
+	return writer.Flush()
 }
