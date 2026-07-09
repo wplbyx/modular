@@ -6,6 +6,7 @@ const (
 	DSNMySQL      = "mysql"
 	DSNPostgres   = "postgres"
 	DSNClickhouse = "clickhouse"
+	DSNMongo      = "mongodb"
 )
 
 // IndexDefinition represents a database index for migration tooling.

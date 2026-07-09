@@ -27,17 +27,19 @@ None of the infra packages ship a `core.Resource` directly (except telemetry). T
     }
     func (r *dbResource) Close(ctx context.Context) error { return r.db.Close() }
 
-Inject the returned `bun.DB` / `gorm.DB` / `redis.UniversalClient` / `storage.Storage` into repositories as a dependency - do NOT rely on the package-level globals (`GetDB()`, `GetClient()`) from business code.
+Inject the returned `bun.DB` / `gorm.DB` / `mongo.Client` / `redis.UniversalClient` / `storage.Storage` into repositories as a dependency - do NOT rely on the package-level globals (`GetDB()`, `GetClient()`) from business code.
 
 ## Database
 
-Two adapters; pick one per project.
+Three adapters; pick one per project.
 
 Bun (`packages/infra/database/bun`): `bun.NewBunConnection(cfg *config.Database) (*bun.DB, error)`. **Postgres only** (`DSNPostgres`). Pings on connect. Also sets a package global `globalDB` (ignore it; use the returned instance). Migrations: `bun.NewMigrationTool(db, migrationsFS embed.FS)` / `bun.NewBunMigration(migrationsFS)` (uses the global). Models implement `database.ModelIndexer` to declare indexes.
 
 GORM (`packages/infra/database/gorm`): `gorm.NewGormConnection(cfg *config.Database) (*gorm.DB, error)`. Supports `DSNSqlite`, `DSNMySQL`, `DSNPostgres`, `DSNClickhouse`. `SkipDefaultTransaction: true` is set by default. Also pings and sets a package global.
 
-Supported dialect constants live in `packages/infra/database/database.go`: `DSNSqlite`, `DSNMySQL`, `DSNPostgres`, `DSNClickhouse`. Set `config.Database.Dsn` to one of these.
+MongoDB (`packages/infra/database/mongo`): `mongo.NewMongoConnection(cfg *config.Database) (*mongo.Client, error)`. Supports `DSNMongo`. Use `Urls` for host lists or a single MongoDB URI, or `Host`+`Port` for a single node. Optional Mongo fields: `ReplicaSet`, `MaxPoolSize`. Pings on connect and sets a package global.
+
+Supported dialect constants live in `packages/infra/database/database.go`: `DSNSqlite`, `DSNMySQL`, `DSNPostgres`, `DSNClickhouse`, `DSNMongo`. Set `config.Database.Dsn` to one of these.
 
 ## Redis
 

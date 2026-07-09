@@ -50,7 +50,7 @@ Resource.Setup()  FIFO
 | `packages/transport/client` | HTTP / gRPC 客户端封装。保留全局单例能力，但应用装配时优先依赖注入。 |
 | `packages/transport/pubsub` | 消息订阅 endpoint 抽象，以及 Kafka、MQTT、RocketMQ、Redis Pub/Sub、Redis Stream 适配。 |
 | `packages/registry` | Consul 注册发现、K8s discovery、gRPC resolver；Consul 按 transport 注册服务记录。 |
-| `packages/infra/database` | Bun / Gorm 数据库连接能力，支持 sqlite、mysql、postgres、clickhouse 等配置。 |
+| `packages/infra/database` | Bun / GORM / MongoDB 数据库连接能力，支持 sqlite、mysql、postgres、clickhouse、mongodb 等配置。 |
 | `packages/infra/cache/redis` | go-redis 客户端、布隆过滤器、幂等工具。 |
 | `packages/infra/storage` | 统一对象存储接口，当前实现为本地磁盘 `filedisk` 和阿里云 OSS v2 `alioss`。 |
 | `packages/telemetry` | OpenTelemetry trace、metric、log provider，作为 `core.Resource` 注入应用。 |
@@ -160,6 +160,18 @@ application, err := app.NewApplication(
 
 需要基础设施时，将其包装或直接构造成 `core.Resource` 后通过 `app.WithResource(...)` 注入。`Resource.Setup` 会在所有 endpoint 启动前执行，`Resource.Close` 会在 endpoint 停止后按反向顺序执行。
 
+### 数据库连接
+
+`packages/infra/database` 当前提供三类连接适配：
+
+| 后端 | 构造函数 | DSN | 说明 |
+| --- | --- | --- | --- |
+| Bun | `bun.NewBunConnection(cfg *config.Database)` | `database.DSNPostgres` | 仅支持 Postgres，适合需要 Bun ORM 和迁移工具的项目。 |
+| GORM | `gorm.NewGormConnection(cfg *config.Database)` | `DSNSqlite`、`DSNMySQL`、`DSNPostgres`、`DSNClickhouse` | 默认 `SkipDefaultTransaction: true`，适合常规关系型数据库。 |
+| MongoDB | `mongo.NewMongoConnection(cfg *config.Database)` | `database.DSNMongo` | 使用 `go.mongodb.org/mongo-driver/v2`，支持 `Urls`、单节点 `Host`+`Port`、`ReplicaSet`、`MaxPoolSize`。 |
+
+这些构造函数都会在连接后 ping，并保留包级全局实例用于兼容；业务代码仍应优先接收构造函数返回的实例，而不是直接依赖 `GetDB()` / `GetClient()`。
+
 ## 推荐项目分层
 
 使用 `modular` 的业务项目建议采用以下结构：
@@ -207,7 +219,7 @@ application, err := app.NewApplication(
 | --- | --- |
 | `init <project> [single|service]` | 创建下游项目骨架，包含 `go.mod`、buf 配置、`Makefile`、`proto/`、`common/`、`internal/`、`cmd/`、`config/`。 |
 | `service <domain>` | 添加领域服务：创建 proto、生成 common、补齐 `internal/<domain>` 的 api/service/repository/models，并接入 `cmd`。 |
-| `resource <kind>` | 添加基础设施资源，`kind` 为 `db`、`redis`、`storage`、`telemetry`。 |
+| `resource <kind>` | 添加基础设施资源，`kind` 为 `db`、`redis`、`storage`、`telemetry`；`db` 可按项目选择 Bun、GORM 或 MongoDB。 |
 | `gen` | 从 `proto/` 重新生成 `common/`。 |
 | `switch [single|service]` | 只重写 `cmd` 装配层，在单体和微服务拓扑之间切换。 |
 

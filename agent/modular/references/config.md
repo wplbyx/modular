@@ -16,7 +16,7 @@ All config is typed structs with `mapstructure` tags (pascal-case). Use these, n
 - `config.Application`: `Name` (required), `Mode` (required, oneof dev|test|prod), `Version` (required), `ShutdownTimeout`.
 - `config.HTTP`: `Host` (required), `Port` (required, 1000-65535), `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
 - `config.GRPC`: `Host` (required), `Port` (required, 1000-65535), `Timeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
-- `config.Database`: `Dsn` (required, oneof sqlite|mysql|postgres|clickhouse), `Urls`, `Host`, `Port`, `Path` (sqlite), `Database`, `Username`, `Password`, `MaxOpenConn`, `MaxIdleConn`, `ConnMaxLifetime`, `ConnMaxIdleTime`, `EnableTLS`.
+- `config.Database`: `Dsn` (required, oneof sqlite|mysql|postgres|clickhouse|mongodb), `Urls`, `Host`, `Port`, `Path` (sqlite), `Database`, `Username`, `Password`, `MaxOpenConn`, `MaxIdleConn`, `MaxPoolSize` (MongoDB), `ReplicaSet` (MongoDB), `ConnMaxLifetime`, `ConnMaxIdleTime`, `EnableTLS`.
 - `config.Redis`: `Urls`, `Host`, `Port`, `Username`, `Password`, `Database`, `PoolSize`, `MinIdleConn`, `DialTimeout`, `ReadTimeout`, `WriteTimeout`, `MaxRetries`, `MinRetryBackoff`, `MaxRetryBackoff`.
 - `config.Storage`: `Type` (required, oneof disk|oss), `PublicBaseURL`, `Disk *DiskStorageConfig`, `OSS *OSSStorageConfig`. `DiskStorageConfig`: `RootDir`, `BaseUrl`. `OSSStorageConfig`: `AccessKeyID`, `AccessKeySecret`, `SecurityToken`, `Region`, `Bucket`, `Endpoint`, `BaseDir`, `DisableSSL`, `UseCName`, `Timeout`, `MaxRetries`.
 - `config.Telemetry`: `Logger`, `Metric`, `Tracer` (each an OTLP gRPC endpoint string; empty disables that signal).

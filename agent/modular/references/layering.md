@@ -31,9 +31,9 @@ The boundary rule: `internal/` imports `common/` (proto types). `cmd/` imports `
 
 `internal/<domain>/service/` - the business logic. Implements the pb `<Domain>ServiceServer` interface. Defines its OWN repository interfaces (e.g. `type OrderRepo interface { ... }`) and consumes them as fields. No infra imports here - only proto types, the repo interface, and stdlib.
 
-`internal/<domain>/repository/` - the concrete implementations of the service's repo interfaces. Imports infra: `database/bun` or `database/gorm`, `cache/redis`, `client/*`, `storage`. This is where infra-specific code lives. Swap a DB vendor here without touching `service/`.
+`internal/<domain>/repository/` - the concrete implementations of the service's repo interfaces. Imports infra: `database/bun`, `database/gorm`, `database/mongo`, `cache/redis`, `client/*`, `storage`. This is where infra-specific code lives. Swap a DB vendor here without touching `service/`.
 
-`internal/<domain>/models/` - ORM structs (bun struct tags). `database.ModelIndexer` can be implemented for migration tooling.
+`internal/<domain>/models/` - persistence models: ORM structs for Bun/GORM or document structs for MongoDB. `database.ModelIndexer` can be implemented by relational models for migration tooling.
 
 `cmd/<svc>/main.go` - thin orchestrator. Build transport servers, build resources, build the pb service impl (passing repos wired to infra), call `api.RegisterGRPC` / `api.HTTPRoutes` / event endpoints, then `app.NewApplication(...)`.
 

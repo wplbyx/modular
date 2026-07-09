@@ -36,7 +36,7 @@ Every project generated or maintained by this skill follows this tree:
         event.go               # pub/sub subscriber handlers (MessageHandler/EventHandler)
       service/                 # business logic, implements pb service interface
       repository/              # infra implementations of the service's Repo interfaces
-      models/                  # bun ORM models
+      models/                  # persistence models (Bun/GORM structs or MongoDB documents)
   cmd/
     <svc>/main.go              # orchestrator: build transports, resources, Application
   config/config.yaml
@@ -56,7 +56,7 @@ The skill offers five commands. `init` and `gen` are script-driven (mechanical);
 
 1. **`init <project> [single|service]`** - create the project shell. Runs `scripts/init_project.py`. Produces `go.mod`, buf configs, `Makefile`, `proto/`, `common/`, `internal/`, `config/`, and a `cmd/` entry whose shape depends on topology: `single` = one shared `cmd/<project>/main.go` holding all domains; `service` = one `cmd/<svc>/main.go` per service. Default topology is `single`.
 2. **`service <domain>`** - add a domain. Scaffold `proto/<domain>.proto` from [assets/domain/proto.tmpl](assets/domain/proto.tmpl), run `gen`, then create `internal/<domain>/{api,service,repository,models}` from templates, and wire it into `cmd/`. See [references/layering.md](references/layering.md) section "Adding a service".
-3. **`resource <kind>`** - add an infrastructure resource adapter. `kind` in `db | redis | storage | telemetry`. Scaffold a `core.Resource` wrapper, wire it into `cmd/`'s `app.WithResource(...)` chain, and add its config block. See [references/infra.md](references/infra.md) for the exact constructors per kind.
+3. **`resource <kind>`** - add an infrastructure resource adapter. `kind` in `db | redis | storage | telemetry`; for `db`, choose Bun, GORM, or MongoDB based on the project's `config.Database.Dsn`. Scaffold a `core.Resource` wrapper, wire it into `cmd/`'s `app.WithResource(...)` chain, and add its config block. See [references/infra.md](references/infra.md) for the exact constructors per kind.
 4. **`gen`** - regenerate `common/` from `proto/`. Runs `scripts/gen_proto.py` (wraps `buf generate`). Re-run after any proto edit.
 5. **`switch [single|service]`** - rewrite the `cmd/` layer to flip topology. `internal/` and `common/` are untouched. See [references/layering.md](references/layering.md) section "Topology switch".
 
@@ -85,7 +85,7 @@ Read each only when the task needs it; do not load all upfront.
 - [references/config.md](references/config.md) - `config.*` types, `InitConfigure`, env/file/remote/flag loaders, validation. **Read when adding config.**
 - [references/transport.md](references/transport.md) - http/rpc/sse servers (all `core.Endpoint`), pubsub endpoint, clients, middleware, "construct-then-listen". **Read when adding endpoints or event handlers.**
 - [references/registry.md](references/registry.md) - ServiceNode, Registrar/Discovery, Consul registry, K8s discovery, gRPC resolver (`consul` scheme). **Read when wiring service discovery or single-to-micro switch.**
-- [references/infra.md](references/infra.md) - database (bun/gorm), cache/redis, storage (disk/oss), telemetry constructors and resource wrappers. **Read for `resource` command.**
+- [references/infra.md](references/infra.md) - database (bun/gorm/mongo), cache/redis, storage (disk/oss), telemetry constructors and resource wrappers. **Read for `resource` command.**
 
 ## Workflow decision tree
 
