@@ -2,7 +2,6 @@ package caching
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -98,7 +97,7 @@ func (c *memoryCache) Get(_ context.Context, key string) (string, error) {
 	defer c.mu.Unlock()
 	value, ok := c.items[key]
 	if !ok {
-		return "", errors.New("cache miss")
+		return "", ErrCacheMiss
 	}
 	return value, nil
 }

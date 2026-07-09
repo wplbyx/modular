@@ -58,7 +58,8 @@ func (c *Registry) Register(ctx context.Context, node *core.ServiceNode) error {
 			Check: consulHealthCheck(t),
 		}
 
-		if err := c.client.Agent().ServiceRegister(reg); err != nil {
+		opts := api.ServiceRegisterOpts{}.WithContext(ctx)
+		if err := c.client.Agent().ServiceRegisterOpts(reg, opts); err != nil {
 			return fmt.Errorf("register transport %s: %w", t.Protocol, err)
 		}
 	}
@@ -75,7 +76,7 @@ func (c *Registry) Unregister(ctx context.Context, node *core.ServiceNode) error
 	var errs error
 	for _, t := range node.Transports {
 		id := transportID(node.ID, t.Protocol)
-		if err := c.client.Agent().ServiceDeregister(id); err != nil {
+		if err := c.client.Agent().ServiceDeregisterOpts(id, (&api.QueryOptions{}).WithContext(ctx)); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("deregister transport %s: %w", t.Protocol, err))
 		}
 	}
@@ -84,7 +85,7 @@ func (c *Registry) Unregister(ctx context.Context, node *core.ServiceNode) error
 
 // GetService 浠?Consul 鑾峰彇鏈嶅姟瀹炰緥鍒楄〃
 func (c *Registry) GetService(ctx context.Context, serviceName string) ([]*core.ServiceNode, error) {
-	services, _, err := c.client.Health().Service(serviceName, "", true, nil)
+	services, _, err := c.client.Health().Service(serviceName, "", true, (&api.QueryOptions{}).WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -98,10 +99,10 @@ func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*cor
 	go func() {
 		defer close(ch)
 
-		params := &api.QueryOptions{
+		params := (&api.QueryOptions{
 			WaitIndex: 0,
 			WaitTime:  5 * time.Minute,
-		}
+		}).WithContext(ctx)
 
 		for {
 			select {
@@ -110,9 +111,16 @@ func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*cor
 			default:
 				services, meta, err := c.client.Health().Service(serviceName, "", true, params)
 				if err != nil {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Second):
+					}
 					continue
 				}
-				params.WaitIndex = meta.LastIndex
+				if meta != nil {
+					params.WaitIndex = meta.LastIndex
+				}
 				nodes := consulToServiceNodes(services)
 				select {
 				case ch <- nodes:

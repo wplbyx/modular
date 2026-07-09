@@ -2,6 +2,7 @@ package caching
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -53,6 +54,9 @@ func (ra *RefreshAhead) Get(ctx context.Context, key string, loader func() (stri
 		// Schedule refresh if needed
 		ra.scheduleRefresh(key, loader)
 		return val, nil
+	}
+	if !errors.Is(err, ErrCacheMiss) {
+		return "", err
 	}
 
 	// Cache miss - load and cache

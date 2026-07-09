@@ -73,8 +73,8 @@ func TestOSS_UploadDownloadDelete(t *testing.T) {
 		}
 	})
 
-	// Upload：路径应以 objectKey（含 baseDir 前缀）结尾
-	require.NoError(t, s.Upload(context.Background(), "a/b.txt", bytes.NewReader([]byte("hello"))))
+	// Upload：路径应以 objectKey（含 baseDir 前缀）结尾，nil option 应被忽略。
+	require.NoError(t, s.Upload(context.Background(), "a/b.txt", bytes.NewReader([]byte("hello")), storage.IOConfigOptionFunc(nil)))
 	assert.True(t, strings.HasSuffix(gotPath, "prefix/a/b.txt"), "path=%s", gotPath)
 
 	// Download：应拿到上传内容
@@ -250,4 +250,41 @@ func TestOSS_MultipartFlow(t *testing.T) {
 
 	require.NoError(t, s.CompleteMultipartUpload(ctx, sess, []storage.UploadPartResponse{{PartNumber: 1, ETag: "etag-uid-1"}}))
 	require.NoError(t, s.CancelMultipartUpload(ctx, sess))
+}
+
+func TestOSS_CompleteMultipartUploadSortsParts(t *testing.T) {
+	var completeBody string
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !r.URL.Query().Has("uploadId") {
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		completeBody = string(body)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	sess := storage.MultipartUploadSession{UploadID: "uid-1", Key: "prefix/big/file"}
+	err := s.CompleteMultipartUpload(context.Background(), sess, []storage.UploadPartResponse{
+		{PartNumber: 3, ETag: "etag-3"},
+		{PartNumber: 1, ETag: "etag-1"},
+		{PartNumber: 2, ETag: "etag-2"},
+	})
+	require.NoError(t, err)
+
+	idx1 := strings.Index(completeBody, "<PartNumber>1</PartNumber>")
+	idx2 := strings.Index(completeBody, "<PartNumber>2</PartNumber>")
+	idx3 := strings.Index(completeBody, "<PartNumber>3</PartNumber>")
+	if idx1 == -1 || idx2 == -1 || idx3 == -1 || !(idx1 < idx2 && idx2 < idx3) {
+		t.Fatalf("multipart complete body not sorted: %s", completeBody)
+	}
+}
+
+func TestOSSDefaultURLPreservesHTTPEndpoint(t *testing.T) {
+	got := ossDefaultURL("bucket", "", "http://oss.example.com", "a/b.txt", false)
+	want := "http://bucket.oss.example.com/a/b.txt"
+	if got != want {
+		t.Fatalf("ossDefaultURL() = %q, want %q", got, want)
+	}
 }

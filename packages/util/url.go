@@ -194,5 +194,20 @@ func BuildURL(baseURL string, obj interface{}) (string, error) {
 	if params == "" {
 		return baseURL, nil
 	}
-	return baseURL + "?" + params, nil
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	query := u.Query()
+	newQuery, err := url.ParseQuery(params)
+	if err != nil {
+		return "", err
+	}
+	for key, values := range newQuery {
+		for _, value := range values {
+			query.Set(key, value)
+		}
+	}
+	u.RawQuery = query.Encode()
+	return u.String(), nil
 }

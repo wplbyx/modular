@@ -226,7 +226,14 @@ func (s *DiskStorage) DeleteByPrefix(ctx context.Context, prefix string, opts ..
 
 // PrefixIterator 迭代遍历指定前缀目录下的所有文件，分页流式回调
 func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callback storage.ListCallback) error {
-	walkRoot := filepath.Join(s.rootDir, filepath.FromSlash(prefix))
+	walkRoot := s.rootDir
+	if prefix != "" {
+		var err error
+		walkRoot, err = s.GenKeyToFilePath(prefix)
+		if err != nil {
+			return err
+		}
+	}
 	info, err := os.Stat(walkRoot)
 	if err != nil {
 		if os.IsNotExist(err) {

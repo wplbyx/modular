@@ -1,6 +1,7 @@
 package bind
 
 import (
+	"encoding"
 	"errors"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -158,6 +160,24 @@ func setField(field reflect.Value, values []string) error {
 
 func setValue(field reflect.Value, fieldType reflect.Type, value string) error {
 	if value == "" {
+		return nil
+	}
+
+	if fieldType == reflect.TypeOf(time.Duration(0)) {
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid duration value %q", value)
+		}
+		field.SetInt(int64(duration))
+		return nil
+	}
+
+	textUnmarshalerType := reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
+	if field.CanAddr() && reflect.PointerTo(fieldType).Implements(textUnmarshalerType) {
+		unmarshaler := field.Addr().Interface().(encoding.TextUnmarshaler)
+		if err := unmarshaler.UnmarshalText([]byte(value)); err != nil {
+			return fmt.Errorf("invalid text value %q: %w", value, err)
+		}
 		return nil
 	}
 

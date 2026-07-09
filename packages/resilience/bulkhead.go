@@ -2,6 +2,7 @@ package resilience
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -48,7 +49,9 @@ type bulkheadImpl struct {
 
 	mutex     sync.RWMutex
 	running   int
-	queue     chan func()
+	waiting   int
+	released  chan struct{}
+	done      chan struct{}
 	closeOnce sync.Once
 	closed    bool
 }
@@ -70,13 +73,9 @@ func NewBulkhead(config BulkheadConfig) Bulkhead {
 	}
 
 	b := &bulkheadImpl{
-		config: config,
-		queue:  make(chan func(), config.QueueSize),
-	}
-
-	// 启动工作协程
-	for i := 0; i < config.MaxConcurrentCalls; i++ {
-		go b.worker()
+		config:   config,
+		released: make(chan struct{}, 1),
+		done:     make(chan struct{}),
 	}
 
 	return b
@@ -95,93 +94,22 @@ func (b *bulkheadImpl) Running() int {
 }
 
 // Execute 在隔板内执行函数
-func (b *bulkheadImpl) Execute(ctx context.Context, fn func() error) error {
-	// 检查隔板是否已关闭
-	b.mutex.RLock()
-	if b.closed {
-		b.mutex.RUnlock()
-		return errs.New(
-			errs.WithCode(521),
-			errs.WithMsgf("bulkhead '%s' is closed", b.config.Name),
-			errs.WithCause(ErrBulkheadClosed),
-		)
-	}
-	b.mutex.RUnlock()
-
-	// 创建一个结果通道
-	errCh := make(chan error, 1)
-
-	// 创建一个包装函数
-	wrapper := func() {
-		// 增加运行计数
-		b.mutex.Lock()
-		b.running++
-		b.mutex.Unlock()
-
-		// 执行函数
-		err := fn()
-
-		// 减少运行计数
-		b.mutex.Lock()
-		b.running--
-		b.mutex.Unlock()
-
-		// 发送结果
-		errCh <- err
-	}
-
-	// 计算等待超时时间
-	timeout := b.config.WaitTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		// 如果上下文有截止时间，使用较小的值
-		if waitTime := time.Until(deadline); waitTime < timeout {
-			timeout = waitTime
-		}
-	}
-
-	// 尝试将任务放入队列
-	select {
-	case b.queue <- wrapper:
-		// 任务已放入队列，等待执行完成
-	case <-time.After(timeout):
-		// 队列已满且等待超时
-		running := b.Running()
-		queueLen := len(b.queue)
-		log.Infof("Bulkhead '%s' queue timeout, running: %d, queue length: %d, max concurrent: %d, queue size: %d",
-			b.config.Name, running, queueLen, b.config.MaxConcurrentCalls, b.config.QueueSize)
-		return errs.New(
-			errs.WithCode(520),
-			errs.WithMsgf("bulkhead '%s' queue timeout", b.config.Name),
-			errs.WithCause(ErrBulkheadFull),
-		)
-	case <-ctx.Done():
-		// 上下文已取消
-		return errs.New(
-			errs.WithCode(499),
-			errs.WithMsgf("context canceled while waiting for bulkhead '%s'", b.config.Name),
-			errs.WithCause(ctx.Err()),
-		)
-	}
-
-	// 等待任务执行完成
-	select {
-	case err := <-errCh:
+func (b *bulkheadImpl) Execute(ctx context.Context, fn func() error) (err error) {
+	if err := b.acquire(ctx); err != nil {
 		return err
-	case <-ctx.Done():
-		// 上下文已取消
-		return errs.New(
-			errs.WithCode(499),
-			errs.WithMsgf("context canceled while waiting for bulkhead '%s' execution", b.config.Name),
-			errs.WithCause(ctx.Err()),
-		)
 	}
-}
+	defer func() {
+		b.release()
+		if recovered := recover(); recovered != nil {
+			err = errs.New(
+				errs.WithCode(522),
+				errs.WithMsgf("panic in bulkhead '%s': %v", b.config.Name, recovered),
+				errs.WithCause(fmt.Errorf("panic: %v", recovered)),
+			)
+		}
+	}()
 
-// worker 工作协程，不断从队列中获取任务并执行
-func (b *bulkheadImpl) worker() {
-	for fn := range b.queue {
-		fn()
-	}
+	return fn()
 }
 
 // Close 关闭隔板
@@ -189,7 +117,101 @@ func (b *bulkheadImpl) Close() {
 	b.closeOnce.Do(func() {
 		b.mutex.Lock()
 		b.closed = true
+		close(b.done)
 		b.mutex.Unlock()
-		close(b.queue)
+		b.notifyReleased()
 	})
+}
+
+func (b *bulkheadImpl) acquire(ctx context.Context) error {
+	timeout := b.config.WaitTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if waitTime := time.Until(deadline); waitTime < timeout {
+			timeout = waitTime
+		}
+	}
+	if timeout <= 0 {
+		timeout = b.config.WaitTimeout
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	queued := false
+	defer func() {
+		if queued {
+			b.mutex.Lock()
+			b.waiting--
+			b.mutex.Unlock()
+		}
+	}()
+
+	for {
+		b.mutex.Lock()
+		if b.closed {
+			b.mutex.Unlock()
+			return b.closedError()
+		}
+		if b.running < b.config.MaxConcurrentCalls {
+			b.running++
+			b.mutex.Unlock()
+			return nil
+		}
+		if !queued && b.waiting < b.config.QueueSize {
+			b.waiting++
+			queued = true
+		}
+		b.mutex.Unlock()
+
+		select {
+		case <-b.released:
+			continue
+		case <-b.done:
+			return b.closedError()
+		case <-timer.C:
+			log.Infof("Bulkhead '%s' queue timeout, running: %d, queue length: %d, max concurrent: %d, queue size: %d",
+				b.config.Name, b.Running(), b.Waiting(), b.config.MaxConcurrentCalls, b.config.QueueSize)
+			return errs.New(
+				errs.WithCode(520),
+				errs.WithMsgf("bulkhead '%s' queue timeout", b.config.Name),
+				errs.WithCause(ErrBulkheadFull),
+			)
+		case <-ctx.Done():
+			return errs.New(
+				errs.WithCode(499),
+				errs.WithMsgf("context canceled while waiting for bulkhead '%s'", b.config.Name),
+				errs.WithCause(ctx.Err()),
+			)
+		}
+	}
+}
+
+func (b *bulkheadImpl) release() {
+	b.mutex.Lock()
+	if b.running > 0 {
+		b.running--
+	}
+	b.mutex.Unlock()
+	b.notifyReleased()
+}
+
+func (b *bulkheadImpl) notifyReleased() {
+	select {
+	case b.released <- struct{}{}:
+	default:
+	}
+}
+
+func (b *bulkheadImpl) closedError() error {
+	return errs.New(
+		errs.WithCode(521),
+		errs.WithMsgf("bulkhead '%s' is closed", b.config.Name),
+		errs.WithCause(ErrBulkheadClosed),
+	)
+}
+
+func (b *bulkheadImpl) Waiting() int {
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
+	return b.waiting
 }

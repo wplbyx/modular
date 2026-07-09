@@ -12,6 +12,7 @@ type Memoizer[K comparable, V any] struct {
 	mu    sync.RWMutex
 	ttl   time.Duration
 	items map[K]MemoItem[V]
+	sf    *SingleFlight[K, V]
 }
 
 type MemoItem[V any] struct {
@@ -23,6 +24,7 @@ func NewMemoizer[K comparable, V any](ttl time.Duration) *Memoizer[K, V] {
 	return &Memoizer[K, V]{
 		ttl:   ttl,
 		items: make(map[K]MemoItem[V]),
+		sf:    NewSingleFlight[K, V](),
 	}
 }
 
@@ -73,12 +75,20 @@ func (m *Memoizer[K, V]) GetOrLoad(ctx context.Context, key K, loader func(conte
 		return zero, err
 	}
 
-	val, err := loader(ctx)
-	if err != nil {
-		return zero, err
+	if m.sf == nil {
+		m.sf = NewSingleFlight[K, V]()
 	}
-	m.Set(key, val)
-	return val, nil
+	return m.sf.Do(ctx, key, func(ctx context.Context) (V, error) {
+		if val, ok := m.Get(key); ok {
+			return val, nil
+		}
+		val, err := loader(ctx)
+		if err != nil {
+			return zero, err
+		}
+		m.Set(key, val)
+		return val, nil
+	})
 }
 
 func (m *Memoizer[K, V]) Delete(key K) {

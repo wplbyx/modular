@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -25,15 +26,16 @@ var _ core.Endpoint = (*Server)(nil)
 
 // Server is a gRPC server implementation
 type Server struct {
-	grpcServer  *grpc.Server
-	listener    net.Listener
-	health      *health.Server
-	config      *config.GRPC
-	credentials credentials.TransportCredentials
-	unaryInts   []grpc.UnaryServerInterceptor
-	streamInts  []grpc.StreamServerInterceptor
-	mu          sync.RWMutex
-	isRunning   bool
+	grpcServer     *grpc.Server
+	listener       net.Listener
+	health         *health.Server
+	config         *config.GRPC
+	credentials    credentials.TransportCredentials
+	unaryInts      []grpc.UnaryServerInterceptor
+	streamInts     []grpc.StreamServerInterceptor
+	mu             sync.RWMutex
+	isRunning      bool
+	listenerClosed bool
 }
 
 // Option defines gRPC server configuration options
@@ -47,17 +49,24 @@ func NewServer(cfg *config.GRPC, register RegisterFunc, opts ...Option) (*Server
 	if cfg == nil {
 		cfg = &config.GRPC{}
 	}
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create listener: %w", err)
+	}
 
 	healthServer := health.NewServer()
 
 	s := &Server{
 		health:    healthServer,
 		config:    cfg,
+		listener:  listener,
 		isRunning: false,
 	}
 
 	for _, opt := range opts {
 		if err := opt(s); err != nil {
+			_ = listener.Close()
 			return nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
@@ -78,6 +87,7 @@ func NewServer(cfg *config.GRPC, register RegisterFunc, opts ...Option) (*Server
 
 	if register != nil {
 		if err := register(s.grpcServer); err != nil {
+			_ = listener.Close()
 			return nil, err
 		}
 	}
@@ -149,18 +159,13 @@ func (s *Server) Startup(ctx context.Context) error {
 		s.mu.Unlock()
 		return errors.New("gRPC server is already running")
 	}
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.config.Host, s.config.Port))
-	if err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("failed to create listener: %w", err)
-	}
-	s.listener = listener
+	listener := s.listener
 	s.isRunning = true
 	s.mu.Unlock()
 
 	log.Infof("gRPC server listening on %s", listener.Addr())
 
-	err = s.grpcServer.Serve(listener)
+	err := s.grpcServer.Serve(listener)
 
 	s.mu.Lock()
 	s.isRunning = false
@@ -175,11 +180,11 @@ func (s *Server) Startup(ctx context.Context) error {
 // Shutdown gracefully stops the gRPC server
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.RLock()
-	if !s.isRunning {
-		s.mu.RUnlock()
-		return nil
-	}
+	running := s.isRunning
 	s.mu.RUnlock()
+	if !running {
+		return s.closeListener()
+	}
 
 	log.Infof("Gracefully stopping gRPC server...")
 
@@ -206,6 +211,49 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	case <-shutdownComplete:
 		log.Infof("gRPC server gracefully stopped")
 	}
+
+	return s.closeListener()
+}
+
+// Addr returns the bound listener address. Port=0 is resolved during NewServer.
+func (s *Server) Addr() net.Addr {
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
+}
+
+// Transport returns structured transport metadata for ServiceNode assembly.
+func (s *Server) Transport() core.Transport {
+	address := ""
+	port := 0
+	if addr, ok := s.Addr().(*net.TCPAddr); ok {
+		address = addr.IP.String()
+		port = addr.Port
+	}
+	if s.config != nil && s.config.Host != "" {
+		address = core.NormalizeHost(s.config.Host)
+	}
+	return core.Transport{Protocol: "grpc", Address: address, Port: port}
+}
+
+func (s *Server) closeListener() error {
+	s.mu.Lock()
+	if s.listenerClosed {
+		s.mu.Unlock()
+		return nil
+	}
+	listener := s.listener
+	s.mu.Unlock()
+	if listener == nil {
+		return nil
+	}
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return err
+	}
+	s.mu.Lock()
+	s.listenerClosed = true
+	s.mu.Unlock()
 
 	return nil
 }

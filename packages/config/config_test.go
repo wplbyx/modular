@@ -78,3 +78,33 @@ func TestStorageConfig_OSSBaseDir(t *testing.T) {
 		t.Fatalf("BaseDir not set: %+v", c.OSS)
 	}
 }
+
+func TestDatabaseConfigAllowsClickhouseForGORM(t *testing.T) {
+	cfg := &Database{Dsn: "clickhouse"}
+	if err := ValidateNode(cfg); err != nil {
+		t.Fatalf("ValidateNode(clickhouse database) error = %v", err)
+	}
+}
+
+func TestAppYAMLLoadsCurrentConfig(t *testing.T) {
+	type appYAMLConfig struct {
+		Application Application `mapstructure:"application"`
+		Logging     Logging     `mapstructure:"logging"`
+		Database    Database    `mapstructure:"database"`
+		Redis       Redis       `mapstructure:"redis"`
+		HTTP        HTTP        `mapstructure:"http"`
+		GRPC        GRPC        `mapstructure:"grpc"`
+		Storage     Storage     `mapstructure:"storage"`
+	}
+
+	var cfg appYAMLConfig
+	if err := InitConfigure(&cfg, WithConfigFile("app", "yaml", ".")); err != nil {
+		t.Fatalf("InitConfigure(app.yml) error = %v", err)
+	}
+	if cfg.Storage.Type != "disk" {
+		t.Fatalf("storage type = %q, want disk", cfg.Storage.Type)
+	}
+	if cfg.Storage.Disk == nil || cfg.Storage.Disk.RootDir == "" {
+		t.Fatalf("disk storage config not loaded: %+v", cfg.Storage.Disk)
+	}
+}

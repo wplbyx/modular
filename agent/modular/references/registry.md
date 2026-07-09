@@ -29,19 +29,19 @@ Application passes the node to the registrar verbatim - it does not transform or
 
 ## Consul registry
 
-`registry.NewConsulRegistry(addr string) (*Registry, error)` - implements BOTH `Registrar` and `Discovery`. Registers ONE Consul record per Transport: the ID gets a protocol suffix (`transportID(node.ID, t.Protocol)`). So a single node with HTTP+gRPC produces two Consul entries, both under `Name` = node.Name, tagged `version=...` and `protocol=...`, each with its own health check derived from `Transport.HealthPath`.
+`registry.NewConsulRegistry(addr string) (*Registry, error)` - implements BOTH `Registrar` and `Discovery`. Registers ONE Consul record per Transport: the ID gets a protocol suffix (`transportID(node.ID, t.Protocol)`). So a single node with HTTP+gRPC produces two Consul entries, both under `Name` = node.Name, tagged `version=...` and `protocol=...`, each with its own health check derived from `Transport.HealthPath`. Register, unregister, service lookup, and watch calls pass the caller context into the Consul SDK; watch backs off on errors and exits promptly on context cancellation.
 
 ## K8s registry
 
-`packages/registry/registry_k8s.go` implements `Discovery` only. `Register`/`Unregister` are no-ops: in K8s, the Deployment+Service does registration; discovery reads via SharedInformerFactory.
+`packages/registry/registry_k8s.go` implements `Discovery` only. `Register`/`Unregister` are no-ops: in K8s, the Deployment+Service does registration; discovery reads via SharedInformerFactory. `Watch` removes its event handler on context cancellation before closing the channel. Endpoints without `TargetRef` are supported; node IDs fall back to `serviceName-IP-port`.
 
 ## gRPC resolver
 
-`registry.NewGRPCResolverBuilder(discovery Discovery) resolver.Builder` - register it with `grpc/resolver` so `grpc.Dial` can resolve service names. The scheme is `"consul"` (the resolver builder's `Scheme()` returns it). It watches the discovery channel and updates addresses, filtering transports to `protocol == "grpc"` only.
+`registry.NewGRPCResolverBuilder(discovery Discovery) resolver.Builder` - register it with `grpc/resolver` so `grpc.Dial` can resolve service names. The default scheme is `"consul"`; use `registry.NewGRPCResolverBuilderWithScheme("k8s", discovery)` for another discovery backend. It watches the discovery channel and updates addresses, filtering transports to `protocol == "grpc"` only.
 
-Target format: build a target string so the resolver picks the right service. Use `consul:///<serviceName>` (note: the resolver reads `target.URL.Host` or `.Path` as the service name). Dialing that target with the resolver registered yields gRPC addresses for all `grpc` transports of that service.
+Target format: build a target string so the resolver picks the right service. Use `registry.BuildTarget(scheme, serviceName)` or `registry.BuildConsulTarget(serviceName)`. `BuildConsulTarget("svc")` returns `consul:///svc` (the resolver reads `target.URL.Host` or `.Path` as the service name). Dialing that target with the resolver registered yields gRPC addresses for all `grpc` transports of that service.
 
 ## Wiring for single vs micro
 
 - **Single topology**: no Registrar. Cross-domain gRPC clients dial `127.0.0.1:<port>` directly.
-- **Micro topology**: each service registers via Consul (or relies on K8s Discovery). Cross-domain gRPC clients dial `consul:///<serviceName>` with `registry.NewGRPCResolverBuilder(consulRegistry)` registered. Build the ServiceNode from config transports; the Registrar handles per-transport records automatically.
+- **Micro topology**: each service registers via Consul (or relies on K8s Discovery). Cross-domain gRPC clients dial `consul:///<serviceName>` with `registry.NewGRPCResolverBuilder(consulRegistry)` registered, or a custom scheme from `NewGRPCResolverBuilderWithScheme`. Build the ServiceNode from config transports; the Registrar handles per-transport records automatically.

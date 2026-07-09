@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -317,15 +318,22 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 }
 
 // Global HTTP client
-var defaultClient Client
+var (
+	defaultClientMu sync.Mutex
+	defaultClient   Client
+)
 
 // Init initializes the global HTTP client
 func Init(cfg *Config) {
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
 	defaultClient = NewClient(cfg)
 }
 
 // GetClient returns the global HTTP client
 func GetClient() Client {
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
 	if defaultClient == nil {
 		defaultClient = NewClient(nil)
 	}

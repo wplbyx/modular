@@ -58,6 +58,42 @@ func TestParseCommandsRequiredFlag(t *testing.T) {
 	}
 }
 
+func TestParseCommandsRequiredFlagMustBeExplicitWithDefault(t *testing.T) {
+	var opts struct {
+		Name string `flag:"name" default:"api" required:"true"`
+	}
+
+	err := ParseCommands(nil, &opts)
+	if err == nil || !strings.Contains(err.Error(), "required flag") {
+		t.Fatalf("ParseCommands() error = %v", err)
+	}
+}
+
+func TestParseCommandsRejectsDuplicateFlagNames(t *testing.T) {
+	var opts struct {
+		Name  string `flag:"name"`
+		Alias string `flag:"name"`
+	}
+
+	err := ParseCommands(nil, &opts)
+	if err == nil || !strings.Contains(err.Error(), "bind flag name") {
+		t.Fatalf("ParseCommands() error = %v", err)
+	}
+}
+
+func TestParseCommandsMapstructureTagOmitempty(t *testing.T) {
+	var opts struct {
+		ServiceName string `mapstructure:"ServiceName,omitempty"`
+	}
+
+	if err := ParseCommands([]string{"--servicename", "orders"}, &opts); err != nil {
+		t.Fatalf("ParseCommands() error = %v", err)
+	}
+	if opts.ServiceName != "orders" {
+		t.Fatalf("ServiceName = %q", opts.ServiceName)
+	}
+}
+
 func TestParseCommandsRejectsInvalidTarget(t *testing.T) {
 	err := ParseCommands(nil, struct{}{})
 	if err == nil || !strings.Contains(err.Error(), "non-nil struct pointer") {

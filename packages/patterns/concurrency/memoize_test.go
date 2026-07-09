@@ -3,6 +3,7 @@ package concurrency
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,5 +64,40 @@ func TestMemoizerLoaderErrorIsNotCached(t *testing.T) {
 	}
 	if _, ok := m.Get("key"); ok {
 		t.Fatal("Get() returned value after loader error")
+	}
+}
+
+func TestMemoizerGetOrLoadCollapsesConcurrentMisses(t *testing.T) {
+	m := NewMemoizer[string, string](time.Minute)
+	var loads int32
+
+	var wg sync.WaitGroup
+	results := make(chan string, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := m.GetOrLoad(context.Background(), "key", func(context.Context) (string, error) {
+				atomic.AddInt32(&loads, 1)
+				time.Sleep(20 * time.Millisecond)
+				return "value", nil
+			})
+			if err != nil {
+				t.Errorf("GetOrLoad() error = %v", err)
+				return
+			}
+			results <- got
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	for got := range results {
+		if got != "value" {
+			t.Fatalf("GetOrLoad() = %q", got)
+		}
+	}
+	if got := atomic.LoadInt32(&loads); got != 1 {
+		t.Fatalf("loader calls = %d, want 1", got)
 	}
 }

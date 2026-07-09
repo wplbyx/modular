@@ -329,6 +329,11 @@ func TestDeleteByPrefix(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStorage(t)
 
+	t.Run("path traversal prefix rejected", func(t *testing.T) {
+		err := s.DeleteByPrefix(ctx, "../")
+		errContains(t, err, "escapes storage root")
+	})
+
 	t.Run("empty prefix errors", func(t *testing.T) {
 		err := s.DeleteByPrefix(ctx, "")
 		errContains(t, err, "prefix must not be empty")
@@ -369,6 +374,14 @@ func TestDeleteByPrefix(t *testing.T) {
 func TestPrefixIterator(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStorage(t)
+
+	t.Run("path traversal prefix rejected", func(t *testing.T) {
+		err := s.PrefixIterator(ctx, "../", func(ctx context.Context, items ...storage.ObjectItem) error {
+			t.Fatal("callback should not be invoked")
+			return nil
+		})
+		errContains(t, err, "escapes storage root")
+	})
 
 	t.Run("non-existing prefix returns nil", func(t *testing.T) {
 		noErr(t, s.PrefixIterator(ctx, "nope/", func(ctx context.Context, items ...storage.ObjectItem) error {

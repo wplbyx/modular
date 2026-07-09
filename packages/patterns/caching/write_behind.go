@@ -66,6 +66,9 @@ func (wb *WriteBehind) Get(ctx context.Context, key string, loader func() (strin
 	if err == nil {
 		return val, nil
 	}
+	if !errors.Is(err, ErrCacheMiss) {
+		return "", err
+	}
 
 	data, err := loader()
 	if err != nil {

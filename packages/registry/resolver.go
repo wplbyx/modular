@@ -23,10 +23,19 @@ type gRPCResolver struct {
 
 // NewGRPCResolverBuilder 创建 gRPC 解析器构建器。
 func NewGRPCResolverBuilder(discovery Discovery) resolver.Builder {
-	return &grpcResolverBuilder{discovery: discovery}
+	return NewGRPCResolverBuilderWithScheme("consul", discovery)
+}
+
+// NewGRPCResolverBuilderWithScheme 创建指定 scheme 的 gRPC 解析器构建器。
+func NewGRPCResolverBuilderWithScheme(scheme string, discovery Discovery) resolver.Builder {
+	if scheme == "" {
+		scheme = "consul"
+	}
+	return &grpcResolverBuilder{scheme: scheme, discovery: discovery}
 }
 
 type grpcResolverBuilder struct {
+	scheme    string
 	discovery Discovery
 }
 
@@ -54,7 +63,7 @@ func (b *grpcResolverBuilder) Build(target resolver.Target, cc resolver.ClientCo
 }
 
 func (b *grpcResolverBuilder) Scheme() string {
-	return "consul"
+	return b.scheme
 }
 
 func (r *gRPCResolver) ResolveNow(resolver.ResolveNowOptions) {
@@ -140,5 +149,10 @@ func RegisterConsulResolver(discovery Discovery) {
 
 // BuildConsulTarget 构建 Consul 目标地址。
 func BuildConsulTarget(serviceName string) string {
-	return fmt.Sprintf("consul:///%s", serviceName)
+	return BuildTarget("consul", serviceName)
+}
+
+// BuildTarget 构建指定 resolver scheme 的目标地址。
+func BuildTarget(scheme, serviceName string) string {
+	return fmt.Sprintf("%s:///%s", scheme, serviceName)
 }

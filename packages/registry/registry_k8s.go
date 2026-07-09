@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -90,16 +91,22 @@ func (r *K8sRegistry) GetService(ctx context.Context, serviceName string) ([]*co
 // informers factory 仅在首次 Watch 时启动（通过 startOnce 保证）。
 func (r *K8sRegistry) Watch(ctx context.Context, serviceName string) (<-chan []*core.ServiceNode, error) {
 	ch := make(chan []*core.ServiceNode, 1)
+	var active atomic.Bool
+	active.Store(true)
 	sendUpdate := func(nodes []*core.ServiceNode) {
+		if !active.Load() {
+			return
+		}
 		select {
 		case ch <- nodes:
+		case <-ctx.Done():
 		default:
 		}
 	}
 
 	endpointsInformer := r.informers.Core().V1().Endpoints().Informer()
 
-	_, err := endpointsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	handle, err := endpointsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			if ep, ok := obj.(*corev1.Endpoints); ok && ep.Name == serviceName {
 				sendUpdate(endpointsToServiceNodes(serviceName, ep))
@@ -128,6 +135,8 @@ func (r *K8sRegistry) Watch(ctx context.Context, serviceName string) (<-chan []*
 	// 发送初始快照
 	go func() {
 		defer close(ch)
+		defer func() { _ = endpointsInformer.RemoveEventHandler(handle) }()
+		defer active.Store(false)
 		if nodes, err := r.GetService(ctx, serviceName); err == nil {
 			sendUpdate(nodes)
 		}
@@ -148,12 +157,15 @@ func (r *K8sRegistry) Close() error {
 // endpointsToServiceNodes 将 K8s Endpoints 对象转换为 ServiceNode 列表。
 func endpointsToServiceNodes(serviceName string, ep *corev1.Endpoints) []*core.ServiceNode {
 	var nodes []*core.ServiceNode
+	if ep == nil {
+		return nodes
+	}
 	for _, subset := range ep.Subsets {
 		for _, addr := range subset.Addresses {
 			for _, port := range subset.Ports {
 				nodes = append(nodes, &core.ServiceNode{
 					Name: serviceName,
-					ID:   fmt.Sprintf("%s-%s", serviceName, addr.TargetRef.Name),
+					ID:   k8sEndpointNodeID(serviceName, addr, port),
 					Transports: []core.Transport{
 						{
 							Protocol: port.Name,
@@ -166,4 +178,11 @@ func endpointsToServiceNodes(serviceName string, ep *corev1.Endpoints) []*core.S
 		}
 	}
 	return nodes
+}
+
+func k8sEndpointNodeID(serviceName string, addr corev1.EndpointAddress, port corev1.EndpointPort) string {
+	if addr.TargetRef != nil && addr.TargetRef.Name != "" {
+		return fmt.Sprintf("%s-%s", serviceName, addr.TargetRef.Name)
+	}
+	return fmt.Sprintf("%s-%s-%d", serviceName, addr.IP, port.Port)
 }

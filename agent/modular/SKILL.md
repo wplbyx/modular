@@ -68,7 +68,7 @@ These are non-negotiable; they are what makes the library's guarantees hold.
 - **`common/` is generated.** Never hand-edit `_pb.go`. To change an interface, edit the `.proto` and run `gen`.
 - **Lifecycle method names are fixed.** Resource = `Setup(ctx) error` / `Close(ctx) error`. Endpoint = `Startup(ctx) error` (MUST block until shutdown) / `Shutdown(ctx) error`. Do not invent new lifecycle verbs.
 - **`app` never imports `transport`.** Endpoints are always injected as `core.Endpoint`. Resources as `core.Resource`.
-- **Prefer dependency injection over the global singletons.** `database`, `cache/redis`, `client/{http,rpc}` ship package-level `Init/GetX`, but inject the returned instance instead of relying on the global. Storage has no global - construct `filedisk.NewDiskStorage` / `alioss.NewOSSStorage` directly.
+- **Prefer dependency injection over the global singletons.** `database`, `cache/redis`, `client/{http,rpc}` still ship package-level `Init/GetX` helpers, but new code should use the `core.Resource` wrappers (`bun.NewResource`, `gorm.NewResource`, `redis.NewResource`) or inject returned instances directly. Storage has no global - construct `filedisk.NewDiskStorage` / `alioss.NewOSSStorage` directly.
 - **Endpoint `Startup` blocks.** `Application.Run` treats ANY return (nil or error) as an exit signal. Only `Shutdown` may unblock it. A zero-endpoint Application returns immediately with a warning - always register at least one endpoint.
 - **Errors:** use `fmt.Errorf("...: %w", err)` + `errors.Join` for aggregation everywhere except `resilience`, which uses `errs`.
 - **Logging:** call package-level `log.Infof` / `log.Error` / `log.Warn` / `log.Warnf` / `log.Errorf` / `log.Debug` / `log.Debugf`. There is no logger-in-context pattern. `log.GetLogger()` returns the zap logger.
@@ -84,7 +84,7 @@ Read each only when the task needs it; do not load all upfront.
 - [references/lifecycle.md](references/lifecycle.md) - Resource/Endpoint contracts, `Application.Run` order, shutdown budget. **Read when wiring `cmd/` or debugging startup/shutdown.**
 - [references/config.md](references/config.md) - `config.*` types, `InitConfigure`, env/file/remote/flag loaders, validation. **Read when adding config.**
 - [references/transport.md](references/transport.md) - http/rpc/sse servers (all `core.Endpoint`), pubsub endpoint, clients, middleware, "construct-then-listen". **Read when adding endpoints or event handlers.**
-- [references/registry.md](references/registry.md) - ServiceNode, Registrar/Discovery, Consul registry, K8s discovery, gRPC resolver (`consul` scheme). **Read when wiring service discovery or single-to-micro switch.**
+- [references/registry.md](references/registry.md) - ServiceNode, Registrar/Discovery, Consul registry, K8s discovery, configurable gRPC resolver schemes. **Read when wiring service discovery or single-to-micro switch.**
 - [references/infra.md](references/infra.md) - database (bun/gorm), cache/redis, storage (disk/oss), telemetry constructors and resource wrappers. **Read for `resource` command.**
 
 ## Workflow decision tree

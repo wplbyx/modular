@@ -73,8 +73,32 @@ func TestWrapCustomErrorMergesFields(t *testing.T) {
 	if got := outer.Fields()["outer_key"]; got != "outer_value" {
 		t.Fatalf("expected outer field, got %v", got)
 	}
-	if errors.Unwrap(outer) != nil {
-		t.Fatal("expected custom error without cause to unwrap to nil")
+	if errors.Unwrap(outer) != inner {
+		t.Fatal("expected custom error wrap to preserve the immediate error chain")
+	}
+}
+
+func TestFieldsReturnsCopy(t *testing.T) {
+	err := New(WithMsgf("with fields"), WithField("request_id", "abc"))
+
+	fields := err.Fields()
+	fields["request_id"] = "mutated"
+	fields["new"] = "value"
+
+	if got := err.Fields()["request_id"]; got != "abc" {
+		t.Fatalf("request_id field = %v, want abc", got)
+	}
+	if _, ok := err.Fields()["new"]; ok {
+		t.Fatal("external mutation changed internal fields")
+	}
+}
+
+func TestErrorsIsDoesNotMatchZeroCode(t *testing.T) {
+	target := New(WithMsgf("target"))
+	err := New(WithMsgf("actual"))
+
+	if errors.Is(err, target) {
+		t.Fatal("expected zero-code custom errors not to match by code")
 	}
 }
 

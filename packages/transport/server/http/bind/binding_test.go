@@ -3,7 +3,9 @@ package bind
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -49,4 +51,55 @@ func TestBindQueryValidatesAfterBinding(t *testing.T) {
 	if err := BindQuery(ctx, &req); err == nil {
 		t.Fatal("BindQuery() expected validation error")
 	}
+}
+
+func TestBindQuerySupportsDurationAndTextUnmarshaler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	type advancedQuery struct {
+		Timeout time.Duration `json:"timeout"`
+		When    time.Time     `json:"when"`
+		Mode    queryMode     `json:"mode"`
+	}
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/?timeout=5s&when=2026-07-09T10:11:12Z&mode=fast", nil)
+
+	var req advancedQuery
+	if err := BindQuery(ctx, &req); err != nil {
+		t.Fatalf("BindQuery() error = %v", err)
+	}
+	if req.Timeout != 5*time.Second {
+		t.Fatalf("Timeout = %v", req.Timeout)
+	}
+	if req.When.Format(time.RFC3339) != "2026-07-09T10:11:12Z" {
+		t.Fatalf("When = %v", req.When)
+	}
+	if req.Mode != "mode:fast" {
+		t.Fatalf("Mode = %q", req.Mode)
+	}
+}
+
+func TestBindQueryUnsupportedTypeErrorIncludesFieldName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	type unsupportedQuery struct {
+		Filters map[string]string `json:"filters"`
+	}
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/?filters=x", nil)
+
+	var req unsupportedQuery
+	err := BindQuery(ctx, &req)
+	if err == nil || !strings.Contains(err.Error(), "Filters") {
+		t.Fatalf("BindQuery() error = %v, want field name", err)
+	}
+}
+
+type queryMode string
+
+func (m *queryMode) UnmarshalText(text []byte) error {
+	*m = queryMode("mode:" + string(text))
+	return nil
 }

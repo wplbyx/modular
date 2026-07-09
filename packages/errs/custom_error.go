@@ -97,7 +97,7 @@ func Wrap(err error, opts ...CustomErrorOption) *CustomError {
 	// 如果被包装的是 CustomError，继承其属性
 	var origin *CustomError
 	if errors.As(err, &origin) {
-		e.cause = origin.cause // 保留最原始的 cause
+		e.cause = err // 保留完整的中间错误链
 		e.code = origin.code
 		e.msg = origin.msg
 		// 合并 fields
@@ -206,7 +206,14 @@ func (e *CustomError) Code() int32 {
 
 // Fields 获取附加字段
 func (e *CustomError) Fields() map[string]interface{} {
-	return e.fields
+	if len(e.fields) == 0 {
+		return nil
+	}
+	fields := make(map[string]interface{}, len(e.fields))
+	for k, v := range e.fields {
+		fields[k] = v
+	}
+	return fields
 }
 
 // FullErrStack 生成完整的错误报告，包含堆栈和上下文
@@ -254,6 +261,9 @@ func (e *CustomError) FullErrStack() string {
 // 注意：这里通常配合 errors.As 使用，或者简单地比对 Code
 func (e *CustomError) Is(target error) bool {
 	if t, ok := target.(*CustomError); ok {
+		if e.code == 0 || t.code == 0 {
+			return false
+		}
 		return e.code == t.code
 	}
 	return false

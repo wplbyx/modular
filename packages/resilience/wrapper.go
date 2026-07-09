@@ -25,8 +25,8 @@ func CircuitBreakerMiddleware(cb CircuitBreaker) Middleware {
 func RateLimiterMiddleware(rl RateLimiter) Middleware {
 	return func(next Executor) Executor {
 		return func(ctx context.Context) error {
-			if !rl.Allow(ctx) {
-				return ErrRateLimitExceeded
+			if err := rl.Take(ctx); err != nil {
+				return err
 			}
 			return next(ctx)
 		}
@@ -104,4 +104,3 @@ func NewCompositeResilience(
 
 	return Chain(middlewares...)
 }
-

@@ -357,10 +357,13 @@ func TestApplicationRunShutdownErrorJoinedOnEarlyReturn(t *testing.T) {
 	ctx := context.Background()
 	initErr := errors.New("init boom")
 	closeErr := errors.New("close boom")
-	res := &testResource{name: "db", initErr: initErr, closeErr: closeErr}
+	var order []string
+	ready := &testResource{name: "ready", closeErr: closeErr, initOrder: &order}
+	failed := &testResource{name: "failed", initErr: initErr, closeErr: errors.New("failed close should not run"), initOrder: &order}
 
 	application, err := NewApplication(ctx, &config.Application{Name: "test"},
-		WithResource(res),
+		WithResource(ready),
+		WithResource(failed),
 		WithEndpoint(&testEndpoint{started: make(chan struct{})}),
 	)
 	if err != nil {
@@ -376,6 +379,97 @@ func TestApplicationRunShutdownErrorJoinedOnEarlyReturn(t *testing.T) {
 	}
 	if !errors.Is(runErr, closeErr) {
 		t.Fatalf("Run() error missing shutdown (close) error: %v", runErr)
+	}
+
+	wantOrder := []string{"ready", "ready"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("resource order = %v, want %v", order, wantOrder)
+	}
+}
+
+func TestApplicationRunDoesNotCloseResourceThatFailedSetup(t *testing.T) {
+	ctx := context.Background()
+	var order []string
+	setupErr := errors.New("second setup boom")
+	first := &testResource{name: "first", initOrder: &order}
+	second := &testResource{name: "second", initErr: setupErr, initOrder: &order}
+	third := &testResource{name: "third", initOrder: &order}
+
+	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+		WithResource(first),
+		WithResource(second),
+		WithResource(third),
+		WithEndpoint(&testEndpoint{started: make(chan struct{})}),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	runErr := application.Run()
+	if !errors.Is(runErr, setupErr) {
+		t.Fatalf("Run() error = %v, want setupErr", runErr)
+	}
+
+	want := []string{"first", "first"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("resource order = %v, want %v", order, want)
+	}
+}
+
+func TestApplicationCloseAndRunShutdownOnlyOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var order []string
+	res := &testResource{name: "db", initOrder: &order}
+	endpoint := &slowEndpoint{started: make(chan struct{}), stopDelay: 10 * time.Millisecond, count: new(int64)}
+
+	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+		WithResource(res),
+		WithEndpoint(endpoint),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- application.Run() }()
+
+	select {
+	case <-endpoint.started:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint did not start")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := application.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		cancel()
+	}()
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not return")
+	}
+
+	if got := atomic.LoadInt64(endpoint.count); got != 1 {
+		t.Fatalf("endpoint shutdown count = %d, want 1", got)
+	}
+	wantOrder := []string{"db", "db"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("resource order = %v, want %v", order, wantOrder)
 	}
 }
 

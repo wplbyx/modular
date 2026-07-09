@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strconv"
@@ -31,7 +32,7 @@ func ParseCommands(args []string, object interface{}) error {
 	}
 
 	flags := pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
+	flags.SetOutput(io.Discard)
 	bindings, err := bindStructFlags(flags, value, "")
 	if err != nil {
 		return err
@@ -114,6 +115,13 @@ func flagName(field reflect.StructField) string {
 }
 
 func bindFlag(flags *pflag.FlagSet, name, short, usage, defaultValue string, field reflect.Value) error {
+	if flags.Lookup(name) != nil {
+		return fmt.Errorf("flag %q already defined", name)
+	}
+	if short != "" && flags.ShorthandLookup(short) != nil {
+		return fmt.Errorf("short flag %q already defined", short)
+	}
+
 	switch field.Kind() {
 	case reflect.String:
 		flags.StringVarP(field.Addr().Interface().(*string), name, short, defaultValue, usage)
@@ -233,10 +241,7 @@ func validateRequiredFlags(flags *pflag.FlagSet, bindings []flagBinding) error {
 			continue
 		}
 		flag := flags.Lookup(binding.name)
-		if flag == nil || flag.Changed {
-			continue
-		}
-		if isZeroValue(binding.field) {
+		if flag == nil || !flag.Changed {
 			return fmt.Errorf("required flag %q is missing", binding.name)
 		}
 	}

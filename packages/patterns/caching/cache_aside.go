@@ -2,6 +2,7 @@ package caching
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -26,6 +27,9 @@ func (ca *CacheAside) Get(ctx context.Context, key string, loader func() (string
 	val, err := ca.cache.Get(ctx, key)
 	if err == nil {
 		return val, nil
+	}
+	if !errors.Is(err, ErrCacheMiss) {
+		return "", err
 	}
 
 	data, err := loader()

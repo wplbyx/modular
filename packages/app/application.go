@@ -40,9 +40,12 @@ type Application struct {
 	node *core.ServiceNode
 
 	// 基础设施
-	registrar registry.Registrar
-	endpoints []core.Endpoint
-	resources []core.Resource
+	registrar      registry.Registrar
+	endpoints      []core.Endpoint
+	resources      []core.Resource
+	readyResources []core.Resource
+	shutdownOnce   sync.Once
+	shutdownErr    error
 
 	shutdownTimeout time.Duration
 }
@@ -58,6 +61,7 @@ func NewApplication(ctx context.Context, cfg *config.Application, options ...Opt
 		cfg:             cfg,
 		endpoints:       make([]core.Endpoint, 0),
 		resources:       make([]core.Resource, 0),
+		readyResources:  make([]core.Resource, 0),
 		shutdownTimeout: defaultShutdownTimeout,
 	}
 
@@ -83,15 +87,11 @@ func (app *Application) Run() error {
 
 	// shutdown 在同一个超时预算内完成全部关闭步骤。
 	// goroutine 在 groupCtx 取消时触发 shutdown，解除其余 endpoint 的阻塞；
-	// group.Wait() 返回后也调一次，shutdownOnce 保证只执行一次。
-	var shutdownErr error
-	var shutdownOnce sync.Once
+	// group.Wait() 返回后也调一次，Application 内部的 shutdownOnce 保证只执行一次。
 	triggerShutdown := func() {
-		shutdownOnce.Do(func() {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
-			defer shutdownCancel()
-			shutdownErr = app.shutdown(shutdownCtx)
-		})
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), app.shutdownTimeout)
+		defer shutdownCancel()
+		app.Close(shutdownCtx)
 	}
 
 	ctx, cancel := context.WithCancel(app.ctx)
@@ -100,13 +100,13 @@ func (app *Application) Run() error {
 	// 1. 初始化基础设施资源（FIFO），任一失败 → 关闭已初始化的资源后返回
 	if err := app.setupResources(ctx); err != nil {
 		triggerShutdown()
-		return errors.Join(err, shutdownErr)
+		return errors.Join(err, app.shutdownErr)
 	}
 
 	// 2. 注册服务节点（纯传值，app 不关心注册细节）
 	if err := app.registerNode(ctx); err != nil {
 		triggerShutdown()
-		return errors.Join(err, shutdownErr)
+		return errors.Join(err, app.shutdownErr)
 	}
 
 	// 3. 启动运行所有服务
@@ -135,17 +135,20 @@ func (app *Application) Run() error {
 	}
 
 	triggerShutdown()
-	if shutdownErr != nil {
-		log.GetLogger().Error("Application shutdown error", zap.Error(shutdownErr))
+	if app.shutdownErr != nil {
+		log.GetLogger().Error("Application shutdown error", zap.Error(app.shutdownErr))
 	}
 
 	log.GetLogger().Info("Application exited.")
-	return errors.Join(runErr, shutdownErr)
+	return errors.Join(runErr, app.shutdownErr)
 }
 
 // Close 手动触发全部关闭步骤。
 func (app *Application) Close(ctx context.Context) error {
-	return app.shutdown(ctx)
+	app.shutdownOnce.Do(func() {
+		app.shutdownErr = app.shutdown(ctx)
+	})
+	return app.shutdownErr
 }
 
 // shutdown 在同一个超时预算内按顺序执行全部关闭步骤：
@@ -172,14 +175,15 @@ func (app *Application) setupResources(ctx context.Context) error {
 		if err := r.Setup(ctx); err != nil {
 			return fmt.Errorf("init resource %s: %w", r.Name(), err)
 		}
+		app.readyResources = append(app.readyResources, r)
 	}
 	return nil
 }
 
 func (app *Application) closeResources(ctx context.Context) error {
 	var errs error
-	for i := len(app.resources) - 1; i >= 0; i-- {
-		r := app.resources[i]
+	for i := len(app.readyResources) - 1; i >= 0; i-- {
+		r := app.readyResources[i]
 		log.Infof("--> Resource %v closing...", r.Name())
 		if err := r.Close(ctx); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("close resource %s: %w", r.Name(), err))

@@ -21,37 +21,55 @@ import (
 )
 
 type OpenTelemetry struct {
-	res *resource.Resource
-	Tp  *trace.TracerProvider
-	Mp  *metric.MeterProvider
-	Lp  *log.LoggerProvider
+	name    string
+	version string
+	cfg     *config.Telemetry
+	setup   bool
+	res     *resource.Resource
+	Tp      *trace.TracerProvider
+	Mp      *metric.MeterProvider
+	Lp      *log.LoggerProvider
 }
 
 func NewOpenTelemetry(ctx context.Context, name, version string, telemetry *config.Telemetry) (*OpenTelemetry, error) {
-	ot := new(OpenTelemetry)
-	ot.res = resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(name), semconv.ServiceVersion(version))
-	if err := ot.newTracerProvider(ctx, telemetry, ot.res); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := ot.newMetricProvider(ctx, telemetry, ot.res); err != nil {
-		return nil, err
-	}
-	if err := ot.newLoggerProvider(ctx, telemetry, ot.res); err != nil {
-		return nil, err
-	}
-	return ot, nil
+	return &OpenTelemetry{
+		name:    name,
+		version: version,
+		cfg:     telemetry,
+		res:     resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(name), semconv.ServiceVersion(version)),
+	}, nil
 }
 
 // Name 实现 app.Resource 接口
 func (o *OpenTelemetry) Name() string { return "telemetry" }
 
-// Setup 初始化 OTel providers。如果已通过 NewOpenTelemetry 初始化则跳过。
+// Setup 初始化 OTel providers。
 func (o *OpenTelemetry) Setup(ctx context.Context) error {
-	if o.Tp != nil || o.Mp != nil || o.Lp != nil {
+	if o == nil || o.setup {
 		return nil
 	}
-	// 如果未通过 NewOpenTelemetry 预初始化，需要调用方自行设置 res 并调用各 provider 初始化方法
-	// 典型用法：先 NewOpenTelemetry(ctx, name, version, teleCfg) 完成初始化，再 WithResource(otel) 注册到 app
+	if o.res == nil {
+		o.res = resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(o.name), semconv.ServiceVersion(o.version))
+	}
+	if err := o.newTracerProvider(ctx, o.cfg, o.res); err != nil {
+		_ = o.Close(ctx)
+		return err
+	}
+	if err := o.newMetricProvider(ctx, o.cfg, o.res); err != nil {
+		_ = o.Close(ctx)
+		return err
+	}
+	if err := o.newLoggerProvider(ctx, o.cfg, o.res); err != nil {
+		_ = o.Close(ctx)
+		return err
+	}
+	o.setup = true
 	return nil
 }
 
@@ -64,13 +82,17 @@ func (o *OpenTelemetry) Close(ctx context.Context) error {
 	var joined error
 	if o.Lp != nil {
 		joined = errors.Join(joined, o.Lp.Shutdown(ctx))
+		o.Lp = nil
 	}
 	if o.Mp != nil {
 		joined = errors.Join(joined, o.Mp.Shutdown(ctx))
+		o.Mp = nil
 	}
 	if o.Tp != nil {
 		joined = errors.Join(joined, o.Tp.Shutdown(ctx))
+		o.Tp = nil
 	}
+	o.setup = false
 	return joined
 }
 

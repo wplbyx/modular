@@ -48,6 +48,7 @@ func (e *BaseEvent) GetData() []byte {
 func (e *BaseEvent) GetMetadata() map[string]string {
 	return e.Metadata
 }
+
 // EventFromMessage builds a BaseEvent from a transport-level Message.
 // The message Topic becomes the event Type; headers are carried as metadata.
 func EventFromMessage(msg Message) *BaseEvent {

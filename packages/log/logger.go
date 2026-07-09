@@ -47,24 +47,25 @@ func NewLoggerManager(cfg *config.Logging, options ...LoggerManagerOption) (*Log
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
-	lm = &LoggerManager{
+	manager := &LoggerManager{
 		config: cfg,
 		level:  parseLevel(cfg.Level),
 	}
 
 	for _, option := range options {
-		option(lm)
+		option(manager)
 	}
 
-	if len(lm.cores) == 0 {
+	if len(manager.cores) == 0 {
 		return nil, errors.New("logger config output is empty")
 	}
 
 	// 合并所有 Core
-	core := zapcore.NewTee(lm.cores...)
-	lm.logger = zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	core := zapcore.NewTee(manager.cores...)
+	manager.logger = zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	lm = manager
 
-	return lm, nil
+	return manager, nil
 }
 
 // Close 清理资源
@@ -99,100 +100,80 @@ func parseLevel(level string) zapcore.Level {
 
 // Debug 记录调试日志
 func Debug(args ...interface{}) {
-	if lm == nil {
-		return
-	}
-	lm.logger.Sugar().Debug(args...)
+	GetLogger().Sugar().Debug(args...)
 }
 
 // Info 记录信息日志
 func Info(args ...interface{}) {
-	if lm == nil {
-		return
-	}
-	lm.logger.Sugar().Info(args...)
+	GetLogger().Sugar().Info(args...)
 }
 
 // Warn 记录警告日志
 func Warn(args ...interface{}) {
-	if lm == nil {
-		return
-	}
-	lm.logger.Sugar().Warn(args...)
+	GetLogger().Sugar().Warn(args...)
 }
 
 // Error 记录错误日志
 func Error(args ...interface{}) {
-	if lm == nil {
-		return
-	}
-	lm.logger.Sugar().Error(args...)
+	GetLogger().Sugar().Error(args...)
 }
 
 // Panic 记录恐慌日志
 func Panic(args ...interface{}) {
-	if lm == nil {
+	logger := GetLogger()
+	if logger == nil {
 		stdlog.Panic(args...)
 		return
 	}
-	lm.logger.Sugar().Panic(args...)
+	logger.Sugar().Panic(args...)
 }
 
 // Fatal 记录致命日志
 func Fatal(args ...interface{}) {
-	if lm == nil {
+	logger := GetLogger()
+	if logger == nil {
 		stdlog.Fatal(args...)
 		return
 	}
-	lm.logger.Sugar().Fatal(args...)
+	logger.Sugar().Fatal(args...)
 }
 
 // Debugf 记录格式化调试日志
 func Debugf(template string, args ...interface{}) {
-	if lm == nil {
-		return
-	}
-	lm.logger.Sugar().Debugf(template, args...)
+	GetLogger().Sugar().Debugf(template, args...)
 }
 
 // Infof 记录格式化信息日志
 func Infof(template string, args ...interface{}) {
-	if lm == nil {
-		return
-	}
-	lm.logger.Sugar().Infof(template, args...)
+	GetLogger().Sugar().Infof(template, args...)
 }
 
 // Warnf 记录格式化警告日志
 func Warnf(template string, args ...interface{}) {
-	if lm == nil {
-		return
-	}
-	lm.logger.Sugar().Warnf(template, args...)
+	GetLogger().Sugar().Warnf(template, args...)
 }
 
 // Errorf 记录格式化错误日志
 func Errorf(template string, args ...interface{}) {
-	if lm == nil {
-		return
-	}
-	lm.logger.Sugar().Errorf(template, args...)
+	GetLogger().Sugar().Errorf(template, args...)
 }
 
 // Panicf 记录格式化恐慌日志
 func Panicf(template string, args ...interface{}) {
-	if lm == nil {
+	logger := GetLogger()
+	if logger == nil {
 		stdlog.Panicf(template, args...)
 		return
 	}
-	lm.logger.Sugar().Panicf(template, args...)
+	logger.Sugar().Panicf(template, args...)
 }
 
 // Fatalf 记录格式化致命日志
 func Fatalf(template string, args ...interface{}) {
-	if lm == nil {
+	logger := GetLogger()
+	if logger == nil {
 		stdlog.Fatalf(template, args...)
 		return
 	}
-	lm.logger.Sugar().Fatalf(template, args...)
+	logger.Sugar().Fatalf(template, args...)
 }

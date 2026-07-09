@@ -91,6 +91,34 @@ func TestServerStartServeAndStop(t *testing.T) {
 	require.True(t, eventually(func() bool { return !srv.IsRunning() }), "server should be stopped")
 }
 
+func TestServerShutdownBeforeStartupReleasesListener(t *testing.T) {
+	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
+	require.NoError(t, err)
+
+	addr := srv.Addr().String()
+	require.NoError(t, srv.Shutdown(context.Background()))
+
+	lis, err := net.Listen("tcp", addr)
+	require.NoError(t, err)
+	require.NoError(t, lis.Close())
+}
+
+func TestServerAddrExposesAllocatedPort(t *testing.T) {
+	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
+	require.NoError(t, err)
+	withStop(t, srv)
+
+	addr, ok := srv.Addr().(*net.TCPAddr)
+	require.True(t, ok, "Addr() = %T, want *net.TCPAddr", srv.Addr())
+	require.NotZero(t, addr.Port)
+
+	transport := srv.Transport()
+	require.Equal(t, "http", transport.Protocol)
+	require.Equal(t, "127.0.0.1", transport.Address)
+	require.Equal(t, addr.Port, transport.Port)
+	require.Equal(t, DefaultHealthPath, transport.HealthPath)
+}
+
 func TestRegisterRoute(t *testing.T) {
 	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)

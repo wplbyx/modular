@@ -31,7 +31,15 @@ type ClientConfig struct {
 
 // UseClient executes a callback with a gRPC connection
 func UseClient(callback func(*grpc.ClientConn) error, options ...ClientConfigOption) error {
-	connection, err := GetClientConnection(context.Background(), options...)
+	return UseClientContext(context.Background(), callback, options...)
+}
+
+// UseClientContext executes a callback with a gRPC connection using the provided context.
+func UseClientContext(ctx context.Context, callback func(*grpc.ClientConn) error, options ...ClientConfigOption) error {
+	if callback == nil {
+		return errors.New("grpc client callback is nil")
+	}
+	connection, err := GetClientConnection(ctx, options...)
 	if err != nil {
 		return errors.Join(err, errors.New("failed to initiate gRPC client connection"))
 	}
@@ -42,6 +50,9 @@ func UseClient(callback func(*grpc.ClientConn) error, options ...ClientConfigOpt
 
 // GetClientConnection gets a gRPC client connection
 func GetClientConnection(ctx context.Context, options ...ClientConfigOption) (*grpc.ClientConn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	config := defaultClientConfig()
 	for _, option := range options {
 		if err := option(config); err != nil {

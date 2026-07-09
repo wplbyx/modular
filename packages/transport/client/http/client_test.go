@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -69,6 +70,27 @@ func TestDownloadKeepsDestinationOnHTTPError(t *testing.T) {
 	if string(data) != "old content" {
 		t.Fatalf("destination data = %q", data)
 	}
+}
+
+func TestGlobalClientConcurrentInitAndGet(t *testing.T) {
+	defaultClient = nil
+	t.Cleanup(func() { defaultClient = nil })
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			Init(&Config{Timeout: time.Second, MaxRetries: 1, MaxIdleConns: 2, IdleConnTimeout: time.Second})
+		}()
+		go func() {
+			defer wg.Done()
+			if GetClient() == nil {
+				t.Error("GetClient() = nil")
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func testHTTPClient(fn func(*http.Request) (*http.Response, error)) *httpClient {

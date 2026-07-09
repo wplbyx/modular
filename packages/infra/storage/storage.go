@@ -116,6 +116,36 @@ type Storage interface {
 	MultipartUpload(ctx context.Context, session MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (UploadPartResponse, error)
 }
 
+// ObjectStore 是最小对象存储接口，适合只需要单文件 CRUD 的调用方。
+type ObjectStore interface {
+	GetUrl(key string) string
+	GetMeta(ctx context.Context, key string) (ObjectItem, error)
+	Exists(ctx context.Context, key string) (bool, error)
+	Upload(ctx context.Context, key string, body io.Reader, opts ...IOConfigOptionFunc) error
+	Delete(ctx context.Context, key string, opts ...IOConfigOptionFunc) error
+	Download(ctx context.Context, key string, opts ...IOConfigOptionFunc) (io.ReadCloser, error)
+}
+
+// BatchStore 是批量操作接口。
+type BatchStore interface {
+	BatchUpload(ctx context.Context, tasks []UploadTask, opts ...IOConfigOptionFunc) error
+	BatchDelete(ctx context.Context, keys []string, opts ...IOConfigOptionFunc) ([]string, error)
+	DeleteByPrefix(ctx context.Context, prefix string, opts ...IOConfigOptionFunc) error
+}
+
+// PrefixStore 是前缀遍历接口。
+type PrefixStore interface {
+	PrefixIterator(ctx context.Context, prefix string, callback ListCallback) error
+}
+
+// MultipartStore 是分片上传接口。
+type MultipartStore interface {
+	InitiateMultipartUpload(ctx context.Context, key string) (MultipartUploadSession, error)
+	CompleteMultipartUpload(ctx context.Context, session MultipartUploadSession, parts []UploadPartResponse, opts ...IOConfigOptionFunc) error
+	CancelMultipartUpload(ctx context.Context, session MultipartUploadSession) error
+	MultipartUpload(ctx context.Context, session MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (UploadPartResponse, error)
+}
+
 // ErrUnsupportedStorageType 表示配置的存储类型不支持。
 var ErrUnsupportedStorageType = fmt.Errorf("unsupported storage type")
 

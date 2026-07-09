@@ -32,13 +32,13 @@ Both live in `packages/core/adapter.go`.
 
 From `packages/app/application.go`:
 
-1. `Resource.Setup` for each resource, FIFO (registration order). First failure stops and triggers cleanup of already-setup resources.
+1. `Resource.Setup` for each resource, FIFO (registration order). First failure stops and triggers cleanup of only the resources whose `Setup` already succeeded.
 2. `registrar.Register(node)` if both a Registrar and ServiceNode are set (pass-through; app does not interpret registration details).
 3. All `Endpoint.Startup` run in parallel via errgroup, each blocking.
 4. Run state: waits until any endpoint exits or the context is cancelled.
 5. On exit: `Endpoint.Shutdown` (parallel) then `Unregister(node)` then `Resource.Close` (LIFO, reverse registration order).
 
-Shutdown is guarded by `sync.Once` and runs entirely within one `shutdownTimeout` budget (default 10s; configurable via `config.Application.ShutdownTimeout`).
+Shutdown is guarded by an Application-level `sync.Once`, shared by `Run` and manual `Close(ctx)`. It runs entirely within one `shutdownTimeout` budget when triggered by `Run` (default 10s; configurable via `config.Application.ShutdownTimeout`).
 
 ## Assembly in cmd/main.go
 
@@ -71,5 +71,5 @@ Each endpoint's `Shutdown` honors its own timeout: HTTP server uses `config.HTTP
 ## Signals and zero-endpoint
 
 - An Application with zero endpoints logs a warning and `Run` returns `nil` immediately. It does NOT block. Always register at least one endpoint for a long-running service.
-- `Shutdown` is idempotent (sync.Once). Calling it twice is safe.
+- `Shutdown` is idempotent (sync.Once). Calling `Run` shutdown and `Application.Close(ctx)` concurrently is safe; endpoints/resources are closed once.
 - `errors.Join` aggregates shutdown errors; `Run` returns `errors.Join(runErr, shutdownErr)`.

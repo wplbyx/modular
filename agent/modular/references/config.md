@@ -34,6 +34,8 @@ All config is typed structs with `mapstructure` tags (pascal-case). Use these, n
 
 At least one option is required or `NewConfigureLoader` errors.
 
+`packages/config/app.yml` is kept as a loadable sample and uses the real PascalCase `mapstructure` keys under lowercase top-level sections (`application`, `http`, `grpc`, `storage`, etc.). Use it as a shape reference, not as production credentials.
+
 ## Combining types in a project
 
 A project defines its own aggregate. Embed the library types and add domain config:

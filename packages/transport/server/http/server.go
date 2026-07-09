@@ -53,8 +53,9 @@ type Server struct {
 	tlsKeyFile  string
 
 	// 运行态
-	mu        sync.RWMutex
-	isRunning bool
+	mu             sync.RWMutex
+	isRunning      bool
+	listenerClosed bool
 
 	// 由 option 写入、在 NewServer 各阶段消费的配置字段
 	mode           string
@@ -197,7 +198,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return s.server.Shutdown(ctx)
+
+	if err := s.server.Shutdown(ctx); err != nil {
+		return err
+	}
+	return s.closeListener()
 }
 
 // RegisterRoute 注册业务路由
@@ -217,11 +222,63 @@ func (s *Server) Server() *http.Server {
 	return s.server
 }
 
+// Addr returns the bound listener address. Port=0 is resolved during NewServer.
+func (s *Server) Addr() net.Addr {
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
+}
+
+// Transport returns structured transport metadata for ServiceNode assembly.
+func (s *Server) Transport() core.Transport {
+	protocol := "http"
+	if s.enableTLS {
+		protocol = "https"
+	}
+
+	address := ""
+	port := 0
+	if addr, ok := s.Addr().(*net.TCPAddr); ok {
+		address = addr.IP.String()
+		port = addr.Port
+	}
+	if s.cfg != nil && s.cfg.Host != "" {
+		address = core.NormalizeHost(s.cfg.Host)
+	}
+
+	healthPath := s.healthPath
+	if healthPath == "" && !s.healthDisabled {
+		healthPath = DefaultHealthPath
+	}
+
+	return core.Transport{
+		Protocol:   protocol,
+		Address:    address,
+		Port:       port,
+		HealthPath: healthPath,
+	}
+}
+
 // IsRunning 返回服务是否处于运行态
 func (s *Server) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.isRunning
+}
+
+func (s *Server) closeListener() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil || s.listenerClosed {
+		return nil
+	}
+	err := s.listener.Close()
+	if err == nil || errors.Is(err, net.ErrClosed) {
+		s.listenerClosed = true
+		return nil
+	}
+	return err
 }
 
 func orDuration(d, def time.Duration) time.Duration {

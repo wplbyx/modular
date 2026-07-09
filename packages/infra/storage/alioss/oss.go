@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 
@@ -24,7 +25,9 @@ var _ storage.Storage = (*OssStorage)(nil)
 func applyIOOptions(opts []storage.IOConfigOptionFunc) *storage.IOConfigOption {
 	o := &storage.IOConfigOption{}
 	for _, opt := range opts {
-		opt(o)
+		if opt != nil {
+			opt(o)
+		}
 	}
 	return o
 }
@@ -361,6 +364,7 @@ func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storag
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
 	ossParts := make([]oss.UploadPart, 0, len(parts))
 	for _, p := range parts {
 		ossParts = append(ossParts, oss.UploadPart{PartNumber: int32(p.PartNumber), ETag: oss.Ptr(p.ETag)})
@@ -439,12 +443,13 @@ func joinEndpointPath(endpoint, bucket, key string) string {
 	if endpoint == "" {
 		return ""
 	}
-	// 虚拟主机风格：bucket.endpoint/key
-	u := endpoint
-	if !strings.Contains(endpoint, "://") {
-		u = "https://" + endpoint
+	scheme := "https://"
+	host := endpoint
+	if strings.HasPrefix(endpoint, "http://") {
+		scheme = "http://"
+		host = strings.TrimPrefix(endpoint, "http://")
+	} else if strings.HasPrefix(endpoint, "https://") {
+		host = strings.TrimPrefix(endpoint, "https://")
 	}
-	// 简化：直接拼 bucket 前缀
-	host := strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
-	return "https://" + bucket + "." + host + "/" + strings.Trim(path.Join("/", key), "/")
+	return scheme + bucket + "." + host + "/" + strings.Trim(path.Join("/", key), "/")
 }

@@ -34,6 +34,8 @@ type Server struct {
 	clients    map[string]*Client
 	bufferSize int
 	started    bool
+	cancel     context.CancelFunc
+	startupID  *struct{}
 }
 
 // NewServer 创建一个新的 SSE 服务实例。
@@ -57,24 +59,47 @@ func (s *Server) Name() string {
 // SSE 服务本身不需要监听端口（它挂载在 HTTP 服务的路由上），
 // 因此 Startup 仅标记启动状态，阻塞等待 context 取消。
 func (s *Server) Startup(ctx context.Context) error {
+	startupCtx, cancel := context.WithCancel(ctx)
+	startupID := &struct{}{}
+
 	s.mu.Lock()
+	if s.cancel != nil {
+		s.mu.Unlock()
+		cancel()
+		return fmt.Errorf("sse server is already running")
+	}
 	s.started = true
+	s.cancel = cancel
+	s.startupID = startupID
 	s.mu.Unlock()
 
-	<-ctx.Done()
-	return ctx.Err()
+	<-startupCtx.Done()
+
+	s.mu.Lock()
+	if s.startupID == startupID {
+		s.cancel = nil
+		s.startupID = nil
+	}
+	s.started = false
+	s.mu.Unlock()
+
+	return startupCtx.Err()
 }
 
 // Shutdown 关闭服务，清理所有连接。
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	s.startupID = nil
 	s.started = false
 	for id, client := range s.clients {
 		close(client.MsgChan)
 		delete(s.clients, id)
 	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -108,13 +133,7 @@ func (s *Server) Connect() gin.HandlerFunc {
 			MsgChan: make(chan Message, s.bufferSize),
 		}
 
-		s.mu.Lock()
-		// 单点登录逻辑：如果旧连接存在，先从 map 移除（不直接 close，避免 double-close）
-		if _, exists := s.clients[clientID]; exists {
-			delete(s.clients, clientID)
-		}
-		s.clients[clientID] = client
-		s.mu.Unlock()
+		s.addClient(clientID, client)
 
 		// 发送初始连接成功消息
 		s.Publish(clientID, Message{Event: "system", Data: "connected successfully"})
@@ -195,7 +214,25 @@ func (s *Server) GetClientCount() int {
 	return len(s.clients)
 }
 
+// IsStarted reports whether Startup is currently blocking.
+func (s *Server) IsStarted() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.started
+}
+
 // --- 内部辅助方法 ---
+
+// addClient replaces any existing connection for clientID and closes the old channel.
+func (s *Server) addClient(clientID string, client *Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if old, exists := s.clients[clientID]; exists && old != client {
+		close(old.MsgChan)
+	}
+	s.clients[clientID] = client
+}
 
 // removeClient 安全移除客户端。
 func (s *Server) removeClient(clientID string, current *Client) {

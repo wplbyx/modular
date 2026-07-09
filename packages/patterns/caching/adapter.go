@@ -2,8 +2,12 @@ package caching
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrCacheMiss 表示缓存中不存在该 key；后端故障应返回其他错误。
+var ErrCacheMiss = errors.New("cache miss")
 
 // KVCache 定义缓存模式所需的最小 KV 操作接口。
 // 这是一个本地接口，不依赖 infra/cache —— 任何具备 Get/Set/Del 能力的
