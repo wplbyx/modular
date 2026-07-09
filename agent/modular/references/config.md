@@ -36,18 +36,33 @@ At least one option is required or `NewConfigureLoader` errors.
 
 ## Combining types in a project
 
-A project defines its own aggregate. Embed the library types and add domain config:
+A project defines its own aggregate in `config/config.go`, next to `config/config.yaml`. Keep `cmd/` thin by importing the project config package and calling `config.Load(...)` instead of defining anonymous structs in `main.go`.
+
+    package config
+
+    import modularconfig "modular/packages/config"
 
     type Config struct {
-        config.Application `mapstructure:"application,squash"`
-        HTTP    config.HTTP     `mapstructure:"http"`
-        GRPC    config.GRPC     `mapstructure:"grpc"`
-        Database config.Database `mapstructure:"database"`
-        Redis   config.Redis    `mapstructure:"redis"`
-        Storage config.Storage  `mapstructure:"storage"`
-        Telemetry config.Telemetry `mapstructure:"telemetry"`
-        Logging config.Logging  `mapstructure:"logging"`
+        modularconfig.Application `mapstructure:"application,squash"`
+        HTTP    modularconfig.HTTP     `mapstructure:"http"`
+        GRPC    modularconfig.GRPC     `mapstructure:"grpc"`
+        Database modularconfig.Database `mapstructure:"database"`
+        Redis   modularconfig.Redis    `mapstructure:"redis"`
+        Storage modularconfig.Storage  `mapstructure:"storage"`
+        Telemetry modularconfig.Telemetry `mapstructure:"telemetry"`
+        Logging modularconfig.Logging  `mapstructure:"logging"`
         Domains DomainConfigs   `mapstructure:"domains"`
+    }
+
+    func Load(paths ...string) (*Config, error) {
+        cfg := new(Config)
+        if len(paths) == 0 {
+            paths = []string{"./config"}
+        }
+        err := modularconfig.InitConfigure(cfg,
+            modularconfig.WithConfigFile("config", "yaml", paths...),
+        )
+        return cfg, err
     }
 
 Use `,squash` on the embedded `Application` so its fields sit at top level under the `application` key (matches `config.CustomConfig`'s flat layout).

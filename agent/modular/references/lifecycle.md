@@ -60,7 +60,7 @@ A real cmd builds transports (which are already `core.Endpoint`), resources, the
 - HTTP: `httpserver.NewServer(cfg)` returns an Endpoint; `server.RegisterRoute(api.HTTPRoutes(...))` to attach domain routes.
 - gRPC: `rpcserver.NewServer(cfg, api.RegisterGRPC, opts...)` - the register callback wires `pb.RegisterXxxServer`.
 - SSE: `sse.NewServer(bufSize)` is an Endpoint; mount its `Connect()` handler on the HTTP server's routes.
-- Pub/sub: wrap a `pubsub.MessageHandler` from `api/event.go` with `pubsub.NewSubscriberEndpoint(name, subscriber, topic, handler, opts...)`.
+- Pub/sub: wrap a `pubsub.MessageHandler` from `api/<surface>/event.go` with `pubsub.NewSubscriberEndpoint(name, subscriber, topic, handler, opts...)`.
 
 ## Shutdown
 

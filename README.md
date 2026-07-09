@@ -75,26 +75,18 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"modular/packages/app"
-	"modular/packages/config"
 	"modular/packages/core"
 	"modular/packages/log"
 	httpserver "modular/packages/transport/server/http"
-)
 
-type Config struct {
-	Application config.Application `mapstructure:"application"`
-	HTTP        config.HTTP        `mapstructure:"http"`
-	Logging     config.Logging     `mapstructure:"logging"`
-}
+	projectconfig "<project>/config"
+)
 
 func main() {
 	ctx := context.Background()
 
-	cfg := new(Config)
-	if err := config.InitConfigure(
-		cfg,
-		config.WithConfigFile("app", "yml", "./config"),
-	); err != nil {
+	cfg, err := projectconfig.Load("./config")
+	if err != nil {
 		panic(err)
 	}
 
@@ -179,35 +171,73 @@ application, err := app.NewApplication(
 ```text
 <project>/
   go.mod
-  proto/<domain>.proto
-  common/                    # protoc 生成物，不手写
+  proto/
+    <domain>/
+      <domain>.proto         # 按业务模块分包；默认不再细分 v1/v2
+      <surface>.proto        # 可选：admin / management / platform 等接口面
+  common/                    # protoc 生成物，不手写；目录结构镜像 proto/
+    <domain>/
+      <domain>.pb.go
+      <domain>_grpc.pb.go
+      <surface>.pb.go
+      <surface>_grpc.pb.go
   internal/
     <domain>/
-      api/                   # HTTP/gRPC/event 适配层
-      service/               # 业务逻辑，定义自己的 repository 接口
-      repository/            # DB/Redis/client 等基础设施实现
-      models/
+      api/                   # 入站适配器：HTTP/gRPC/event 映射到对应接口面
+        <surface>/           # admin / management / platform / openapi ...
+          grpc.go
+          http.go
+          event.go
+          v1/                # 可选：只有 proto 接口面引入版本时才出现
+      app/                   # 默认实现 pb XxxServiceServer，并编排用例
+        <surface>/           # 与 api/<surface> 对齐
+          server.go          # 该接口面的 pb server 实例和依赖注入
+          <method>.go        # 一个 pb 方法一个文件，例如 CreateUser -> create_user.go
+          v1/                # 可选：版本化 pb server adapter
+      domain/
+        repository.go        # 仓储接口/端口：command/query 可拆分
+        entity/              # 充血领域对象、聚合根
+        model/               # 可选：读模型/简单领域数据模型，不放 DB tag
+      repository/            # 出站适配器：DB/Redis/client/storage 等脏活累活
+      service/               # 可选：复杂场景下才引入的协议/用例适配层
   cmd/
     <svc>/main.go            # 只做配置加载、资源构造、endpoint 注册、Application 装配
-  config/config.yaml
+  config/
+    config.go                # 项目自己的 Config 聚合类型和 Load 函数
+    config.yaml
 ```
 
 约束：
 
 - 跨领域调用走生成的 pb client，不导入其他领域的 `internal/`。
-- `common/` 是生成目录，不手写 `_pb.go`。
-- `internal/` 的业务逻辑不直接依赖 `Application`。
+- `proto/` 和 `common/` 都按业务模块分包：`proto/<domain>/...` 生成到 `common/<domain>/...`，与 `internal/<domain>/...` 对齐。
+- 一个业务模块可以有多个接口面（surface），例如 `admin`、`management`、`platform`、`openapi`。接口面是外部契约维度，不是领域模型维度。
+- `surface` 名称也是 Go 包名，使用 lower_snake_case，不使用连字符，默认不带版本后缀。
+- 多接口面默认按 `proto/<domain>/<surface>.proto`、`common/<domain>/<surface>.pb.go`、`internal/<domain>/api/<surface>`、`internal/<domain>/app/<surface>` 对齐。单接口面可以继续使用 `proto/<domain>/<domain>.proto`。
+- 当前默认不严格区分 `v1/v2`；未来如果某个接口面引入版本，优先放在 `proto/<domain>/<surface>/v1`，并镜像到 `common/<domain>/<surface>/v1`、`internal/<domain>/api/<surface>/v1`、`internal/<domain>/app/<surface>/v1`。
+- `common/` 是生成目录，不手写 `.pb.go` 或 `_grpc.pb.go`。
+- `api` 属于基础设施入站适配层，只做流量入口、路由/订阅、请求解析和映射，不放业务规则。
+- `app/<surface>` 默认实现生成的 `XxxServiceServer`，同时编排用例流程，调用 `domain` 的仓储接口和领域对象。
+- `app/<surface>/server.go` 放该接口面的 server 类型、构造函数和依赖注入；每个 pb 方法放到独立文件，文件名与方法名一一对应（Go 文件名用 snake_case，例如 `CreateUser` -> `create_user.go`）。
+- `service/` 不是默认层。只有当 pb 契约和内部用例模型明显分离、多版本 pb 需要复用同一组用例、或一个 pb service 需要组合多个 app 子模块时，才引入 `service` 作为额外适配层。
+- `domain` 定义领域抽象：仓储接口、充血实体/聚合、可选读模型；`domain/model` 只放业务读模型或简单领域数据模型，不放 ORM/BSON 等持久化 tag。
+- `domain` 和 `repository` 默认不按 `admin` / `management` / `platform` 或 `v1/v2` 拆包；除非领域概念或持久化实现本身真的分化。
+- `repository` 实现 `domain` 里的接口，集中 DB/Redis/client/storage 等基础设施细节。
+- `internal/` 的业务逻辑不直接依赖 `modular/packages/app.Application`。
+- 项目自己的 `Config` 聚合类型放在 `config` 包里，和 `config.yaml` 同目录；`cmd` 只调用 `project/config.Load(...)`，不在入口里匿名定义配置结构。
 - `cmd` 可以依赖 `modular/packages/*`，负责把资源、endpoint 和业务实现接起来。
 
 ## Agent 使用方式
 
-仓库内提供了一个 Codex skill：`agent/modular`。技能列表里只会显示一个顶层 skill 名称 `modular`；`init`、`service`、`resource`、`gen`、`switch` 是这个 skill 内部的命令语义，不是独立的 `modular:init` 或 `modular:service` 子 skill。
+仓库内提供了一个 Codex skill：`agent/modular`。技能列表里只会显示一个顶层 skill 名称 `modular`；`init`、`service`、`surface`、`method`、`resource`、`gen`、`switch` 是这个 skill 内部的命令语义，不是独立的 `modular:init` 或 `modular:service` 子 skill。
 
 可以这样让 Agent 使用它：
 
 ```text
 使用 modular skill 初始化一个 single 拓扑项目，项目名叫 myapp
 使用 modular skill 给当前项目添加 user service
+使用 modular skill 给 user 服务添加 admin 接口面
+使用 modular skill 给 user/admin 接口实现 CreateUser 方法骨架
 使用 modular skill 给项目接入 redis resource
 使用 modular skill 重新生成 proto
 使用 modular skill 把当前项目从单体切到微服务拓扑
@@ -218,14 +248,16 @@ application, err := app.NewApplication(
 | 命令 | 用途 |
 | --- | --- |
 | `init <project> [single|service]` | 创建下游项目骨架，包含 `go.mod`、buf 配置、`Makefile`、`proto/`、`common/`、`internal/`、`cmd/`、`config/`。 |
-| `service <domain>` | 添加领域服务：创建 proto、生成 common、补齐 `internal/<domain>` 的 api/service/repository/models，并接入 `cmd`。 |
+| `service <domain>` | 添加领域模块：创建默认 proto、生成 `common/<domain>/...`、补齐 `internal/<domain>` 的 api/app/domain/repository，并接入 `cmd`。 |
+| `surface <domain> <surface>` | 为领域模块添加接口面，例如 `admin`、`management`、`platform`，生成 `proto/<domain>/<surface>.proto`、`api/<surface>`、`app/<surface>`。 |
+| `method <domain> <surface> <MethodName>` | 为某个接口面添加 pb 方法骨架，生成或更新 proto rpc，并创建 `app/<surface>/<method>.go` 基础实现文件。 |
 | `resource <kind>` | 添加基础设施资源，`kind` 为 `db`、`redis`、`storage`、`telemetry`；`db` 可按项目选择 Bun、GORM 或 MongoDB。 |
 | `gen` | 从 `proto/` 重新生成 `common/`。 |
 | `switch [single|service]` | 只重写 `cmd` 装配层，在单体和微服务拓扑之间切换。 |
 
 Agent 处理这些任务时会按需读取 `agent/modular/references/`：
 
-- 加服务或切拓扑：读取 `references/layering.md`。
+- 加服务、接口面、方法骨架或切拓扑：读取 `references/layering.md`。
 - 接基础设施资源：读取 `references/infra.md`。
 - 修改 `cmd` 生命周期：读取 `references/lifecycle.md`。
 - 增加 endpoint 或事件入口：读取 `references/transport.md`。

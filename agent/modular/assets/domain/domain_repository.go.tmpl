@@ -1,0 +1,22 @@
+// internal/{{DOMAIN}}/domain/repository.go - domain repository ports.
+// Tokens: {{DOMAIN}}, {{PROJECT}}
+package domain
+
+import (
+	"context"
+
+	"{{PROJECT}}/internal/{{DOMAIN}}/domain/entity"
+	"{{PROJECT}}/internal/{{DOMAIN}}/domain/model"
+)
+
+// QueryRepository returns read models for queries.
+// Split or rename this when the domain grows.
+type QueryRepository interface {
+	FindExample(ctx context.Context, id string) (model.Example, error)
+}
+
+// CommandRepository persists aggregates changed by commands.
+// Keep infra details in internal/{{DOMAIN}}/repository.
+type CommandRepository interface {
+	SaveExample(ctx context.Context, example *entity.Example) error
+}

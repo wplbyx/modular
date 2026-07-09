@@ -1,11 +1,11 @@
-// internal/{{DOMAIN}}/api/event.go - template for the `service {{DOMAIN}}` command.
-// Tokens: {{DOMAIN}}, {{PROJECT}}
-package api
+// internal/{{DOMAIN}}/api/{{SURFACE}}/event.go - interface surface event adapter.
+// Tokens: {{DOMAIN}}, {{SURFACE}}, {{PROJECT}}
+package {{SURFACE}}
 
 import (
 	"context"
 
-	"{{PROJECT}}/internal/{{DOMAIN}}/service"
+	surfaceapp "{{PROJECT}}/internal/{{DOMAIN}}/app/{{SURFACE}}"
 )
 
 // Handler is the domain's inbound event handler signature.
@@ -14,11 +14,11 @@ import (
 // core.Endpoint. api/ stays free of transport imports - the wiring lives in cmd/.
 type Handler func(ctx context.Context, topic string, payload []byte, headers map[string]string) error
 
-// NewEventHandler builds a Handler for the domain service.
+// NewEventHandler builds a Handler for this interface surface.
 // Add one constructor per topic the domain subscribes to.
-func NewEventHandler(svc *service.Service) Handler {
+func NewEventHandler(server *surfaceapp.Server) Handler {
 	return func(ctx context.Context, topic string, payload []byte, headers map[string]string) error {
-		_ = svc
+		_ = server
 		_ = ctx
 		_ = topic
 		_ = payload

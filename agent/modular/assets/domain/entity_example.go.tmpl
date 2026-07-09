@@ -1,0 +1,17 @@
+// internal/{{DOMAIN}}/domain/entity/example.go - rich domain entity example.
+package entity
+
+type Example struct {
+	id string
+}
+
+func NewExample(id string) *Example {
+	return &Example{id: id}
+}
+
+func (e *Example) ID() string {
+	if e == nil {
+		return ""
+	}
+	return e.id
+}
