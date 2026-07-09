@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"modular/packages/config"
+	"github.com/wplbyx/modular/packages/config"
 )
 
 func TestNewOpenTelemetryDefersProviderInitializationToSetup(t *testing.T) {

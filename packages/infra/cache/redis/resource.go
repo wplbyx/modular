@@ -6,8 +6,8 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"modular/packages/config"
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 var _ core.Resource = (*Resource)(nil)

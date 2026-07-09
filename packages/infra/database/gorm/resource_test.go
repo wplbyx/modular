@@ -8,8 +8,8 @@ import (
 	"gorm.io/driver/sqlite"
 	gormlib "gorm.io/gorm"
 
-	"modular/packages/config"
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 func TestResourceImplementsCoreResource(t *testing.T) {

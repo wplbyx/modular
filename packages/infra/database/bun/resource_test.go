@@ -10,8 +10,8 @@ import (
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 
-	"modular/packages/config"
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 func TestResourceImplementsCoreResource(t *testing.T) {
