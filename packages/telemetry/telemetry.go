@@ -17,7 +17,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.38.0"
 
-	"modular/packages/config"
+	"github.com/wplbyx/modular/packages/config"
 )
 
 type OpenTelemetry struct {

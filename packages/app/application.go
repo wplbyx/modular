@@ -10,10 +10,10 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
-	"modular/packages/config"
-	"modular/packages/core"
-	"modular/packages/log"
-	"modular/packages/registry"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/log"
+	"github.com/wplbyx/modular/packages/registry"
 )
 
 const defaultShutdownTimeout = 10 * time.Second

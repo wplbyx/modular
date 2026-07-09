@@ -1,15 +1,15 @@
 ---
 name: modular
-description: Scaffold and wire Go applications built on the `modular` infrastructure library. Use this skill when a project imports the `modular` module (module path `modular`, Go 1.26+) and needs to initialize a project shell, add a service/domain module, add an interface surface such as admin/management/platform, add a pb method implementation file, attach infrastructure resources (DB/Redis/Storage/Telemetry), regenerate proto code, or switch between monolith and microservice topology. Also use it to enforce the modular conventions - proto-first interfaces, the cmd/common/internal layering, app-surface method files, and the core.Resource/core.Endpoint framework lifecycle. Trigger when the user asks to scaffold, init, add service, add surface, implement a method, add resource, generate proto, switch to single/microservice, or otherwise build upon the modular library.
+description: Scaffold and wire Go applications built on the `modular` infrastructure library. Use this skill when a project imports the `github.com/wplbyx/modular` module (Go 1.26+) and needs to initialize a project shell, add a service/domain module, add an interface surface such as admin/management/platform, add a pb method implementation file, attach infrastructure resources (DB/Redis/Storage/Telemetry), regenerate proto code, or switch between monolith and microservice topology. Also use it to enforce the modular conventions - proto-first interfaces, the cmd/common/internal layering, app-surface method files, and the core.Resource/core.Endpoint framework lifecycle. Trigger when the user asks to scaffold, init, add service, add surface, implement a method, add resource, generate proto, switch to single/microservice, or otherwise build upon the modular library.
 ---
 
 # modular
 
-Scaffold, wire, and operate Go services built on the `modular` infrastructure library (module `modular`, Go 1.26+). This skill is the usage and convention contract for downstream projects: it generates a runnable skeleton and enforces the layering and lifecycle rules the library expects.
+Scaffold, wire, and operate Go services built on the `modular` infrastructure library (module `github.com/wplbyx/modular`, Go 1.26+). This skill is the usage and convention contract for downstream projects: it generates a runnable skeleton and enforces the layering and lifecycle rules the library expects.
 
 ## What this skill is for
 
-A downstream project imports `modular/packages/*`, then uses this skill to generate a correct project structure and wire the library's pieces together. Two convention layers, kept strictly separate:
+A downstream project imports `github.com/wplbyx/modular/packages/*`, then uses this skill to generate a correct project structure and wire the library's pieces together. Two convention layers, kept strictly separate:
 
 - **Framework layer (`cmd/`)**: the `core.Resource` / `core.Endpoint` interfaces make infrastructure components swappable. These live in `cmd/main.go` only.
 - **Business layer (`proto` + `internal/`)**: proto is the only cross-module interface boundary. Business code depends on proto interfaces, never on another domain's internals.
@@ -22,7 +22,7 @@ Every project generated or maintained by this skill follows this tree:
 
 ```
 <project>/
-  go.mod                       # module <project>; requires modular
+  go.mod                       # module <project>; requires github.com/wplbyx/modular
   buf.yaml buf.gen.yaml        # proto toolchain (protoc-gen-go + protoc-gen-go-grpc)
   Makefile                     # gen / build / run-<domain> / check targets
   proto/

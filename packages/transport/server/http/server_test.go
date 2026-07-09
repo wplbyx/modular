@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"modular/packages/config"
+	"github.com/wplbyx/modular/packages/config"
 )
 
 func withStop(t *testing.T, srv *Server) {

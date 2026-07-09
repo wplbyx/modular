@@ -7,8 +7,8 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"modular/packages/log"
-	"modular/packages/transport/pubsub"
+	"github.com/wplbyx/modular/packages/log"
+	"github.com/wplbyx/modular/packages/transport/pubsub"
 )
 
 // ChannelClient 使用 Redis pubsub.Client 实现 发布/订阅 接口

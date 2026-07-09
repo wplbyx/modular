@@ -9,8 +9,8 @@ import (
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 
-	"modular/packages/config"
-	"modular/packages/infra/database"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/infra/database"
 )
 
 // globalDB is the package-level connection, set by NewBunConnection.

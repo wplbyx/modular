@@ -9,7 +9,7 @@ import (
 
 	"github.com/hashicorp/consul/api"
 
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 // Registry 瀹炵幇浜?Registrar 鍜?Discovery 鎺ュ彛

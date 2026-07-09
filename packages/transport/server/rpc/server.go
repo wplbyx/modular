@@ -16,9 +16,9 @@ import (
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
-	"modular/packages/config"
-	"modular/packages/core"
-	"modular/packages/log"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/log"
 )
 
 var _ core.Endpoint = (*Server)(nil)

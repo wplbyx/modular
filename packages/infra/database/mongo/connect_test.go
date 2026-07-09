@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"modular/packages/config"
-	"modular/packages/infra/database"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/infra/database"
 )
 
 func TestNewClientOptions_UsesConfiguredHosts(t *testing.T) {

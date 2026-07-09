@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
-	"modular/packages/log"
+	"github.com/wplbyx/modular/packages/log"
 )
 
 // RecordError records an error on the active span and writes a correlated log.

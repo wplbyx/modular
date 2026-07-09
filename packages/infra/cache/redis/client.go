@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"modular/packages/config"
+	"github.com/wplbyx/modular/packages/config"
 )
 
 // globalClient 是全局 Redis 客户端，供需要直接访问 Redis 的包在装配阶段使用。

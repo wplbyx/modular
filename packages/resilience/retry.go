@@ -6,9 +6,9 @@ import (
 	"math"
 	"time"
 
+	"github.com/wplbyx/modular/packages/errs"
+	"github.com/wplbyx/modular/packages/log"
 	"go.uber.org/zap"
-	"modular/packages/errs"
-	"modular/packages/log"
 )
 
 // RetryConfig 重试配置

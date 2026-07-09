@@ -15,7 +15,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 var _ Discovery = (*K8sRegistry)(nil)

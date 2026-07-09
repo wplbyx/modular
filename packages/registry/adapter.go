@@ -2,7 +2,7 @@ package registry
 
 import (
 	"context"
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 // Registrar 服务注册接口

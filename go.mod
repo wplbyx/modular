@@ -1,4 +1,4 @@
-module modular
+module github.com/wplbyx/modular
 
 go 1.26.0
 

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"modular/packages/errs"
-	"modular/packages/log"
+	"github.com/wplbyx/modular/packages/errs"
+	"github.com/wplbyx/modular/packages/log"
 )
 
 var (

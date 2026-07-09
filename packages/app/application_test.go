@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 	"errors"
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 	"reflect"
 	"strings"
 	"sync"
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"modular/packages/config"
+	"github.com/wplbyx/modular/packages/config"
 )
 
 // --- test Resource ---

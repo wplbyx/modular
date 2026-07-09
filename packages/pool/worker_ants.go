@@ -7,7 +7,7 @@ import (
 
 	"github.com/panjf2000/ants/v2"
 
-	pkglog "modular/packages/log"
+	pkglog "github.com/wplbyx/modular/packages/log"
 )
 
 var wp *AntsWorkerPool

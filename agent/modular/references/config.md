@@ -40,7 +40,7 @@ A project defines its own aggregate in `config/config.go`, next to `config/confi
 
     package config
 
-    import modularconfig "modular/packages/config"
+    import modularconfig "github.com/wplbyx/modular/packages/config"
 
     type Config struct {
         modularconfig.Application `mapstructure:"application,squash"`

@@ -15,7 +15,7 @@ Produces:
     config/config.go, config/config.yaml, and a cmd/ entry. Generated common/
     mirrors proto/<domain>/... via paths=source_relative.
 
-The project depends on `modular` via a go.mod replace pointing at the path
+The project depends on `github.com/wplbyx/modular` via a go.mod replace pointing at the path
 passed via --modular-path (defaults to the sibling ../../.. from this skill so
 projects generated inside the repo resolve locally). Downstream users will
 edit the replace directive to a real path or remove it for publishing.
@@ -35,10 +35,10 @@ module {project}
 
 go {go_version}
 
-require modular v0.0.0
+require github.com/wplbyx/modular v0.0.0
 
 // Points at the local modular checkout. Edit or remove when publishing.
-replace modular => {modular_path}
+replace github.com/wplbyx/modular => {modular_path}
 """
 
 BUF_YAML = """\
@@ -108,7 +108,7 @@ logging:
 CONFIG_GO = """\
 package config
 
-import modularconfig "modular/packages/config"
+import modularconfig "github.com/wplbyx/modular/packages/config"
 
 type Config struct {
 \tmodularconfig.Application `mapstructure:"application,squash"`
@@ -143,9 +143,9 @@ import (
 
 \tprojectconfig "{project}/config"
 
-\t"modular/packages/app"
-\t"modular/packages/core"
-\thttpserver "modular/packages/transport/server/http"
+\t"github.com/wplbyx/modular/packages/app"
+\t"github.com/wplbyx/modular/packages/core"
+\thttpserver "github.com/wplbyx/modular/packages/transport/server/http"
 )
 
 func main() {{

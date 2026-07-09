@@ -16,9 +16,9 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"modular/packages/config"
-	"modular/packages/core"
-	"modular/packages/log"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/log"
 )
 
 var _ core.Endpoint = (*Server)(nil)

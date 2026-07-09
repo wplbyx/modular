@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	mw "modular/packages/transport/server/http/middleware"
+	mw "github.com/wplbyx/modular/packages/transport/server/http/middleware"
 )
 
 // ServerOption 用于配置 Server。option 仅写入 Server 字段，

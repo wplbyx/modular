@@ -1,6 +1,6 @@
 # modular
 
-`modular` 是一套 Go 基础设施模块化积木库（module path: `modular`，Go 1.26+）。它不是业务框架，也不接管业务代码；它提供可复用的基础设施组件、生命周期编排、配置加载、服务注册发现、传输层适配和常用工程模式，让业务项目通过依赖注入把应用组装起来。
+`modular` 是一套 Go 基础设施模块化积木库（module path: `github.com/wplbyx/modular`，Go 1.26+）。它不是业务框架，也不接管业务代码；它提供可复用的基础设施组件、生命周期编排、配置加载、服务注册发现、传输层适配和常用工程模式，让业务项目通过依赖注入把应用组装起来。
 
 核心目标：
 
@@ -74,10 +74,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"modular/packages/app"
-	"modular/packages/core"
-	"modular/packages/log"
-	httpserver "modular/packages/transport/server/http"
+	"github.com/wplbyx/modular/packages/app"
+	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/log"
+	httpserver "github.com/wplbyx/modular/packages/transport/server/http"
 
 	projectconfig "<project>/config"
 )
@@ -223,9 +223,9 @@ application, err := app.NewApplication(
 - `domain` 定义领域抽象：仓储接口、充血实体/聚合、可选读模型；`domain/model` 只放业务读模型或简单领域数据模型，不放 ORM/BSON 等持久化 tag。
 - `domain` 和 `repository` 默认不按 `admin` / `management` / `platform` 或 `v1/v2` 拆包；除非领域概念或持久化实现本身真的分化。
 - `repository` 实现 `domain` 里的接口，集中 DB/Redis/client/storage 等基础设施细节。
-- `internal/` 的业务逻辑不直接依赖 `modular/packages/app.Application`。
+- `internal/` 的业务逻辑不直接依赖 `github.com/wplbyx/modular/packages/app.Application`。
 - 项目自己的 `Config` 聚合类型放在 `config` 包里，和 `config.yaml` 同目录；`cmd` 只调用 `project/config.Load(...)`，不在入口里匿名定义配置结构。
-- `cmd` 可以依赖 `modular/packages/*`，负责把资源、endpoint 和业务实现接起来。
+- `cmd` 可以依赖 `github.com/wplbyx/modular/packages/*`，负责把资源、endpoint 和业务实现接起来。
 
 ## Agent 使用方式
 

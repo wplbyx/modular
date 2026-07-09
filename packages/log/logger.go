@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"modular/packages/config"
+	"github.com/wplbyx/modular/packages/config"
 )
 
 // 全局日志管理器

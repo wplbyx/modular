@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 func TestBuildConsulTarget(t *testing.T) {

@@ -17,8 +17,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
-	"modular/packages/config"
-	"modular/packages/infra/storage"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/infra/storage"
 )
 
 // 编译期接口断言：确保 DiskStorage 完整实现 Storage 接口

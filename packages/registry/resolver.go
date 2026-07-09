@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/grpc/resolver"
 
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 // gRPCResolver 使用服务发现后端（Consul/K8s）解析服务地址。

@@ -1,148 +1,148 @@
- package pubsub
+package pubsub
 
- import (
- 	"context"
- 	"fmt"
- 	"sync"
+import (
+	"context"
+	"fmt"
+	"sync"
 
- 	"modular/packages/core"
- )
+	"github.com/wplbyx/modular/packages/core"
+)
 
- // Connector is an optional capability that a subscriber-backed endpoint may
- // invoke before subscribing. MQTTClient satisfies it; Kafka Consumer does not.
- type Connector interface {
- 	Connect(ctx context.Context) error
- }
+// Connector is an optional capability that a subscriber-backed endpoint may
+// invoke before subscribing. MQTTClient satisfies it; Kafka Consumer does not.
+type Connector interface {
+	Connect(ctx context.Context) error
+}
 
- // Disconnector is the symmetric teardown for Connector.
- type Disconnector interface {
- 	Disconnect(ctx context.Context) error
- }
+// Disconnector is the symmetric teardown for Connector.
+type Disconnector interface {
+	Disconnect(ctx context.Context) error
+}
 
- // SubscriberEndpoint wraps a pubsub.Subscriber so it can be registered with
- // Application as a core.Endpoint. It connects (optional), subscribes, then
- // blocks in Startup until Shutdown cancels the context.
- //
- // Usage:
- //
- //	// MQTT
- //	mqttClient, _ := mqtt.NewClient(mqtt.WithBrokerURL("tcp://broker:1883"))
- //	ep := pubsub.NewSubscriberEndpoint(
- //	    "mqtt-events",
- //	    mqttClient,
- //	    "events/topic",
- //	    myHandler,
- //	    pubsub.WithConnect(mqttClient.Connect),
- //	    pubsub.WithDisconnect(mqttClient.Disconnect),
- //	)
- //	app.WithEndpoint(ep)
- //
- //	// Kafka (no connect/disconnect needed)
- //	consumer, _ := kafka.NewConsumer(kafka.WithBrokers("localhost:9092"), kafka.WithTopic("events"))
- //	ep = pubsub.NewSubscriberEndpoint("kafka-events", consumer, "events", myHandler)
- //	app.WithEndpoint(ep)
- type SubscriberEndpoint struct {
- 	name    string
- 	sub     Subscriber
- 	topic   string
- 	handler MessageHandler
- 	opts    []SubscribeOption
+// SubscriberEndpoint wraps a pubsub.Subscriber so it can be registered with
+// Application as a core.Endpoint. It connects (optional), subscribes, then
+// blocks in Startup until Shutdown cancels the context.
+//
+// Usage:
+//
+//	// MQTT
+//	mqttClient, _ := mqtt.NewClient(mqtt.WithBrokerURL("tcp://broker:1883"))
+//	ep := pubsub.NewSubscriberEndpoint(
+//	    "mqtt-events",
+//	    mqttClient,
+//	    "events/topic",
+//	    myHandler,
+//	    pubsub.WithConnect(mqttClient.Connect),
+//	    pubsub.WithDisconnect(mqttClient.Disconnect),
+//	)
+//	app.WithEndpoint(ep)
+//
+//	// Kafka (no connect/disconnect needed)
+//	consumer, _ := kafka.NewConsumer(kafka.WithBrokers("localhost:9092"), kafka.WithTopic("events"))
+//	ep = pubsub.NewSubscriberEndpoint("kafka-events", consumer, "events", myHandler)
+//	app.WithEndpoint(ep)
+type SubscriberEndpoint struct {
+	name    string
+	sub     Subscriber
+	topic   string
+	handler MessageHandler
+	opts    []SubscribeOption
 
- 	onStart func(ctx context.Context) error
- 	onStop  func(ctx context.Context) error
+	onStart func(ctx context.Context) error
+	onStop  func(ctx context.Context) error
 
- 	mu     sync.Mutex
- 	cancel context.CancelFunc
- }
+	mu     sync.Mutex
+	cancel context.CancelFunc
+}
 
- // SubscriberOption configures a SubscriberEndpoint.
- type SubscriberOption func(*SubscriberEndpoint)
+// SubscriberOption configures a SubscriberEndpoint.
+type SubscriberOption func(*SubscriberEndpoint)
 
- // WithConnect registers a callback invoked at the start of Startup
- // (e.g. an MQTT broker connect).
- func WithConnect(fn func(ctx context.Context) error) SubscriberOption {
- 	return func(e *SubscriberEndpoint) { e.onStart = fn }
- }
+// WithConnect registers a callback invoked at the start of Startup
+// (e.g. an MQTT broker connect).
+func WithConnect(fn func(ctx context.Context) error) SubscriberOption {
+	return func(e *SubscriberEndpoint) { e.onStart = fn }
+}
 
- // WithDisconnect registers a callback invoked during Shutdown
- // (e.g. an MQTT broker disconnect).
- func WithDisconnect(fn func(ctx context.Context) error) SubscriberOption {
- 	return func(e *SubscriberEndpoint) { e.onStop = fn }
- }
+// WithDisconnect registers a callback invoked during Shutdown
+// (e.g. an MQTT broker disconnect).
+func WithDisconnect(fn func(ctx context.Context) error) SubscriberOption {
+	return func(e *SubscriberEndpoint) { e.onStop = fn }
+}
 
- // NewSubscriberEndpoint creates a core.Endpoint that manages a subscription.
- func NewSubscriberEndpoint(name string, sub Subscriber, topic string, handler MessageHandler, opts ...SubscriberOption) *SubscriberEndpoint {
- 	e := &SubscriberEndpoint{
- 		name:    name,
- 		sub:     sub,
- 		topic:   topic,
- 		handler: handler,
- 	}
- 	for _, opt := range opts {
- 		opt(e)
- 	}
- 	return e
- }
+// NewSubscriberEndpoint creates a core.Endpoint that manages a subscription.
+func NewSubscriberEndpoint(name string, sub Subscriber, topic string, handler MessageHandler, opts ...SubscriberOption) *SubscriberEndpoint {
+	e := &SubscriberEndpoint{
+		name:    name,
+		sub:     sub,
+		topic:   topic,
+		handler: handler,
+	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
+}
 
- var _ core.Endpoint = (*SubscriberEndpoint)(nil)
+var _ core.Endpoint = (*SubscriberEndpoint)(nil)
 
- // Name returns the endpoint label for logging.
- func (e *SubscriberEndpoint) Name() string { return e.name }
+// Name returns the endpoint label for logging.
+func (e *SubscriberEndpoint) Name() string { return e.name }
 
- // Startup runs the optional connect hook, subscribes, then blocks until
- // Shutdown cancels the internal context.
- func (e *SubscriberEndpoint) Startup(ctx context.Context) error {
- 	if err := ctx.Err(); err != nil {
- 		return err
- 	}
+// Startup runs the optional connect hook, subscribes, then blocks until
+// Shutdown cancels the internal context.
+func (e *SubscriberEndpoint) Startup(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
- 	subCtx, cancel := context.WithCancel(ctx)
+	subCtx, cancel := context.WithCancel(ctx)
 
- 	e.mu.Lock()
- 	e.cancel = cancel
- 	e.mu.Unlock()
+	e.mu.Lock()
+	e.cancel = cancel
+	e.mu.Unlock()
 
- 	if e.onStart != nil {
- 		if err := e.onStart(subCtx); err != nil {
- 			cancel()
- 			return fmt.Errorf("connect for endpoint %s: %w", e.name, err)
- 		}
- 	}
+	if e.onStart != nil {
+		if err := e.onStart(subCtx); err != nil {
+			cancel()
+			return fmt.Errorf("connect for endpoint %s: %w", e.name, err)
+		}
+	}
 
- 	if err := e.sub.Subscribe(subCtx, e.topic, e.handler, e.opts...); err != nil {
- 		cancel()
- 		return fmt.Errorf("subscribe %s: %w", e.topic, err)
- 	}
+	if err := e.sub.Subscribe(subCtx, e.topic, e.handler, e.opts...); err != nil {
+		cancel()
+		return fmt.Errorf("subscribe %s: %w", e.topic, err)
+	}
 
- 	<-subCtx.Done()
- 	return nil
- }
+	<-subCtx.Done()
+	return nil
+}
 
- // Shutdown cancels the subscription loop, calls the optional disconnect
- // hook, and closes the underlying subscriber.
- func (e *SubscriberEndpoint) Shutdown(ctx context.Context) error {
- 	e.mu.Lock()
- 	if e.cancel != nil {
- 		e.cancel()
- 		e.cancel = nil
- 	}
- 	e.mu.Unlock()
+// Shutdown cancels the subscription loop, calls the optional disconnect
+// hook, and closes the underlying subscriber.
+func (e *SubscriberEndpoint) Shutdown(ctx context.Context) error {
+	e.mu.Lock()
+	if e.cancel != nil {
+		e.cancel()
+		e.cancel = nil
+	}
+	e.mu.Unlock()
 
- 	var errs error
- 	if e.onStop != nil {
- 		if err := e.onStop(ctx); err != nil {
- 			errs = fmt.Errorf("disconnect for endpoint %s: %w", e.name, err)
- 		}
- 	}
- 	if err := e.sub.Close(); err != nil {
- 		errs = joinErrors(errs, fmt.Errorf("close subscriber for endpoint %s: %w", e.name, err))
- 	}
- 	return errs
- }
+	var errs error
+	if e.onStop != nil {
+		if err := e.onStop(ctx); err != nil {
+			errs = fmt.Errorf("disconnect for endpoint %s: %w", e.name, err)
+		}
+	}
+	if err := e.sub.Close(); err != nil {
+		errs = joinErrors(errs, fmt.Errorf("close subscriber for endpoint %s: %w", e.name, err))
+	}
+	return errs
+}
 
- func joinErrors(errs, err error) error {
- 	if errs == nil {
- 		return err
- 	}
- 	return fmt.Errorf("%v; %v", errs, err)
- }
+func joinErrors(errs, err error) error {
+	if errs == nil {
+		return err
+	}
+	return fmt.Errorf("%v; %v", errs, err)
+}
