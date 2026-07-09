@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 // Connector is an optional capability that a subscriber-backed endpoint may
@@ -152,4 +152,11 @@ func (e *SubscriberEndpoint) Shutdown(ctx context.Context) error {
 		errs = errors.Join(errs, fmt.Errorf("close subscriber for endpoint %s: %w", e.name, err))
 	}
 	return errs
+}
+
+func joinErrors(errs, err error) error {
+	if errs == nil {
+		return err
+	}
+	return fmt.Errorf("%v; %v", errs, err)
 }

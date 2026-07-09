@@ -1,28 +1,22 @@
-// internal/{{DOMAIN}}/service/service.go - template for the `service {{DOMAIN}}` command.
-// Tokens: {{DOMAIN}}, {{DOMAIN_PASCAL}}, {{PROJECT}}, {{GO_PACKAGE}} (e.g. demo/common/order)
+// internal/{{DOMAIN}}/service/{{SURFACE}}.go - optional protocol/use-case adapter.
+// Tokens: {{DOMAIN}}, {{SURFACE}}, {{SERVICE_PASCAL}}, {{PROJECT}}, {{GO_PACKAGE}}
 package service
 
 import (
-	"context"
-
-	"{{GO_PACKAGE}}"
+	common "{{GO_PACKAGE}}"
+	surfaceapp "{{PROJECT}}/internal/{{DOMAIN}}/app/{{SURFACE}}"
 )
 
-// Service implements common.{{DOMAIN_PASCAL}}ServiceServer (the generated pb interface).
-// It holds its OWN business repository interfaces as fields; concrete infra
-// implementations live in internal/{{DOMAIN}}/repository and are injected from cmd/.
+// Service is optional. Prefer app/{{SURFACE}}.Server directly unless this
+// adapter hides real versioning, protocol mapping, or facade complexity.
 type Service struct {
-	common.{{DOMAIN_PASCAL}}ServiceServer
-	// repo Repository  // define this interface here, implement in repository/
+	common.Unimplemented{{SERVICE_PASCAL}}Server
+
+	app *surfaceapp.Server
 }
 
-// NewService constructs the service with its injected dependencies.
-// cmd/ builds the repos (wired to infra) and passes them here.
-func NewService(/* repo Repository */) *Service {
-	return &Service{}
+func NewService(app *surfaceapp.Server) *Service {
+	return &Service{app: app}
 }
 
-// Example satisfies the pb interface. Replace with real rpc methods declared in proto.
-func (s *Service) Example(ctx context.Context, req *common.ExampleRequest) (*common.ExampleResponse, error) {
-	return &common.ExampleResponse{Id: req.Id}, nil
-}
+var _ common.{{SERVICE_PASCAL}}Server = (*Service)(nil)

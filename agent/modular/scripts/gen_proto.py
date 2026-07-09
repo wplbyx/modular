@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """modular skill: gen_proto
 
-Regenerate `common/` from `proto/`. Mechanical backend for the `gen` command.
+Regenerate `common/` from domain-partitioned `proto/`. Mechanical backend for
+the `gen` command.
 
 Usage:
     gen_proto.py [--project-dir <dir>] [-- buf args...]
@@ -10,7 +11,9 @@ Runs `buf generate` in the project directory. Passes any extra args after `--`
 through to buf. Requires the `buf` CLI on PATH (install via
 `go install github.com/bufbuild/buf/cmd/buf@latest` or `bufbuild/buf` releases).
 
-Contract: `common/` is pure protoc output. Never hand-edit generated files.
+Contract: `common/` is pure protoc output. With paths=source_relative,
+`proto/<domain>/<file>.proto` generates to `common/<domain>/<file>.pb.go`.
+Never hand-edit generated files.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"buf generate failed (exit {completed.returncode})", file=sys.stderr)
         return completed.returncode
 
-    print("==> common/ regenerated. Remember: never hand-edit _pb.go files.")
+    print("==> common/ regenerated. Remember: never hand-edit .pb.go or _grpc.pb.go files.")
     return 0
 
 

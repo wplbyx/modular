@@ -10,8 +10,8 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"modular/packages/log"
-	"modular/packages/transport/pubsub"
+	"github.com/wplbyx/modular/packages/log"
+	"github.com/wplbyx/modular/packages/transport/pubsub"
 )
 
 // Reserved stream field keys used to carry pubsub.Message metadata inside an

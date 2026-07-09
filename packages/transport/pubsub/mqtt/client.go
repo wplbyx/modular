@@ -8,8 +8,8 @@ import (
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 
-	"modular/packages/log"
-	"modular/packages/transport/pubsub"
+	"github.com/wplbyx/modular/packages/log"
+	"github.com/wplbyx/modular/packages/transport/pubsub"
 )
 
 // Ensure MQTTClient implements pubsub.Client interface

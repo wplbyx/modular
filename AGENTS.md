@@ -4,7 +4,7 @@
 
 ## Design Philosophy
 
-`modular` 是一套 Go 基础设施积木库（module path: `modular`，Go 1.26+），目标是提供一套可复用的、符合 Go 惯用模式的基础设施方案，让业务项目依赖它来快速组建应用。
+`modular` 是一套 Go 基础设施积木库（module path: `github.com/wplbyx/modular`，Go 1.26+），目标是提供一套可复用的、符合 Go 惯用模式的基础设施方案，让业务项目依赖它来快速组建应用。
 
 核心理念：
 
@@ -72,7 +72,7 @@ go mod tidy                 # 同步依赖
 - 接口定义放顶层 `adapter.go`，实现按文件拆分。
 - 错误通过 `packages/errs` 统一封装；日志走 `packages/log`（zap）。
 - 代码注释以中文为主（见 `application.go` 中 `// 应用程序生命周期管理器` 这类），新代码沿用此约定即可。
-- 导入分组顺序：标准库 → 第三方 → 本仓库（`modular/packages/...`）。
+- 导入分组顺序：标准库 → 第三方 → 本仓库（`github.com/wplbyx/modular/packages/...`）。
 - 命名约定：Endpoint 生命周期方法统一为 `Startup`/`Shutdown`（带 context），Resource 为 `Setup`/`Close`。
 
 ## Testing Guidelines

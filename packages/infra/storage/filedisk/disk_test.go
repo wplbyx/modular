@@ -6,15 +6,15 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
+	"github.com/wplbyx/modular/packages/infra/storage"
 	"io"
-	"modular/packages/infra/storage"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
-	"modular/packages/config"
+	"github.com/wplbyx/modular/packages/config"
 )
 
 const testBaseUrl = "https://cdn.example.com/"

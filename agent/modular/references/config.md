@@ -16,7 +16,7 @@ All config is typed structs with `mapstructure` tags (pascal-case). Use these, n
 - `config.Application`: `Name` (required), `Mode` (required, oneof dev|test|prod), `Version` (required), `ShutdownTimeout`.
 - `config.HTTP`: `Host` (required), `Port` (required, 1000-65535), `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
 - `config.GRPC`: `Host` (required), `Port` (required, 1000-65535), `Timeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
-- `config.Database`: `Dsn` (required, oneof sqlite|mysql|postgres|clickhouse), `Urls`, `Host`, `Port`, `Path` (sqlite), `Database`, `Username`, `Password`, `MaxOpenConn`, `MaxIdleConn`, `ConnMaxLifetime`, `ConnMaxIdleTime`, `EnableTLS`.
+- `config.Database`: `Dsn` (required, oneof sqlite|mysql|postgres|clickhouse|mongodb), `Urls`, `Host`, `Port`, `Path` (sqlite), `Database`, `Username`, `Password`, `MaxOpenConn`, `MaxIdleConn`, `MaxPoolSize` (MongoDB), `ReplicaSet` (MongoDB), `ConnMaxLifetime`, `ConnMaxIdleTime`, `EnableTLS`.
 - `config.Redis`: `Urls`, `Host`, `Port`, `Username`, `Password`, `Database`, `PoolSize`, `MinIdleConn`, `DialTimeout`, `ReadTimeout`, `WriteTimeout`, `MaxRetries`, `MinRetryBackoff`, `MaxRetryBackoff`.
 - `config.Storage`: `Type` (required, oneof disk|oss), `PublicBaseURL`, `Disk *DiskStorageConfig`, `OSS *OSSStorageConfig`. `DiskStorageConfig`: `RootDir`, `BaseUrl`. `OSSStorageConfig`: `AccessKeyID`, `AccessKeySecret`, `SecurityToken`, `Region`, `Bucket`, `Endpoint`, `BaseDir`, `DisableSSL`, `UseCName`, `Timeout`, `MaxRetries`.
 - `config.Telemetry`: `Logger`, `Metric`, `Tracer` (each an OTLP gRPC endpoint string; empty disables that signal).
@@ -38,18 +38,33 @@ At least one option is required or `NewConfigureLoader` errors.
 
 ## Combining types in a project
 
-A project defines its own aggregate. Embed the library types and add domain config:
+A project defines its own aggregate in `config/config.go`, next to `config/config.yaml`. Keep `cmd/` thin by importing the project config package and calling `config.Load(...)` instead of defining anonymous structs in `main.go`.
+
+    package config
+
+    import modularconfig "github.com/wplbyx/modular/packages/config"
 
     type Config struct {
-        config.Application `mapstructure:"application,squash"`
-        HTTP    config.HTTP     `mapstructure:"http"`
-        GRPC    config.GRPC     `mapstructure:"grpc"`
-        Database config.Database `mapstructure:"database"`
-        Redis   config.Redis    `mapstructure:"redis"`
-        Storage config.Storage  `mapstructure:"storage"`
-        Telemetry config.Telemetry `mapstructure:"telemetry"`
-        Logging config.Logging  `mapstructure:"logging"`
+        modularconfig.Application `mapstructure:"application,squash"`
+        HTTP    modularconfig.HTTP     `mapstructure:"http"`
+        GRPC    modularconfig.GRPC     `mapstructure:"grpc"`
+        Database modularconfig.Database `mapstructure:"database"`
+        Redis   modularconfig.Redis    `mapstructure:"redis"`
+        Storage modularconfig.Storage  `mapstructure:"storage"`
+        Telemetry modularconfig.Telemetry `mapstructure:"telemetry"`
+        Logging modularconfig.Logging  `mapstructure:"logging"`
         Domains DomainConfigs   `mapstructure:"domains"`
+    }
+
+    func Load(paths ...string) (*Config, error) {
+        cfg := new(Config)
+        if len(paths) == 0 {
+            paths = []string{"./config"}
+        }
+        err := modularconfig.InitConfigure(cfg,
+            modularconfig.WithConfigFile("config", "yaml", paths...),
+        )
+        return cfg, err
     }
 
 Use `,squash` on the embedded `Application` so its fields sit at top level under the `application` key (matches `config.CustomConfig`'s flat layout).

@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 var _ core.Endpoint = (*Server)(nil)

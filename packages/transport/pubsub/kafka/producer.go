@@ -9,8 +9,8 @@ import (
 
 	"github.com/segmentio/kafka-go"
 
-	"modular/packages/log"
-	"modular/packages/transport/pubsub"
+	"github.com/wplbyx/modular/packages/log"
+	"github.com/wplbyx/modular/packages/transport/pubsub"
 )
 
 // Ensure Producer implements pubsub.Publisher interface

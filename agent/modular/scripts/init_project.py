@@ -12,9 +12,10 @@ cmd-per-domain layout (domains are added later by the `service` command).
 
 Produces:
     go.mod, buf.yaml, buf.gen.yaml, Makefile, proto/ common/ internal/
-    config/config.yaml, and a cmd/ entry.
+    config/config.go, config/config.yaml, and a cmd/ entry. Generated common/
+    mirrors proto/<domain>/... via paths=source_relative.
 
-The project depends on `modular` via a go.mod replace pointing at the path
+The project depends on `github.com/wplbyx/modular` via a go.mod replace pointing at the path
 passed via --modular-path (defaults to the sibling ../../.. from this skill so
 projects generated inside the repo resolve locally). Downstream users will
 edit the replace directive to a real path or remove it for publishing.
@@ -34,10 +35,10 @@ module {project}
 
 go {go_version}
 
-require modular v0.0.0
+require github.com/wplbyx/modular v0.0.0
 
 // Points at the local modular checkout. Edit or remove when publishing.
-replace modular => {modular_path}
+replace github.com/wplbyx/modular => {modular_path}
 """
 
 BUF_YAML = """\
@@ -104,6 +105,30 @@ logging:
     - console
 """
 
+CONFIG_GO = """\
+package config
+
+import modularconfig "github.com/wplbyx/modular/packages/config"
+
+type Config struct {
+\tmodularconfig.Application `mapstructure:"application,squash"`
+\tHTTP    modularconfig.HTTP    `mapstructure:"http"`
+\tGRPC    modularconfig.GRPC    `mapstructure:"grpc"`
+\tLogging modularconfig.Logging `mapstructure:"logging"`
+}
+
+func Load(paths ...string) (*Config, error) {
+\tcfg := new(Config)
+\tif len(paths) == 0 {
+\t\tpaths = []string{"./config"}
+\t}
+\terr := modularconfig.InitConfigure(cfg,
+\t\tmodularconfig.WithConfigFile("config", "yaml", paths...),
+\t)
+\treturn cfg, err
+}
+"""
+
 # Single-topology main: one Application holds every domain's endpoints.
 # Domains are added by the `service` command via the REGISTER markers.
 MAIN_SINGLE = """\
@@ -116,24 +141,19 @@ import (
 \t"os/signal"
 \t"syscall"
 
-\t"modular/packages/app"
-\t"modular/packages/config"
-\t"modular/packages/core"
-\thttpserver "modular/packages/transport/server/http"
+\tprojectconfig "{project}/config"
+
+\t"github.com/wplbyx/modular/packages/app"
+\t"github.com/wplbyx/modular/packages/core"
+\thttpserver "github.com/wplbyx/modular/packages/transport/server/http"
 )
 
 func main() {{
 \tctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 \tdefer cancel()
 
-\tvar cfg struct {{
-\t\tconfig.Application `mapstructure:"application,squash"`
-\t\tHTTP config.HTTP `mapstructure:"http"`
-\t\tGRPC config.GRPC `mapstructure:"grpc"`
-\t}}
-\tif err := config.InitConfigure(&cfg,
-\t\tconfig.WithConfigFile("config", "yaml", "./config"),
-\t); err != nil {{
+\tcfg, err := projectconfig.Load("./config")
+\tif err != nil {{
 \t\tfmt.Printf("load config failed: %v\\n", err)
 \t\tos.Exit(1)
 \t}}
@@ -214,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     write(root / "proto" / KEEP, "")
     write(root / "common" / KEEP, "")
     write(root / "internal" / KEEP, "")
+    write(root / "config" / "config.go", CONFIG_GO)
     write(root / "config" / "config.yaml", CONFIG_YAML.format(project=args.project))
 
     cmd_dir = root / "cmd" / (args.project if args.topology == "single" else "root")

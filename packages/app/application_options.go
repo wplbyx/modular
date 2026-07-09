@@ -1,8 +1,8 @@
 package app
 
 import (
-	"modular/packages/core"
-	"modular/packages/registry"
+	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/registry"
 )
 
 // WithServiceNode 注入服务节点元数据（一个 app 对应一个 node）。

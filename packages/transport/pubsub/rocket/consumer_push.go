@@ -8,8 +8,8 @@ import (
 
 	rmq "github.com/apache/rocketmq-clients/golang/v5"
 
-	"modular/packages/log"
-	"modular/packages/transport/pubsub"
+	"github.com/wplbyx/modular/packages/log"
+	"github.com/wplbyx/modular/packages/transport/pubsub"
 )
 
 // Ensure PushConsumer implements pubsub.Subscriber.

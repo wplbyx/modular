@@ -15,8 +15,8 @@ import (
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 	"golang.org/x/sync/errgroup"
 
-	"modular/packages/config"
-	"modular/packages/infra/storage"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/infra/storage"
 )
 
 var _ storage.Storage = (*OssStorage)(nil)

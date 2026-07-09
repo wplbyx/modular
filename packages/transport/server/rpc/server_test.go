@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"modular/packages/config"
+	"github.com/wplbyx/modular/packages/config"
 )
 
 func TestServerName(t *testing.T) {

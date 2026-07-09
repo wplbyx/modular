@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 // ExampleRegistrar 服务端示例：从配置构建 ServiceNode，注册到 Consul

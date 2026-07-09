@@ -1,7 +1,7 @@
 // internal/infra/db_resource.go - template for the `resource db` command.
-// Wraps a bun or gorm connection as a core.Resource. cmd/ injects the
-// resulting *bun.DB / *gorm.DB into repositories. Prefer this injected
-// instance over the package-level GetDB() global.
+// Wraps a database connection as a core.Resource. cmd/ injects the resulting
+// *bun.DB / *gorm.DB / *mongo.Client into repositories. Prefer this injected
+// instance over the package-level GetDB()/GetClient() global.
 // Tokens: {{PROJECT}}
 package infra
 
@@ -9,18 +9,20 @@ import (
 	"context"
 	"fmt"
 
-	"modular/packages/config"
-	"modular/packages/core"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/core"
 
 	// bun:
-	"modular/packages/infra/database/bun"
+	"github.com/wplbyx/modular/packages/infra/database/bun"
 	// OR gorm:
-	// "modular/packages/infra/database/gorm"
+	// "github.com/wplbyx/modular/packages/infra/database/gorm"
+	// OR mongo:
+	// "github.com/wplbyx/modular/packages/infra/database/mongo"
 )
 
 type DBResource struct {
 	cfg *config.Database
-	db  *bun.DB // or *gorm.DB if using gorm
+	db  *bun.DB // or *gorm.DB / *mongo.Client if using another database adapter
 }
 
 func NewDBResource(cfg *config.Database) *DBResource {
@@ -30,7 +32,7 @@ func NewDBResource(cfg *config.Database) *DBResource {
 func (r *DBResource) Name() string { return "database" }
 
 func (r *DBResource) Setup(ctx context.Context) error {
-	db, err := bun.NewBunConnection(r.cfg) // postgres only; use gorm.NewGormConnection for sqlite/mysql/postgres/clickhouse
+	db, err := bun.NewBunConnection(r.cfg) // postgres only; use gorm.NewGormConnection or mongo.NewMongoConnection when selected
 	if err != nil {
 		return fmt.Errorf("database setup: %w", err)
 	}
@@ -42,6 +44,7 @@ func (r *DBResource) Close(ctx context.Context) error {
 	if r.db == nil {
 		return nil
 	}
+	// MongoDB uses client.Disconnect(ctx) instead of Close().
 	return r.db.Close()
 }
 

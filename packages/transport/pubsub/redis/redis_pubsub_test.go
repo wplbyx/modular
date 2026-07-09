@@ -6,7 +6,7 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"modular/packages/transport/pubsub"
+	"github.com/wplbyx/modular/packages/transport/pubsub"
 )
 
 // ---------------------------------------------------------------------------

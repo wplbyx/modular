@@ -11,8 +11,8 @@ import (
 	"gorm.io/driver/sqlite"
 	gormlib "gorm.io/gorm"
 
-	"modular/packages/config"
-	"modular/packages/infra/database"
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/infra/database"
 )
 
 // globalDB is the package-level connection, set by NewGormConnection.

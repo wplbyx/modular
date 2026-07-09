@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"modular/packages/infra/storage"
+	"github.com/wplbyx/modular/packages/infra/storage"
 
 	aliyunoss "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
