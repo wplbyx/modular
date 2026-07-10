@@ -170,61 +170,67 @@ application, err := app.NewApplication(
 
 ```text
 <project>/
-  go.mod
-  proto/
-    <domain>/
-      <domain>.proto         # 按业务模块分包；默认不再细分 v1/v2
-      <surface>.proto        # 可选：admin / management / platform 等接口面
+  cmd/
+    <svc>/main.go            # 只做配置加载、资源构造、endpoint 注册、Application 装配
+  config/
+    <svc>/
+      config.go              # 项目自己的 Config 聚合类型和 Load 函数
+      config.yaml
   common/                    # protoc 生成物，不手写；目录结构镜像 proto/
-    <domain>/
-      <domain>.pb.go
-      <domain>_grpc.pb.go
+    <svc>/
+      <svc>.pb.go
+      <svc>_grpc.pb.go
       <surface>.pb.go
       <surface>_grpc.pb.go
   internal/
-    <domain>/
+    <svc>/
       api/                   # 入站适配器：HTTP/gRPC/event 映射到对应接口面
         <surface>/           # admin / management / platform / openapi ...
           grpc.go
           http.go
           event.go
           v1/                # 可选：只有 proto 接口面引入版本时才出现
-      app/                   # 默认实现 pb XxxServiceServer，并编排用例
+      app/                   # 默认实现 pb XxxServiceServer，并编排用例：直接调用Repository(简单的MVC), 转到调用domain走复杂的业务逻辑
         <surface>/           # 与 api/<surface> 对齐
-          server.go          # 该接口面的 pb server 实例和依赖注入
+          adapter.go         # 业务相关接口在这里定义：可读写分离，简单的直接repository层实现(走dto), 复杂的依赖 domain 接口。
+          server.go          # 该接口面的 pb server 实例和依赖注入, 简单的可以直接调用 repository/ 实现
           <method>.go        # 一个 pb 方法一个文件，例如 CreateUser -> create_user.go
           v1/                # 可选：版本化 pb server adapter
       domain/
-        repository.go        # 仓储接口/端口：command/query 可拆分
-        entity/              # 充血领域对象、聚合根
-        model/               # 可选：读模型/简单领域数据模型，不放 DB tag
-      repository/            # 出站适配器：DB/Redis/client/storage 等脏活累活
-      service/               # 可选：复杂场景下才引入的协议/用例适配层
-  cmd/
-    <svc>/main.go            # 只做配置加载、资源构造、endpoint 注册、Application 装配
-  config/
-    config.go                # 项目自己的 Config 聚合类型和 Load 函数
-    config.yaml
+        adapter.go           # 领域相关接口，仓储接口/端口：command/query 可拆分
+        entity/              # 充血领域对象、聚合根，内聚的逻辑
+        service/             # 领域逻辑？这里是什么领域逻辑
+      repository/            # 出站适配器：DB/Redis/client/storage 等脏活累活 （内部的包随便拆分[都是基础设施]）
+        app/                 # app 层简单的接口实现
+        domain/              # domain 层业务逻辑的接口实现
+        dto/                 # model 数据的操作的封装实现
+        model/               # 数据模型
+  proto/
+    <svc>/
+      <svc>.proto            # 按业务模块分包；默认不再细分 v1/v2
+      <surface>.proto        # 可选：admin / management / platform 等接口面      
+  go.mod    
+
 ```
 
 约束：
 
 - 跨领域调用走生成的 pb client，不导入其他领域的 `internal/`。
-- `proto/` 和 `common/` 都按业务模块分包：`proto/<domain>/...` 生成到 `common/<domain>/...`，与 `internal/<domain>/...` 对齐。
+- `proto/` 和 `common/` 都按业务模块分包：`proto/<svc>/...` 生成到 `common/<svc>/...`，与 `internal/<svc>/...` 对齐；这里的 `<svc>` 是最外层业务模块名。
 - 一个业务模块可以有多个接口面（surface），例如 `admin`、`management`、`platform`、`openapi`。接口面是外部契约维度，不是领域模型维度。
 - `surface` 名称也是 Go 包名，使用 lower_snake_case，不使用连字符，默认不带版本后缀。
-- 多接口面默认按 `proto/<domain>/<surface>.proto`、`common/<domain>/<surface>.pb.go`、`internal/<domain>/api/<surface>`、`internal/<domain>/app/<surface>` 对齐。单接口面可以继续使用 `proto/<domain>/<domain>.proto`。
-- 当前默认不严格区分 `v1/v2`；未来如果某个接口面引入版本，优先放在 `proto/<domain>/<surface>/v1`，并镜像到 `common/<domain>/<surface>/v1`、`internal/<domain>/api/<surface>/v1`、`internal/<domain>/app/<surface>/v1`。
+- 多接口面默认按 `proto/<svc>/<surface>.proto`、`common/<svc>/<surface>.pb.go`、`internal/<svc>/api/<surface>`、`internal/<svc>/app/<surface>` 对齐。单接口面可以继续使用 `proto/<svc>/<svc>.proto`。
+- 当前默认不严格区分 `v1/v2`；未来如果某个接口面引入版本，优先放在 `proto/<svc>/<surface>/v1`，并镜像到 `common/<svc>/<surface>/v1`、`internal/<svc>/api/<surface>/v1`、`internal/<svc>/app/<surface>/v1`。
 - `common/` 是生成目录，不手写 `.pb.go` 或 `_grpc.pb.go`。
 - `api` 属于基础设施入站适配层，只做流量入口、路由/订阅、请求解析和映射，不放业务规则。
-- `app/<surface>` 默认实现生成的 `XxxServiceServer`，同时编排用例流程，调用 `domain` 的仓储接口和领域对象。
+- `app/<surface>` 默认实现生成的 `XxxServiceServer`，同时编排用例流程。简单 CRUD/MVC 流程可以依赖本包 `adapter.go` 里定义的 `QueryRepository` / `CommandRepository`，由 `repository/app` 直接实现；复杂业务流程可以依赖 `internal/<svc>/domain` 里的领域定义和端口。
 - `app/<surface>/server.go` 放该接口面的 server 类型、构造函数和依赖注入；每个 pb 方法放到独立文件，文件名与方法名一一对应（Go 文件名用 snake_case，例如 `CreateUser` -> `create_user.go`）。
 - `service/` 不是默认层。只有当 pb 契约和内部用例模型明显分离、多版本 pb 需要复用同一组用例、或一个 pb service 需要组合多个 app 子模块时，才引入 `service` 作为额外适配层。
-- `domain` 定义领域抽象：仓储接口、充血实体/聚合、可选读模型；`domain/model` 只放业务读模型或简单领域数据模型，不放 ORM/BSON 等持久化 tag。
-- `domain` 和 `repository` 默认不按 `admin` / `management` / `platform` 或 `v1/v2` 拆包；除非领域概念或持久化实现本身真的分化。
-- `repository` 实现 `domain` 里的接口，集中 DB/Redis/client/storage 等基础设施细节。
+- `domain` 是每个 `<svc>` 内部的复杂领域层，定义领域端口、充血实体/聚合和领域服务；`domain/service` 只在真实跨实体/聚合领域行为出现时引入，不作为默认空层。
+- `app/<surface>/adapter.go` 和 `domain/adapter.go` 是两类接口边界：前者服务简单用例，后者服务复杂领域模型。两者的实现都交给 `repository` 层。
+- `repository` 是基础设施实现区：`repository/app` 实现 app 层简单接口，`repository/domain` 实现 domain 层复杂端口，`repository/dto` 和 `repository/model` 按需放 DTO、持久化模型和 ORM/BSON tag。
 - `internal/` 的业务逻辑不直接依赖 `github.com/wplbyx/modular/packages/app.Application`。
-- 项目自己的 `Config` 聚合类型放在 `config` 包里，和 `config.yaml` 同目录；`cmd` 只调用 `project/config.Load(...)`，不在入口里匿名定义配置结构。
+- 项目自己的 `Config` 聚合类型按业务模块放在 `config/<svc>` 包里，和 `config.yaml` 同目录；`cmd` 只调用对应的 `project/config/<svc>.Load(...)`，不在入口里匿名定义配置结构。
 - `cmd` 可以依赖 `github.com/wplbyx/modular/packages/*`，负责把资源、endpoint 和业务实现接起来。
 
 ## Agent 使用方式
@@ -248,10 +254,14 @@ application, err := app.NewApplication(
 | 命令 | 用途 |
 | --- | --- |
 | `init <project> [single|service]` | 创建下游项目骨架，包含 `go.mod`、buf 配置、`Makefile`、`proto/`、`common/`、`internal/`、`cmd/`、`config/`。 |
-| `service <domain>` | 添加领域模块：创建默认 proto、生成 `common/<domain>/...`、补齐 `internal/<domain>` 的 api/app/domain/repository，并接入 `cmd`。 |
-| `surface <domain> <surface>` | 为领域模块添加接口面，例如 `admin`、`management`、`platform`，生成 `proto/<domain>/<surface>.proto`、`api/<surface>`、`app/<surface>`。 |
-| `method <domain> <surface> <MethodName>` | 为某个接口面添加 pb 方法骨架，生成或更新 proto rpc，并创建 `app/<surface>/<method>.go` 基础实现文件。 |
+| `service <svc>` | 添加业务模块：创建 `config/<svc>`、默认 proto、`internal/<svc>` 的 api/app/domain/repository，并接入 `cmd`。 |
+| `surface <svc> <surface>` | 为业务模块添加接口面，例如 `admin`、`management`、`platform`，生成 `proto/<svc>/<surface>.proto`、`api/<surface>`、`app/<surface>`。 |
+| `method <svc> <surface> <MethodName>` | 为某个接口面添加 pb 方法骨架，生成或更新 proto rpc，并创建 `app/<surface>/<method>.go` 基础实现文件。 |
 | `resource <kind>` | 添加基础设施资源，`kind` 为 `db`、`redis`、`storage`、`telemetry`；`db` 可按项目选择 Bun、GORM 或 MongoDB。 |
+| `repository recommend <svc> [surface]` | 根据需求推荐 app/domain adapter 放置，展开 repository 接口签名并输出下一步 scaffold 命令。 |
+| `repository app <svc> <surface>` | 为简单 app 用例生成 `app/<surface>/adapter.go` 和 `repository/app` 实现。 |
+| `repository domain <svc>` | 为复杂领域模型生成 `domain/adapter.go` 和 `repository/domain` 实现。 |
+| `doctor` | 检查旧结构残留、生成目录误写、跨 svc `internal` 引用等约束。 |
 | `gen` | 从 `proto/` 重新生成 `common/`。 |
 | `switch [single|service]` | 只重写 `cmd` 装配层，在单体和微服务拓扑之间切换。 |
 

@@ -1,5 +1,4 @@
-// internal/{{DOMAIN}}/api/{{SURFACE}}/http.go - interface surface HTTP adapter.
-// Tokens: {{DOMAIN}}, {{SURFACE}}, {{SERVICE_PASCAL}}, {{GO_PACKAGE}}
+// internal/{{SVC}}/api/{{SURFACE}}/http.go - interface surface HTTP adapter.
 package {{SURFACE}}
 
 import (
@@ -10,20 +9,14 @@ import (
 	common "{{GO_PACKAGE}}"
 )
 
-// HTTPRoutes returns a gin route-registration function for this interface surface.
-// Handlers here are thin adapters: parse request, call the pb service method,
-// write JSON. They wrap pb service calls into http.HandlerFunc, matching the
-// project's RouteRegister pattern (group routes, map each to a handler closure).
-// cmd/ attaches it via httpServer.RegisterRoute(HTTPRoutes(svc)).
 func HTTPRoutes(svc common.{{SERVICE_PASCAL}}Server) func(*gin.Engine) {
 	return func(router *gin.Engine) {
-		// group := router.Group("/api/{{SURFACE}}/{{DOMAIN}}")
+		// group := router.Group("/api/{{SURFACE}}/{{SVC}}")
 		// group.GET("/example", exampleHandler(svc))
 		_ = svc
 	}
 }
 
-// exampleHandler adapts a pb service call into a gin handler.
 // func exampleHandler(svc common.{{SERVICE_PASCAL}}Server) gin.HandlerFunc {
 // 	return func(c *gin.Context) {
 // 		var req common.ExampleRequest
@@ -40,4 +33,4 @@ func HTTPRoutes(svc common.{{SERVICE_PASCAL}}Server) func(*gin.Engine) {
 // 	}
 // }
 
-var _ http.HandlerFunc // keep net/http import meaningful until handlers are added
+var _ http.HandlerFunc

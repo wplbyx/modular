@@ -1,0 +1,54 @@
+// internal/<svc>/repository/mongo_resource.go - project-side Resource wrapper for MongoDB.
+// Bun/GORM/Redis already provide library Resource types; Mongo currently does not.
+package repository
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/core"
+	dbmongo "github.com/wplbyx/modular/packages/infra/database/mongo"
+)
+
+type MongoResource struct {
+	cfg    *config.Database
+	client *mongodriver.Client
+}
+
+func NewMongoResource(cfg *config.Database) *MongoResource {
+	return &MongoResource{cfg: cfg}
+}
+
+func (r *MongoResource) Name() string { return "mongo" }
+
+func (r *MongoResource) Setup(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.cfg == nil {
+		return errors.New("database config is nil")
+	}
+	client, err := dbmongo.NewMongoConnection(r.cfg)
+	if err != nil {
+		return fmt.Errorf("mongo setup: %w", err)
+	}
+	r.client = client
+	return nil
+}
+
+func (r *MongoResource) Close(ctx context.Context) error {
+	if r.client == nil {
+		return nil
+	}
+	err := r.client.Disconnect(ctx)
+	r.client = nil
+	return err
+}
+
+func (r *MongoResource) Client() *mongodriver.Client { return r.client }
+
+var _ core.Resource = (*MongoResource)(nil)

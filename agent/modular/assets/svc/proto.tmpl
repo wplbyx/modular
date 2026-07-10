@@ -1,0 +1,20 @@
+// proto/{{SVC}}/{{SURFACE}}.proto - template for `service` / `surface`.
+// Multiple surfaces for one svc share the same Go package common/{{SVC}}.
+
+syntax = "proto3";
+
+package {{SVC}};
+
+option go_package = "{{GO_PACKAGE}}";
+
+service {{SERVICE_PASCAL}} {
+  // rpc Example(ExampleRequest) returns (ExampleResponse);
+}
+
+message ExampleRequest {
+  string id = 1;
+}
+
+message ExampleResponse {
+  string id = 1;
+}

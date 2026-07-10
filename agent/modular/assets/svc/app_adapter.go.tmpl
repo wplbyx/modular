@@ -1,0 +1,16 @@
+// internal/{{SVC}}/app/{{SURFACE}}/adapter.go - simple app-layer ports.
+package {{SURFACE}}
+
+import "context"
+
+type ExampleDTO struct {
+	ID string
+}
+
+type QueryRepository interface {
+	FindExample(ctx context.Context, id string) (ExampleDTO, error)
+}
+
+type CommandRepository interface {
+	SaveExample(ctx context.Context, item ExampleDTO) error
+}

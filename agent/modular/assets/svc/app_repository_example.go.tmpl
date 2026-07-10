@@ -1,0 +1,24 @@
+// internal/{{SVC}}/repository/app/{{SURFACE}}_example.go - default app adapter implementation.
+package app
+
+import (
+	"context"
+
+	surfaceapp "{{PROJECT}}/internal/{{SVC}}/app/{{SURFACE}}"
+)
+
+func (r *Repository) FindExample(ctx context.Context, id string) (surfaceapp.ExampleDTO, error) {
+	_ = r
+	_ = ctx
+	return surfaceapp.ExampleDTO{ID: id}, nil
+}
+
+func (r *Repository) SaveExample(ctx context.Context, item surfaceapp.ExampleDTO) error {
+	_ = r
+	_ = ctx
+	_ = item
+	return nil
+}
+
+var _ surfaceapp.QueryRepository = (*Repository)(nil)
+var _ surfaceapp.CommandRepository = (*Repository)(nil)

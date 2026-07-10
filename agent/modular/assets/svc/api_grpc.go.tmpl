@@ -1,0 +1,13 @@
+// internal/{{SVC}}/api/{{SURFACE}}/grpc.go - interface surface gRPC adapter.
+package {{SURFACE}}
+
+import (
+	"google.golang.org/grpc"
+
+	common "{{GO_PACKAGE}}"
+)
+
+func RegisterGRPC(s grpc.ServiceRegistrar, svc common.{{SERVICE_PASCAL}}Server) error {
+	common.Register{{SERVICE_PASCAL}}Server(s, svc)
+	return nil
+}

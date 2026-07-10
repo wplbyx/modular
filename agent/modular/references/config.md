@@ -38,7 +38,7 @@ At least one option is required or `NewConfigureLoader` errors.
 
 ## Combining types in a project
 
-A project defines its own aggregate in `config/config.go`, next to `config/config.yaml`. Keep `cmd/` thin by importing the project config package and calling `config.Load(...)` instead of defining anonymous structs in `main.go`.
+A project defines one aggregate per svc in `config/<svc>/config.go`, next to `config/<svc>/config.yaml`. Keep `cmd/` thin by importing the svc config package and calling `config/<svc>.Load(...)` instead of defining anonymous structs in `main.go`.
 
     package config
 
@@ -53,13 +53,12 @@ A project defines its own aggregate in `config/config.go`, next to `config/confi
         Storage modularconfig.Storage  `mapstructure:"storage"`
         Telemetry modularconfig.Telemetry `mapstructure:"telemetry"`
         Logging modularconfig.Logging  `mapstructure:"logging"`
-        Domains DomainConfigs   `mapstructure:"domains"`
     }
 
     func Load(paths ...string) (*Config, error) {
         cfg := new(Config)
         if len(paths) == 0 {
-            paths = []string{"./config"}
+            paths = []string{"./config/user"}
         }
         err := modularconfig.InitConfigure(cfg,
             modularconfig.WithConfigFile("config", "yaml", paths...),

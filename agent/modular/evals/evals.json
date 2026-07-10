@@ -1,0 +1,35 @@
+{
+  "skill_name": "modular",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "In a new Go project called billing-demo, use modular to initialize a single-process app, add a billing svc with public CreateInvoice and ListInvoices methods, and leave it ready for buf generation.",
+      "expected_output": "Uses the modular skill, runs or proposes init/service/method commands, creates config/billing + proto/billing + internal/billing, and does not hand-edit common generated files.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "We have an existing modular app and need an admin surface for the user svc. Add DisableUser and ListDisabledUsers methods and wire both HTTP and gRPC endpoints into cmd without splitting domain by surface.",
+      "expected_output": "Uses surface/method flow, keeps domain shared inside internal/user/domain, creates app/admin method files, and rewrites HTTP+gRPC cmd wiring.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "For an order feature, recommend whether the ports belong in app/order/admin adapter or domain/adapter. We need to fetch an order detail, list a customer's orders, save an order aggregate, and cancel an order. Persistence will use Bun.",
+      "expected_output": "Runs adapter/repository recommendation first, distinguishes app adapter vs domain adapter, proposes QueryRepository and CommandRepository signatures, and waits for confirmation before scaffold.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Attach Postgres via Bun, Redis, disk storage, and OpenTelemetry to the user svc. Use Application lifecycle resources where the library provides them.",
+      "expected_output": "Maps Bun/Redis/Telemetry to built-in Resource types, generates only the storage wrapper under internal/user/repository, updates config/user and cmd wiring.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "Run a convention audit on this modular project and tell me if it has old config/config.go, hand-written common files, or cross-svc internal imports.",
+      "expected_output": "Uses doctor or equivalent read-only checks, reports convention errors and warnings without mutating project files.",
+      "files": []
+    }
+  ]
+}

@@ -1,11 +1,9 @@
-// internal/infra/storage_resource.go - template for the `resource storage` command.
-// Wraps a disk or oss backend as a core.Resource. The storage.NewStorage
-// factory is commented out in the library, so construct the backend directly:
+// internal/<svc>/repository/storage_resource.go - project-side Resource wrapper for storage.
+// Storage has no library Resource type. The storage.NewStorage factory is
+// commented out, so construct the backend directly:
 //   disk -> filedisk.NewDiskStorage(cfg)
 //   oss  -> alioss.NewOSSStorage(cfg)   (OSS v2 SDK only)
-// Inject the returned storage.Storage into repositories.
-// Tokens: {{PROJECT}}
-package infra
+package repository
 
 import (
 	"context"

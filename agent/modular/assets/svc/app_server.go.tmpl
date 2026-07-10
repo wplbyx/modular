@@ -1,0 +1,20 @@
+// internal/{{SVC}}/app/{{SURFACE}}/server.go - app surface server.
+package {{SURFACE}}
+
+import common "{{GO_PACKAGE}}"
+
+type Server struct {
+	common.Unimplemented{{SERVICE_PASCAL}}Server
+
+	queries  QueryRepository
+	commands CommandRepository
+}
+
+func NewServer(queries QueryRepository, commands CommandRepository) *Server {
+	return &Server{
+		queries:  queries,
+		commands: commands,
+	}
+}
+
+var _ common.{{SERVICE_PASCAL}}Server = (*Server)(nil)

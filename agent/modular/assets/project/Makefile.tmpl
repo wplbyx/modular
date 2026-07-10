@@ -1,0 +1,14 @@
+.PHONY: gen build tidy check
+
+gen:
+	buf generate
+
+build:
+	go build ./...
+
+tidy:
+	go mod tidy
+
+check:
+	go vet ./...
+	gofmt -l .

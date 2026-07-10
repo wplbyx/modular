@@ -1,5 +1,4 @@
-// internal/{{DOMAIN}}/app/{{SURFACE}}/{{METHOD_SNAKE}}.go - {{METHOD_PASCAL}} implementation.
-// Tokens: {{DOMAIN}}, {{SURFACE}}, {{METHOD_PASCAL}}, {{METHOD_SNAKE}}, {{GO_PACKAGE}}
+// internal/{{SVC}}/app/{{SURFACE}}/{{METHOD_SNAKE}}.go - {{METHOD_PASCAL}} implementation.
 package {{SURFACE}}
 
 import (
@@ -8,8 +7,8 @@ import (
 	common "{{GO_PACKAGE}}"
 )
 
-// {{METHOD_PASCAL}} implements the generated pb method for this interface surface.
 func (s *Server) {{METHOD_PASCAL}}(ctx context.Context, req *common.{{METHOD_PASCAL}}Request) (*common.{{METHOD_PASCAL}}Response, error) {
+	_ = s
 	_ = ctx
 	_ = req
 

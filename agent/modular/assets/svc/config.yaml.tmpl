@@ -1,0 +1,18 @@
+application:
+  Name: {{SVC}}
+  Mode: dev
+  Version: v0.1.0
+  ShutdownTimeout: 10s
+
+http:
+  Host: "0.0.0.0"
+  Port: {{HTTP_PORT}}
+
+grpc:
+  Host: "0.0.0.0"
+  Port: {{GRPC_PORT}}
+
+logging:
+  Level: info
+  Output:
+    - console

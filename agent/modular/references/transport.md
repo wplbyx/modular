@@ -24,7 +24,7 @@ gRPC (`packages/transport/server/rpc`): `rpcserver.NewServer(cfg *config.GRPC, r
 
 Handlers: `pubsub.MessageHandler func(ctx, Message) error`. `pubsub.EventHandler func(ctx, Event) error`. Convert with `pubsub.AsMessageHandler(h)`. `pubsub.EventFromMessage(msg)` builds a `BaseEvent` from a `Message`.
 
-Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `internal/<domain>/api/<surface>/event.go`, return a `MessageHandler`; the cmd wraps it with `NewSubscriberEndpoint`.
+Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `internal/<svc>/api/<surface>/event.go`, return a `MessageHandler`; the cmd wraps it with `NewSubscriberEndpoint`.
 
 Kafka needs no connect/disconnect. MQTT/Redis clients that implement `Connect(ctx)` / `Disconnect(ctx)` are auto-detected; pass explicit hooks only when overriding that behavior.
 

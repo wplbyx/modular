@@ -1,0 +1,21 @@
+// internal/{{SVC}}/api/{{SURFACE}}/event.go - interface surface event adapter.
+package {{SURFACE}}
+
+import (
+	"context"
+
+	surfaceapp "{{PROJECT}}/internal/{{SVC}}/app/{{SURFACE}}"
+)
+
+type Handler func(ctx context.Context, topic string, payload []byte, headers map[string]string) error
+
+func NewEventHandler(server *surfaceapp.Server) Handler {
+	return func(ctx context.Context, topic string, payload []byte, headers map[string]string) error {
+		_ = server
+		_ = ctx
+		_ = topic
+		_ = payload
+		_ = headers
+		return nil
+	}
+}
