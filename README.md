@@ -247,13 +247,13 @@ application, err := app.NewApplication(
 
 | 命令 | 用途 |
 | --- | --- |
-| `init <project> [single|service]` | 创建下游项目骨架，包含 `go.mod`、buf 配置、`Makefile`、`proto/`、`common/`、`internal/`、`cmd/`、`config/`。 |
+| `init <project> [single/service]` | 创建下游项目骨架，包含 `go.mod`、buf 配置、`Makefile`、`proto/`、`common/`、`internal/`、`cmd/`、`config/`。 |
 | `service <domain>` | 添加领域模块：创建默认 proto、生成 `common/<domain>/...`、补齐 `internal/<domain>` 的 api/app/domain/repository，并接入 `cmd`。 |
 | `surface <domain> <surface>` | 为领域模块添加接口面，例如 `admin`、`management`、`platform`，生成 `proto/<domain>/<surface>.proto`、`api/<surface>`、`app/<surface>`。 |
 | `method <domain> <surface> <MethodName>` | 为某个接口面添加 pb 方法骨架，生成或更新 proto rpc，并创建 `app/<surface>/<method>.go` 基础实现文件。 |
 | `resource <kind>` | 添加基础设施资源，`kind` 为 `db`、`redis`、`storage`、`telemetry`；`db` 可按项目选择 Bun、GORM 或 MongoDB。 |
 | `gen` | 从 `proto/` 重新生成 `common/`。 |
-| `switch [single|service]` | 只重写 `cmd` 装配层，在单体和微服务拓扑之间切换。 |
+| `switch [single/service]` | 只重写 `cmd` 装配层，在单体和微服务拓扑之间切换。 |
 
 Agent 处理这些任务时会按需读取 `agent/modular/references/`：
 
