@@ -52,7 +52,7 @@ func TestCallbackSignature_RejectsInvalidPublicKeyURL(t *testing.T) {
 	req.Header.Set("x-oss-pub-key-url", base64.StdEncoding.EncodeToString([]byte("https://evil.example.com/key.pem")))
 
 	err := VerifyCallbackSignature(req, body, func(ctx context.Context, publicKeyURL string) ([]byte, error) {
-		t.Fatalf("fetcher should not be called for invalid public key URL")
+		require.FailNow(t, "fetcher should not be called for invalid public key URL")
 		return nil, nil
 	})
 	require.Error(t, err)
@@ -129,10 +129,10 @@ func TestCallbackHandler_VerifiesParsesAndProcessesRequest(t *testing.T) {
 
 func TestCallbackHandler_RejectsOversizedBodyBeforeSignature(t *testing.T) {
 	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
-		t.Fatalf("processor should not be called for oversized body")
+		require.FailNow(t, "processor should not be called for oversized body")
 		return nil
 	}, WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
-		t.Fatalf("fetcher should not be called for oversized body")
+		require.FailNow(t, "fetcher should not be called for oversized body")
 		return nil, nil
 	}))
 	body := strings.NewReader(strings.Repeat("x", 1<<20+1))
