@@ -38,7 +38,7 @@ Implementation Changes
 - PresignMultipartComplete 构造 oss.CompleteMultipartUploadRequest，按 PartNumber 排序并返回完成分片所需 XML Body，可携带 Callback / CallbackVar。
 - PresignMultipartAbort 构造 oss.AbortMultipartUploadRequest，返回取消分片的 DELETE 预签名请求。
 - 返回给前端的 Headers 必须原样用于 PUT 请求，尤其是 Content-Type、Content-MD5、x-oss-* 这类参与签名的 header。
-- 不新增配置项；AccessKeyID/AccessKeySecret/SecurityToken 仍只存在服务端配置中，绝不返回给前端。
+- 不新增配置项；AccessKeySecret 绝不返回给前端。AccessKeyID 作为预签名 URL 的签名主体标识可能出现在 URL 中；第一版不支持带 SecurityToken 的 STS 直传预签名，避免把 token 返回给前端。
 
 Callback Handler
 

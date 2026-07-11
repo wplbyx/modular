@@ -49,6 +49,7 @@ type OssStorage struct {
 	useCName      bool
 	publicBaseURL string
 	baseDir       string // 对象 key 前缀（不带首尾斜杠）
+	securityToken string
 }
 
 // NewOSSStorage 构造 OSS Storage。
@@ -88,6 +89,7 @@ func NewOSSStorage(cfg *config.Storage) (*OssStorage, error) {
 		useCName:      oc.UseCName,
 		publicBaseURL: cfg.PublicBaseURL,
 		baseDir:       strings.Trim(oc.BaseDir, "/"),
+		securityToken: strings.TrimSpace(oc.SecurityToken),
 	}, nil
 }
 
@@ -156,7 +158,7 @@ func (s *OssStorage) PresignDownload(ctx context.Context, key string, opts stora
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(objKey),
 	}
-	return s.presign(ctx, objKey, req, expires, nil, false)
+	return s.presign(ctx, objKey, req, expires, nil, true)
 }
 
 // PresignMultipartInitiate 生成直传分片初始化 POST 预签名请求。
@@ -176,9 +178,6 @@ func (s *OssStorage) PresignMultipartInitiate(ctx context.Context, key string, o
 	}
 	if opts.ContentType != "" {
 		req.ContentType = oss.Ptr(opts.ContentType)
-	}
-	if opts.ForbidOverwrite {
-		req.ForbidOverwrite = oss.Ptr("true")
 	}
 	return s.presign(ctx, objKey, req, expires, nil, true)
 }
@@ -238,9 +237,6 @@ func (s *OssStorage) PresignMultipartComplete(ctx context.Context, key, uploadID
 		Key:                     oss.Ptr(objKey),
 		UploadId:                oss.Ptr(uploadID),
 		CompleteMultipartUpload: complete,
-	}
-	if opts.ForbidOverwrite {
-		req.ForbidOverwrite = oss.Ptr("true")
 	}
 	if opts.Callback != "" {
 		req.Callback = oss.Ptr(opts.Callback)
@@ -629,6 +625,9 @@ func (s *OssStorage) directObjectKey(key string) (string, error) {
 }
 
 func (s *OssStorage) presign(ctx context.Context, objKey string, req any, expires time.Duration, body []byte, includePublicURL bool) (storage.DirectTransferRequest, error) {
+	if s.securityToken != "" {
+		return storage.DirectTransferRequest{}, errors.New("direct presign with security token is not supported")
+	}
 	result, err := s.client.Presign(ctx, req, oss.PresignExpires(expires))
 	if err != nil {
 		return storage.DirectTransferRequest{}, err

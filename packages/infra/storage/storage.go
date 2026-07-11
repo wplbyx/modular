@@ -70,10 +70,9 @@ type DirectDownloadOptions struct {
 
 // DirectMultipartInitiateOptions 配置直传分片初始化预签名。
 type DirectMultipartInitiateOptions struct {
-	Expires         time.Duration
-	ContentType     string
-	Meta            map[string]string
-	ForbidOverwrite bool
+	Expires     time.Duration
+	ContentType string
+	Meta        map[string]string
 }
 
 // DirectMultipartPartOptions 配置直传分片 PUT 预签名。
@@ -84,10 +83,9 @@ type DirectMultipartPartOptions struct {
 
 // DirectMultipartCompleteOptions 配置直传分片完成预签名。
 type DirectMultipartCompleteOptions struct {
-	Expires         time.Duration
-	ForbidOverwrite bool
-	Callback        string
-	CallbackVar     string
+	Expires     time.Duration
+	Callback    string
+	CallbackVar string
 }
 
 // DirectMultipartAbortOptions 配置直传分片取消预签名。

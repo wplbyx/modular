@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestVerifyCallbackSignatureAcceptsValidOSSRequest(t *testing.T) {
+func TestCallbackSignature_AcceptsValidOSSRequest(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	body := []byte(`{"bucket":"test-bucket","object":"prefix/a.txt","size":"42"}`)
 	req := signedCallbackRequest(t, privateKey, "/callbacks/oss?tenant=acme", body)
@@ -32,7 +32,7 @@ func TestVerifyCallbackSignatureAcceptsValidOSSRequest(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestVerifyCallbackSignatureRejectsTamperedBody(t *testing.T) {
+func TestCallbackSignature_RejectsTamperedBody(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	body := []byte(`{"object":"prefix/a.txt"}`)
 	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
@@ -44,7 +44,7 @@ func TestVerifyCallbackSignatureRejectsTamperedBody(t *testing.T) {
 	assert.Contains(t, err.Error(), "signature verification failed")
 }
 
-func TestVerifyCallbackSignatureRejectsInvalidPublicKeyURL(t *testing.T) {
+func TestCallbackSignature_RejectsInvalidPublicKeyURL(t *testing.T) {
 	privateKey, _ := testCallbackKeyPair(t)
 	body := []byte(`{"object":"prefix/a.txt"}`)
 	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
@@ -58,7 +58,7 @@ func TestVerifyCallbackSignatureRejectsInvalidPublicKeyURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "public key url is not allowed")
 }
 
-func TestVerifyCallbackSignatureUsesURLDecodedPathAndRawQuery(t *testing.T) {
+func TestCallbackSignature_UsesURLDecodedPathAndRawQuery(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	body := []byte(`{"object":"prefix/a/b.txt"}`)
 	req := httptest.NewRequest(http.MethodPost, "/callbacks/a%2Fb?x=a%2Fb", bytes.NewReader(body))
@@ -71,7 +71,7 @@ func TestVerifyCallbackSignatureUsesURLDecodedPathAndRawQuery(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestParseCallbackPayloadSupportsJSONAndForm(t *testing.T) {
+func TestCallbackPayload_SupportsJSONAndForm(t *testing.T) {
 	jsonReq := httptest.NewRequest(http.MethodPost, "/callbacks/oss", strings.NewReader(`{"bucket":"test-bucket","size":42,"ok":true}`))
 	jsonReq.Header.Set("Content-Type", "application/json")
 
@@ -90,7 +90,7 @@ func TestParseCallbackPayloadSupportsJSONAndForm(t *testing.T) {
 	assert.Equal(t, "prefix/a.txt", payload.Values["object"])
 }
 
-func TestCallbackHandlerVerifiesParsesAndProcessesRequest(t *testing.T) {
+func TestCallbackHandler_VerifiesParsesAndProcessesRequest(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	body := []byte(`{"bucket":"test-bucket","object":"prefix/a.txt"}`)
 	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
@@ -113,7 +113,7 @@ func TestCallbackHandlerVerifiesParsesAndProcessesRequest(t *testing.T) {
 	assert.Equal(t, "prefix/a.txt", received.Values["object"])
 }
 
-func TestCallbackHandlerRejectsBadMethodAndProcessorError(t *testing.T) {
+func TestCallbackHandler_RejectsBadMethodAndProcessorError(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
 		return errors.New("processor failed")
