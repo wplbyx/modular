@@ -527,8 +527,8 @@ func (s *OssStorage) InitiateMultipartUpload(ctx context.Context, key string) (s
 
 // MultipartUpload 上传单个分片。
 func (s *OssStorage) MultipartUpload(ctx context.Context, session storage.MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (storage.UploadPartResponse, error) {
-	if err := validatePartNumber(partNumber); err != nil {
-		return storage.UploadPartResponse{}, err
+	if partNumber < 1 {
+		return storage.UploadPartResponse{}, errors.New("partNumber must be >= 1")
 	}
 	res, err := s.client.UploadPart(ctx, &oss.UploadPartRequest{
 		Bucket:     oss.Ptr(s.bucket),

@@ -273,6 +273,28 @@ func TestOSS_MultipartFlow(t *testing.T) {
 	require.NoError(t, s.CancelMultipartUpload(ctx, sess))
 }
 
+func TestOSS_MultipartUploadLetsProviderValidateUpperPartNumber(t *testing.T) {
+	var called bool
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "10001", r.URL.Query().Get("partNumber"))
+		assert.Equal(t, "uid-1", r.URL.Query().Get("uploadId"))
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("ETag", "etag-provider")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	part, err := s.MultipartUpload(context.Background(), storage.MultipartUploadSession{
+		UploadID: "uid-1",
+		Key:      "prefix/big/file",
+	}, 10001, 5, bytes.NewReader([]byte("part")))
+	require.NoError(t, err)
+	assert.True(t, called)
+	assert.Equal(t, 10001, part.PartNumber)
+	assert.Equal(t, "etag-provider", part.ETag)
+}
+
 func TestOSS_ImplementsDirectStorage(t *testing.T) {
 	var _ storage.DirectStorage = (*OssStorage)(nil)
 }
