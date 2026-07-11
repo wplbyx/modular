@@ -232,7 +232,7 @@ func (s *OssStorage) PresignMultipartComplete(ctx context.Context, key, uploadID
 	if err != nil {
 		return storage.DirectTransferRequest{}, err
 	}
-	ossParts, err := directUploadParts(parts)
+	ossParts, err := buildOSSUploadParts(parts)
 	if err != nil {
 		return storage.DirectTransferRequest{}, err
 	}
@@ -548,7 +548,7 @@ func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storag
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
-	ossParts, err := directUploadParts(parts)
+	ossParts, err := buildOSSUploadParts(parts)
 	if err != nil {
 		return err
 	}
@@ -696,7 +696,7 @@ func validatePartNumber(partNumber int) error {
 	return nil
 }
 
-func directUploadParts(parts []storage.UploadPartResponse) ([]oss.UploadPart, error) {
+func buildOSSUploadParts(parts []storage.UploadPartResponse) ([]oss.UploadPart, error) {
 	sorted := append([]storage.UploadPartResponse(nil), parts...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PartNumber < sorted[j].PartNumber })
 	ossParts := make([]oss.UploadPart, 0, len(sorted))
