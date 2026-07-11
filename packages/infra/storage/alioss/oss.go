@@ -2,6 +2,7 @@ package alioss
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
@@ -20,6 +22,12 @@ import (
 )
 
 var _ storage.Storage = (*OssStorage)(nil)
+var _ storage.DirectStorage = (*OssStorage)(nil)
+
+const (
+	defaultDirectExpires = 15 * time.Minute
+	maxDirectExpires     = 7 * 24 * time.Hour
+)
 
 // applyIOOptions 将可选参数合并为 IOConfigOption。
 func applyIOOptions(opts []storage.IOConfigOptionFunc) *storage.IOConfigOption {
@@ -99,6 +107,169 @@ func (s *OssStorage) GetUrl(key string) string {
 	}
 	fallback := ossDefaultURL(s.bucket, s.region, s.endpoint, s.buildObjectKey(key), s.useCName)
 	return objectURL(s.publicBaseURL, fallback, s.buildObjectKey(key))
+}
+
+// PresignUpload 生成单文件直传 PUT 预签名请求。
+func (s *OssStorage) PresignUpload(ctx context.Context, key string, opts storage.DirectUploadOptions) (storage.DirectTransferRequest, error) {
+	objKey, err := s.directObjectKey(key)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	expires, err := normalizeDirectExpires(opts.Expires)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	req := &oss.PutObjectRequest{
+		Bucket:   oss.Ptr(s.bucket),
+		Key:      oss.Ptr(objKey),
+		Metadata: opts.Meta,
+	}
+	if opts.ContentType != "" {
+		req.ContentType = oss.Ptr(opts.ContentType)
+	}
+	if opts.ContentMD5 != "" {
+		req.ContentMD5 = oss.Ptr(opts.ContentMD5)
+	}
+	if opts.ForbidOverwrite {
+		req.ForbidOverwrite = oss.Ptr("true")
+	}
+	if opts.Callback != "" {
+		req.Callback = oss.Ptr(opts.Callback)
+	}
+	if opts.CallbackVar != "" {
+		req.CallbackVar = oss.Ptr(opts.CallbackVar)
+	}
+	return s.presign(ctx, objKey, req, expires, nil, true)
+}
+
+// PresignDownload 生成直连下载 GET 预签名请求。
+func (s *OssStorage) PresignDownload(ctx context.Context, key string, opts storage.DirectDownloadOptions) (storage.DirectTransferRequest, error) {
+	objKey, err := s.directObjectKey(key)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	expires, err := normalizeDirectExpires(opts.Expires)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	req := &oss.GetObjectRequest{
+		Bucket: oss.Ptr(s.bucket),
+		Key:    oss.Ptr(objKey),
+	}
+	return s.presign(ctx, objKey, req, expires, nil, false)
+}
+
+// PresignMultipartInitiate 生成直传分片初始化 POST 预签名请求。
+func (s *OssStorage) PresignMultipartInitiate(ctx context.Context, key string, opts storage.DirectMultipartInitiateOptions) (storage.DirectTransferRequest, error) {
+	objKey, err := s.directObjectKey(key)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	expires, err := normalizeDirectExpires(opts.Expires)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	req := &oss.InitiateMultipartUploadRequest{
+		Bucket:   oss.Ptr(s.bucket),
+		Key:      oss.Ptr(objKey),
+		Metadata: opts.Meta,
+	}
+	if opts.ContentType != "" {
+		req.ContentType = oss.Ptr(opts.ContentType)
+	}
+	if opts.ForbidOverwrite {
+		req.ForbidOverwrite = oss.Ptr("true")
+	}
+	return s.presign(ctx, objKey, req, expires, nil, true)
+}
+
+// PresignMultipartUploadPart 生成直传分片 PUT 预签名请求。
+func (s *OssStorage) PresignMultipartUploadPart(ctx context.Context, key, uploadID string, partNumber int, opts storage.DirectMultipartPartOptions) (storage.DirectTransferRequest, error) {
+	objKey, err := s.directObjectKey(key)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	if uploadID == "" {
+		return storage.DirectTransferRequest{}, errors.New("uploadID is empty")
+	}
+	if partNumber < 1 {
+		return storage.DirectTransferRequest{}, errors.New("partNumber must be >= 1")
+	}
+	expires, err := normalizeDirectExpires(opts.Expires)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	req := &oss.UploadPartRequest{
+		Bucket:     oss.Ptr(s.bucket),
+		Key:        oss.Ptr(objKey),
+		UploadId:   oss.Ptr(uploadID),
+		PartNumber: int32(partNumber),
+	}
+	if opts.ContentMD5 != "" {
+		req.ContentMD5 = oss.Ptr(opts.ContentMD5)
+	}
+	return s.presign(ctx, objKey, req, expires, nil, false)
+}
+
+// PresignMultipartComplete 生成直传分片完成 POST 预签名请求。
+func (s *OssStorage) PresignMultipartComplete(ctx context.Context, key, uploadID string, parts []storage.UploadPartResponse, opts storage.DirectMultipartCompleteOptions) (storage.DirectTransferRequest, error) {
+	objKey, err := s.directObjectKey(key)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	if uploadID == "" {
+		return storage.DirectTransferRequest{}, errors.New("uploadID is empty")
+	}
+	if len(parts) == 0 {
+		return storage.DirectTransferRequest{}, errors.New("no parts to complete")
+	}
+	expires, err := normalizeDirectExpires(opts.Expires)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	ossParts := directUploadParts(parts)
+	complete := &oss.CompleteMultipartUpload{Parts: ossParts}
+	body, err := xml.Marshal(complete)
+	if err != nil {
+		return storage.DirectTransferRequest{}, fmt.Errorf("marshal complete multipart body: %w", err)
+	}
+	req := &oss.CompleteMultipartUploadRequest{
+		Bucket:                  oss.Ptr(s.bucket),
+		Key:                     oss.Ptr(objKey),
+		UploadId:                oss.Ptr(uploadID),
+		CompleteMultipartUpload: complete,
+	}
+	if opts.ForbidOverwrite {
+		req.ForbidOverwrite = oss.Ptr("true")
+	}
+	if opts.Callback != "" {
+		req.Callback = oss.Ptr(opts.Callback)
+	}
+	if opts.CallbackVar != "" {
+		req.CallbackVar = oss.Ptr(opts.CallbackVar)
+	}
+	return s.presign(ctx, objKey, req, expires, body, true)
+}
+
+// PresignMultipartAbort 生成直传分片取消 DELETE 预签名请求。
+func (s *OssStorage) PresignMultipartAbort(ctx context.Context, key, uploadID string, opts storage.DirectMultipartAbortOptions) (storage.DirectTransferRequest, error) {
+	objKey, err := s.directObjectKey(key)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	if uploadID == "" {
+		return storage.DirectTransferRequest{}, errors.New("uploadID is empty")
+	}
+	expires, err := normalizeDirectExpires(opts.Expires)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	req := &oss.AbortMultipartUploadRequest{
+		Bucket:   oss.Ptr(s.bucket),
+		Key:      oss.Ptr(objKey),
+		UploadId: oss.Ptr(uploadID),
+	}
+	return s.presign(ctx, objKey, req, expires, nil, false)
 }
 
 // Exists 检查对象是否存在。
@@ -364,16 +535,11 @@ func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storag
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
-	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
-	ossParts := make([]oss.UploadPart, 0, len(parts))
-	for _, p := range parts {
-		ossParts = append(ossParts, oss.UploadPart{PartNumber: int32(p.PartNumber), ETag: oss.Ptr(p.ETag)})
-	}
 	_, err := s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
 		Bucket:                  oss.Ptr(s.bucket),
 		Key:                     oss.Ptr(session.Key),
 		UploadId:                oss.Ptr(session.UploadID),
-		CompleteMultipartUpload: &oss.CompleteMultipartUpload{Parts: ossParts},
+		CompleteMultipartUpload: &oss.CompleteMultipartUpload{Parts: directUploadParts(parts)},
 	})
 	return err
 }
@@ -452,4 +618,60 @@ func joinEndpointPath(endpoint, bucket, key string) string {
 		host = strings.TrimPrefix(endpoint, "https://")
 	}
 	return scheme + bucket + "." + host + "/" + strings.Trim(path.Join("/", key), "/")
+}
+
+func (s *OssStorage) directObjectKey(key string) (string, error) {
+	key = strings.TrimPrefix(key, "/")
+	if key == "" {
+		return "", errors.New("key is empty")
+	}
+	return s.buildObjectKey(key), nil
+}
+
+func (s *OssStorage) presign(ctx context.Context, objKey string, req any, expires time.Duration, body []byte, includePublicURL bool) (storage.DirectTransferRequest, error) {
+	result, err := s.client.Presign(ctx, req, oss.PresignExpires(expires))
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
+	out := storage.DirectTransferRequest{
+		Key:       objKey,
+		Method:    result.Method,
+		URL:       result.URL,
+		Headers:   directHeaders(result.SignedHeaders),
+		Body:      body,
+		ExpiresAt: result.Expiration,
+	}
+	if includePublicURL {
+		fallback := ossDefaultURL(s.bucket, s.region, s.endpoint, objKey, s.useCName)
+		out.PublicURL = objectURL(s.publicBaseURL, fallback, objKey)
+	}
+	return out, nil
+}
+
+func directHeaders(in map[string]string) http.Header {
+	headers := make(http.Header, len(in))
+	for k, v := range in {
+		headers.Set(k, v)
+	}
+	return headers
+}
+
+func normalizeDirectExpires(expires time.Duration) (time.Duration, error) {
+	if expires <= 0 {
+		return defaultDirectExpires, nil
+	}
+	if expires > maxDirectExpires {
+		return 0, errors.New("expires must not be greater than 7 days")
+	}
+	return expires, nil
+}
+
+func directUploadParts(parts []storage.UploadPartResponse) []oss.UploadPart {
+	sorted := append([]storage.UploadPartResponse(nil), parts...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PartNumber < sorted[j].PartNumber })
+	ossParts := make([]oss.UploadPart, 0, len(sorted))
+	for _, p := range sorted {
+		ossParts = append(ossParts, oss.UploadPart{PartNumber: int32(p.PartNumber), ETag: oss.Ptr(p.ETag)})
+	}
+	return ossParts
 }

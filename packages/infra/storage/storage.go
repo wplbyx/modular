@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"time"
 )
 
 // ==========================================
@@ -37,6 +39,60 @@ type MultipartUploadSession struct {
 type UploadPartResponse struct {
 	PartNumber int    // 分片号（从 1 开始）
 	ETag       string // 分片校验码
+}
+
+// DirectTransferRequest 代表一次由客户端直接请求对象存储的预签名 HTTP 请求。
+type DirectTransferRequest struct {
+	Key       string      // 存储后端内部 object key
+	Method    string      // HTTP method
+	URL       string      // 预签名 URL
+	Headers   http.Header // 调用方发起请求时必须原样携带的签名头
+	Body      []byte      // 需要随请求发送的固定 body，如 CompleteMultipartUpload XML
+	ExpiresAt time.Time   // URL 过期时间
+	PublicURL string      // 对象最终访问 URL（仅对象创建/下载场景有意义）
+}
+
+// DirectUploadOptions 配置单文件直传 PUT 预签名。
+type DirectUploadOptions struct {
+	Expires         time.Duration
+	ContentType     string
+	ContentMD5      string
+	Meta            map[string]string
+	ForbidOverwrite bool
+	Callback        string
+	CallbackVar     string
+}
+
+// DirectDownloadOptions 配置直连下载 GET 预签名。
+type DirectDownloadOptions struct {
+	Expires time.Duration
+}
+
+// DirectMultipartInitiateOptions 配置直传分片初始化预签名。
+type DirectMultipartInitiateOptions struct {
+	Expires         time.Duration
+	ContentType     string
+	Meta            map[string]string
+	ForbidOverwrite bool
+}
+
+// DirectMultipartPartOptions 配置直传分片 PUT 预签名。
+type DirectMultipartPartOptions struct {
+	Expires    time.Duration
+	ContentMD5 string
+}
+
+// DirectMultipartCompleteOptions 配置直传分片完成预签名。
+type DirectMultipartCompleteOptions struct {
+	Expires         time.Duration
+	ForbidOverwrite bool
+	Callback        string
+	CallbackVar     string
+}
+
+// DirectMultipartAbortOptions 配置直传分片取消预签名。
+type DirectMultipartAbortOptions struct {
+	Expires time.Duration
 }
 
 // ==========================================
@@ -144,6 +200,16 @@ type MultipartStore interface {
 	CompleteMultipartUpload(ctx context.Context, session MultipartUploadSession, parts []UploadPartResponse, opts ...IOConfigOptionFunc) error
 	CancelMultipartUpload(ctx context.Context, session MultipartUploadSession) error
 	MultipartUpload(ctx context.Context, session MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (UploadPartResponse, error)
+}
+
+// DirectStorage 是对象存储直传预签名接口，与 Storage 同层级且作为可选能力使用。
+type DirectStorage interface {
+	PresignUpload(ctx context.Context, key string, opts DirectUploadOptions) (DirectTransferRequest, error)
+	PresignDownload(ctx context.Context, key string, opts DirectDownloadOptions) (DirectTransferRequest, error)
+	PresignMultipartInitiate(ctx context.Context, key string, opts DirectMultipartInitiateOptions) (DirectTransferRequest, error)
+	PresignMultipartUploadPart(ctx context.Context, key, uploadID string, partNumber int, opts DirectMultipartPartOptions) (DirectTransferRequest, error)
+	PresignMultipartComplete(ctx context.Context, key, uploadID string, parts []UploadPartResponse, opts DirectMultipartCompleteOptions) (DirectTransferRequest, error)
+	PresignMultipartAbort(ctx context.Context, key, uploadID string, opts DirectMultipartAbortOptions) (DirectTransferRequest, error)
 }
 
 // ErrUnsupportedStorageType 表示配置的存储类型不支持。
