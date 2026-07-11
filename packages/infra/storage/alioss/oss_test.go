@@ -313,6 +313,7 @@ func TestOSS_PresignUploadAndDownload(t *testing.T) {
 	assert.Equal(t, "prefix/images/a.png", download.Key)
 	assert.Equal(t, http.MethodGet, download.Method)
 	assert.Contains(t, download.URL, "test-bucket.oss-cn-hangzhou.aliyuncs.com/prefix/images/a.png")
+	assert.Equal(t, "https://cdn.example.com/prefix/images/a.png", download.PublicURL)
 	assert.Empty(t, download.Headers)
 	assert.Empty(t, download.Body)
 }
@@ -469,6 +470,25 @@ func TestOSS_CompleteMultipartUploadSortsParts(t *testing.T) {
 	if idx1 == -1 || idx2 == -1 || idx3 == -1 || !(idx1 < idx2 && idx2 < idx3) {
 		t.Fatalf("multipart complete body not sorted: %s", completeBody)
 	}
+}
+
+func TestOSS_CompleteMultipartUpload_LetsProviderValidatePartETags(t *testing.T) {
+	var completeBody string
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !r.URL.Query().Has("uploadId") {
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		completeBody = string(body)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	sess := storage.MultipartUploadSession{UploadID: "uid-1", Key: "prefix/big/file"}
+	err := s.CompleteMultipartUpload(context.Background(), sess, []storage.UploadPartResponse{{PartNumber: 1}})
+	require.NoError(t, err)
+	assert.Contains(t, completeBody, "<PartNumber>1</PartNumber>")
 }
 
 func TestOSSDefaultURLPreservesHTTPEndpoint(t *testing.T) {

@@ -133,19 +133,25 @@ func TestCallbackHandler_RejectsBadMethodAndProcessorError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
-func TestCallbackHandler_RejectsOversizedBody(t *testing.T) {
+func TestCallbackHandler_ProcessesLargeSignedBody(t *testing.T) {
+	privateKey, publicKeyPEM := testCallbackKeyPair(t)
+	body := []byte(`{"object":"` + strings.Repeat("a", 1<<20) + `"}`)
+	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
+	req.Header.Set("Content-Type", "application/json")
+
+	var received CallbackPayload
 	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
-		t.Fatalf("processor should not be called for oversized body")
+		received = payload
 		return nil
-	}, WithCallbackMaxBodyBytes(4), WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
-		t.Fatalf("fetcher should not be called for oversized body")
-		return nil, nil
+	}, WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+		return publicKeyPEM, nil
 	}))
 
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/callbacks/oss", strings.NewReader("12345")))
+	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Len(t, received.Values["object"], 1<<20)
 }
 
 func signedCallbackRequest(t *testing.T, privateKey *rsa.PrivateKey, target string, body []byte) *http.Request {

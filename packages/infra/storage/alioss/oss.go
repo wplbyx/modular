@@ -161,7 +161,7 @@ func (s *OssStorage) PresignDownload(ctx context.Context, key string, opts stora
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(objKey),
 	}
-	return s.presign(ctx, objKey, req, expires, nil, false)
+	return s.presign(ctx, objKey, req, expires, nil, true)
 }
 
 // PresignMultipartInitiate 生成直传分片初始化 POST 预签名请求。
@@ -232,7 +232,7 @@ func (s *OssStorage) PresignMultipartComplete(ctx context.Context, key, uploadID
 	if err != nil {
 		return storage.DirectTransferRequest{}, err
 	}
-	ossParts, err := buildOSSUploadParts(parts)
+	ossParts, err := buildValidatedOSSUploadParts(parts)
 	if err != nil {
 		return storage.DirectTransferRequest{}, err
 	}
@@ -548,11 +548,8 @@ func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storag
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
-	ossParts, err := buildOSSUploadParts(parts)
-	if err != nil {
-		return err
-	}
-	_, err = s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
+	ossParts := buildOSSUploadParts(parts)
+	_, err := s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
 		Bucket:                  oss.Ptr(s.bucket),
 		Key:                     oss.Ptr(session.Key),
 		UploadId:                oss.Ptr(session.UploadID),
@@ -696,7 +693,17 @@ func validatePartNumber(partNumber int) error {
 	return nil
 }
 
-func buildOSSUploadParts(parts []storage.UploadPartResponse) ([]oss.UploadPart, error) {
+func buildOSSUploadParts(parts []storage.UploadPartResponse) []oss.UploadPart {
+	sorted := append([]storage.UploadPartResponse(nil), parts...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PartNumber < sorted[j].PartNumber })
+	ossParts := make([]oss.UploadPart, 0, len(sorted))
+	for _, p := range sorted {
+		ossParts = append(ossParts, oss.UploadPart{PartNumber: int32(p.PartNumber), ETag: oss.Ptr(p.ETag)})
+	}
+	return ossParts
+}
+
+func buildValidatedOSSUploadParts(parts []storage.UploadPartResponse) ([]oss.UploadPart, error) {
 	sorted := append([]storage.UploadPartResponse(nil), parts...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PartNumber < sorted[j].PartNumber })
 	ossParts := make([]oss.UploadPart, 0, len(sorted))
