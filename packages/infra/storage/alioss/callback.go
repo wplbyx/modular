@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	callbackOKResponse                    = `{"Status":"OK"}`
-	defaultCallbackMaxBodyBytes     int64 = 1 << 20
-	defaultCallbackPublicKeyTimeout       = 5 * time.Second
+	callbackOKResponse              = `{"Status":"OK"}`
+	defaultCallbackPublicKeyTimeout = 5 * time.Second
 )
 
 var defaultCallbackHTTPClient = &http.Client{Timeout: defaultCallbackPublicKeyTimeout}
@@ -41,8 +40,7 @@ type CallbackPayload struct {
 type CallbackProcessor func(ctx context.Context, payload CallbackPayload) error
 
 type callbackConfig struct {
-	fetcher      PublicKeyFetcher
-	maxBodyBytes int64
+	fetcher PublicKeyFetcher
 }
 
 // CallbackOption 配置 NewCallbackHandler。
@@ -57,19 +55,11 @@ func WithCallbackPublicKeyFetcher(fetcher PublicKeyFetcher) CallbackOption {
 	}
 }
 
-// WithCallbackMaxBodyBytes 覆盖回调请求 body 最大读取字节数；maxBytes <= 0 表示不限制。
-func WithCallbackMaxBodyBytes(maxBytes int64) CallbackOption {
-	return func(cfg *callbackConfig) {
-		cfg.maxBodyBytes = maxBytes
-	}
-}
-
 // NewCallbackHandler 返回标准库 HTTP handler，用于处理 OSS 上传回调。
 // 业务服务可以把它挂到任意路由，也可以直接调用底层函数。
 func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) http.Handler {
 	cfg := callbackConfig{
-		fetcher:      defaultCallbackPublicKeyFetcher,
-		maxBodyBytes: defaultCallbackMaxBodyBytes,
+		fetcher: defaultCallbackPublicKeyFetcher,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -85,17 +75,8 @@ func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) htt
 			http.Error(w, "callback processor is nil", http.StatusInternalServerError)
 			return
 		}
-		bodyReader := r.Body
-		if cfg.maxBodyBytes > 0 {
-			bodyReader = http.MaxBytesReader(w, r.Body, cfg.maxBodyBytes)
-		}
-		body, err := io.ReadAll(bodyReader)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				http.Error(w, "callback body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
 			http.Error(w, "read callback body", http.StatusBadRequest)
 			return
 		}
@@ -212,7 +193,11 @@ func callbackPublicKeyURL(r *http.Request) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode x-oss-pub-key-url: %w", err)
 	}
-	return normalizeCallbackPublicKeyURL(string(raw))
+	publicKeyURL := strings.TrimSpace(string(raw))
+	if _, err := parseAllowedCallbackPublicKeyURL(publicKeyURL); err != nil {
+		return "", err
+	}
+	return publicKeyURL, nil
 }
 
 func callbackStringToSign(r *http.Request, body []byte) string {
@@ -281,19 +266,29 @@ func defaultCallbackPublicKeyFetcher(ctx context.Context, publicKeyURL string) (
 }
 
 func normalizeCallbackPublicKeyURL(publicKeyURL string) (string, error) {
+	u, err := parseAllowedCallbackPublicKeyURL(publicKeyURL)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "http" {
+		u.Scheme = "https"
+	}
+	return u.String(), nil
+}
+
+func parseAllowedCallbackPublicKeyURL(publicKeyURL string) (*url.URL, error) {
 	u, err := url.Parse(strings.TrimSpace(publicKeyURL))
 	if err != nil {
-		return "", fmt.Errorf("parse public key url: %w", err)
+		return nil, fmt.Errorf("parse public key url: %w", err)
 	}
 	if u.Hostname() != "gosspublic.alicdn.com" {
-		return "", errors.New("public key url is not allowed")
+		return nil, errors.New("public key url is not allowed")
 	}
 	switch u.Scheme {
 	case "https":
 	case "http":
-		u.Scheme = "https"
 	default:
-		return "", errors.New("public key url must use http or https")
+		return nil, errors.New("public key url must use http or https")
 	}
-	return u.String(), nil
+	return u, nil
 }

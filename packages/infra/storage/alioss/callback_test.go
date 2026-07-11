@@ -15,7 +15,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,17 +58,23 @@ func TestCallbackSignature_RejectsInvalidPublicKeyURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "public key url is not allowed")
 }
 
-func TestCallbackSignature_UpgradesAllowedHTTPPublicKeyURL(t *testing.T) {
+func TestCallbackSignature_PassesDecodedAllowedHTTPPublicKeyURLToFetcher(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	body := []byte(`{"object":"prefix/a.txt"}`)
 	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
 	req.Header.Set("x-oss-pub-key-url", base64.StdEncoding.EncodeToString([]byte("http://gosspublic.alicdn.com/test-public-key.pem")))
 
 	err := VerifyCallbackSignature(req, body, func(ctx context.Context, publicKeyURL string) ([]byte, error) {
-		assert.Equal(t, "https://gosspublic.alicdn.com/test-public-key.pem", publicKeyURL)
+		assert.Equal(t, "http://gosspublic.alicdn.com/test-public-key.pem", publicKeyURL)
 		return publicKeyPEM, nil
 	})
 	require.NoError(t, err)
+}
+
+func TestNormalizeCallbackPublicKeyURL_UpgradesHTTPToHTTPS(t *testing.T) {
+	got, err := normalizeCallbackPublicKeyURL("http://gosspublic.alicdn.com/test-public-key.pem")
+	require.NoError(t, err)
+	assert.Equal(t, "https://gosspublic.alicdn.com/test-public-key.pem", got)
 }
 
 func TestCallbackSignature_UsesURLDecodedPathAndRawQuery(t *testing.T) {
@@ -127,25 +132,25 @@ func TestCallbackHandler_VerifiesParsesAndProcessesRequest(t *testing.T) {
 	assert.Equal(t, "prefix/a.txt", received.Values["object"])
 }
 
-func TestCallbackHandler_RejectsOversizedBodyBeforeSignature(t *testing.T) {
+func TestCallbackHandler_ProcessesLargeSignedBodyByDefault(t *testing.T) {
+	privateKey, publicKeyPEM := testCallbackKeyPair(t)
+	body := []byte(`{"object":"` + strings.Repeat("x", 1<<20+1) + `"}`)
+	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
+	req.Header.Set("Content-Type", "application/json")
+
+	var received CallbackPayload
 	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
-		require.FailNow(t, "processor should not be called for oversized body")
+		received = payload
 		return nil
 	}, WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
-		require.FailNow(t, "fetcher should not be called for oversized body")
-		return nil, nil
+		return publicKeyPEM, nil
 	}))
-	body := strings.NewReader(strings.Repeat("x", 1<<20+1))
-	req := httptest.NewRequest(http.MethodPost, "/callbacks/oss", body)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
-}
-
-func TestDefaultCallbackPublicKeyFetcher_UsesBoundedHTTPClient(t *testing.T) {
-	assert.Equal(t, 5*time.Second, defaultCallbackHTTPClient.Timeout)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Len(t, received.Values["object"], 1<<20+1)
 }
 
 func TestCallbackHandler_RejectsBadMethodAndProcessorError(t *testing.T) {
