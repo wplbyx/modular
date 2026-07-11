@@ -18,7 +18,10 @@ import (
 	"strings"
 )
 
-const callbackOKResponse = `{"Status":"OK"}`
+const (
+	callbackOKResponse       = `{"Status":"OK"}`
+	defaultCallbackBodyLimit = 1 << 20
+)
 
 // PublicKeyFetcher 在公钥 URL 解码并校验通过后加载 OSS 回调公钥。
 type PublicKeyFetcher func(ctx context.Context, publicKeyURL string) ([]byte, error)
@@ -34,7 +37,8 @@ type CallbackPayload struct {
 type CallbackProcessor func(ctx context.Context, payload CallbackPayload) error
 
 type callbackConfig struct {
-	fetcher PublicKeyFetcher
+	fetcher      PublicKeyFetcher
+	maxBodyBytes int64
 }
 
 // CallbackOption 配置 NewCallbackHandler。
@@ -49,10 +53,22 @@ func WithCallbackPublicKeyFetcher(fetcher PublicKeyFetcher) CallbackOption {
 	}
 }
 
+// WithCallbackMaxBodyBytes 设置回调 body 最大读取字节数。
+func WithCallbackMaxBodyBytes(maxBytes int64) CallbackOption {
+	return func(cfg *callbackConfig) {
+		if maxBytes > 0 {
+			cfg.maxBodyBytes = maxBytes
+		}
+	}
+}
+
 // NewCallbackHandler 返回标准库 HTTP handler，用于处理 OSS 上传回调。
 // 业务服务可以把它挂到任意路由，也可以直接调用底层函数。
 func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) http.Handler {
-	cfg := callbackConfig{fetcher: defaultCallbackPublicKeyFetcher}
+	cfg := callbackConfig{
+		fetcher:      defaultCallbackPublicKeyFetcher,
+		maxBodyBytes: defaultCallbackBodyLimit,
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -67,8 +83,17 @@ func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) htt
 			http.Error(w, "callback processor is nil", http.StatusInternalServerError)
 			return
 		}
-		body, err := io.ReadAll(r.Body)
+		reader := r.Body
+		if cfg.maxBodyBytes > 0 {
+			reader = http.MaxBytesReader(w, r.Body, cfg.maxBodyBytes)
+		}
+		body, err := io.ReadAll(reader)
 		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "callback body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "read callback body", http.StatusBadRequest)
 			return
 		}

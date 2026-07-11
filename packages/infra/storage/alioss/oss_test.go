@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,12 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wplbyx/modular/packages/infra/storage"
-
 	aliyunoss "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/infra/storage"
 )
 
 // newTestStorage 起一个本地 httptest.Server，构造指向它的真实 *oss.Client。
@@ -360,6 +362,7 @@ func TestOSS_PresignMultipartDirectUpload(t *testing.T) {
 	assert.Equal(t, "true", completeReq.Headers.Get("x-oss-forbid-overwrite"))
 	assert.Equal(t, "callback-base64", completeReq.Headers.Get("x-oss-callback"))
 	assert.Equal(t, "callback-var-base64", completeReq.Headers.Get("x-oss-callback-var"))
+	assert.Equal(t, base64MD5(completeReq.Body), completeReq.Headers.Get("Content-MD5"))
 	assert.Contains(t, string(completeReq.Body), "<PartNumber>1</PartNumber>")
 	assert.Less(t, strings.Index(string(completeReq.Body), "<PartNumber>1</PartNumber>"), strings.Index(string(completeReq.Body), "<PartNumber>2</PartNumber>"))
 	assert.Less(t, strings.Index(string(completeReq.Body), "<PartNumber>2</PartNumber>"), strings.Index(string(completeReq.Body), "<PartNumber>3</PartNumber>"))
@@ -383,9 +386,48 @@ func TestOSS_PresignRejectsInvalidInputs(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "partNumber must be >= 1")
 
+	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "upload-1", 10001, storage.DirectMultipartPartOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "partNumber must be <= 10000")
+
+	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "upload-1", math.MaxInt, storage.DirectMultipartPartOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "partNumber must be <= 10000")
+
+	_, err = s.PresignMultipartComplete(context.Background(), "file.bin", "upload-1", []storage.UploadPartResponse{{PartNumber: 1}}, storage.DirectMultipartCompleteOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "part ETag is empty")
+
+	_, err = s.PresignMultipartComplete(context.Background(), "file.bin", "upload-1", []storage.UploadPartResponse{
+		{PartNumber: 1, ETag: "etag-1"},
+		{PartNumber: 1, ETag: "etag-duplicate"},
+	}, storage.DirectMultipartCompleteOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate partNumber")
+
 	_, err = s.PresignDownload(context.Background(), "file.bin", storage.DirectDownloadOptions{Expires: 8 * 24 * time.Hour})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
+}
+
+func TestOSS_PresignRejectsSecurityToken(t *testing.T) {
+	s, err := NewOSSStorage(&config.Storage{
+		PublicBaseURL: "https://cdn.example.com",
+		OSS: &config.OSSStorageConfig{
+			AccessKeyID:     "test-ak",
+			AccessKeySecret: "test-sk",
+			SecurityToken:   "test-token",
+			Region:          "cn-hangzhou",
+			Bucket:          "test-bucket",
+			Endpoint:        "oss-cn-hangzhou.aliyuncs.com",
+			BaseDir:         "prefix",
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = s.PresignUpload(context.Background(), "file.bin", storage.DirectUploadOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "security token is not supported for direct presign")
 }
 
 func TestOSS_PresignUsesEscapedObjectKeys(t *testing.T) {

@@ -133,6 +133,21 @@ func TestCallbackHandlerRejectsBadMethodAndProcessorError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+func TestCallbackHandlerRejectsOversizedBody(t *testing.T) {
+	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
+		t.Fatalf("processor should not be called for oversized body")
+		return nil
+	}, WithCallbackMaxBodyBytes(4), WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+		t.Fatalf("fetcher should not be called for oversized body")
+		return nil, nil
+	}))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/callbacks/oss", strings.NewReader("12345")))
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+}
+
 func signedCallbackRequest(t *testing.T, privateKey *rsa.PrivateKey, target string, body []byte) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))

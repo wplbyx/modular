@@ -2,6 +2,8 @@ package alioss
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -27,6 +29,7 @@ var _ storage.DirectStorage = (*OssStorage)(nil)
 const (
 	defaultDirectExpires = 15 * time.Minute
 	maxDirectExpires     = 7 * 24 * time.Hour
+	maxOSSPartNumber     = 10000
 )
 
 // applyIOOptions 将可选参数合并为 IOConfigOption。
@@ -49,6 +52,7 @@ type OssStorage struct {
 	useCName      bool
 	publicBaseURL string
 	baseDir       string // 对象 key 前缀（不带首尾斜杠）
+	hasToken      bool
 }
 
 // NewOSSStorage 构造 OSS Storage。
@@ -88,6 +92,7 @@ func NewOSSStorage(cfg *config.Storage) (*OssStorage, error) {
 		useCName:      oc.UseCName,
 		publicBaseURL: cfg.PublicBaseURL,
 		baseDir:       strings.Trim(oc.BaseDir, "/"),
+		hasToken:      strings.TrimSpace(oc.SecurityToken) != "",
 	}, nil
 }
 
@@ -192,8 +197,8 @@ func (s *OssStorage) PresignMultipartUploadPart(ctx context.Context, key, upload
 	if uploadID == "" {
 		return storage.DirectTransferRequest{}, errors.New("uploadID is empty")
 	}
-	if partNumber < 1 {
-		return storage.DirectTransferRequest{}, errors.New("partNumber must be >= 1")
+	if err = validatePartNumber(partNumber); err != nil {
+		return storage.DirectTransferRequest{}, err
 	}
 	expires, err := normalizeDirectExpires(opts.Expires)
 	if err != nil {
@@ -227,7 +232,10 @@ func (s *OssStorage) PresignMultipartComplete(ctx context.Context, key, uploadID
 	if err != nil {
 		return storage.DirectTransferRequest{}, err
 	}
-	ossParts := directUploadParts(parts)
+	ossParts, err := directUploadParts(parts)
+	if err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
 	complete := &oss.CompleteMultipartUpload{Parts: ossParts}
 	body, err := xml.Marshal(complete)
 	if err != nil {
@@ -238,6 +246,11 @@ func (s *OssStorage) PresignMultipartComplete(ctx context.Context, key, uploadID
 		Key:                     oss.Ptr(objKey),
 		UploadId:                oss.Ptr(uploadID),
 		CompleteMultipartUpload: complete,
+		RequestCommon: oss.RequestCommon{
+			Headers: map[string]string{
+				"Content-MD5": base64MD5(body),
+			},
+		},
 	}
 	if opts.ForbidOverwrite {
 		req.ForbidOverwrite = oss.Ptr("true")
@@ -514,8 +527,8 @@ func (s *OssStorage) InitiateMultipartUpload(ctx context.Context, key string) (s
 
 // MultipartUpload 上传单个分片。
 func (s *OssStorage) MultipartUpload(ctx context.Context, session storage.MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (storage.UploadPartResponse, error) {
-	if partNumber < 1 {
-		return storage.UploadPartResponse{}, errors.New("partNumber must be >= 1")
+	if err := validatePartNumber(partNumber); err != nil {
+		return storage.UploadPartResponse{}, err
 	}
 	res, err := s.client.UploadPart(ctx, &oss.UploadPartRequest{
 		Bucket:     oss.Ptr(s.bucket),
@@ -535,11 +548,15 @@ func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storag
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
-	_, err := s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
+	ossParts, err := directUploadParts(parts)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
 		Bucket:                  oss.Ptr(s.bucket),
 		Key:                     oss.Ptr(session.Key),
 		UploadId:                oss.Ptr(session.UploadID),
-		CompleteMultipartUpload: &oss.CompleteMultipartUpload{Parts: directUploadParts(parts)},
+		CompleteMultipartUpload: &oss.CompleteMultipartUpload{Parts: ossParts},
 	})
 	return err
 }
@@ -629,6 +646,9 @@ func (s *OssStorage) directObjectKey(key string) (string, error) {
 }
 
 func (s *OssStorage) presign(ctx context.Context, objKey string, req any, expires time.Duration, body []byte, includePublicURL bool) (storage.DirectTransferRequest, error) {
+	if s.hasToken {
+		return storage.DirectTransferRequest{}, errors.New("security token is not supported for direct presign")
+	}
 	result, err := s.client.Presign(ctx, req, oss.PresignExpires(expires))
 	if err != nil {
 		return storage.DirectTransferRequest{}, err
@@ -666,12 +686,38 @@ func normalizeDirectExpires(expires time.Duration) (time.Duration, error) {
 	return expires, nil
 }
 
-func directUploadParts(parts []storage.UploadPartResponse) []oss.UploadPart {
+func validatePartNumber(partNumber int) error {
+	if partNumber < 1 {
+		return errors.New("partNumber must be >= 1")
+	}
+	if partNumber > maxOSSPartNumber {
+		return errors.New("partNumber must be <= 10000")
+	}
+	return nil
+}
+
+func directUploadParts(parts []storage.UploadPartResponse) ([]oss.UploadPart, error) {
 	sorted := append([]storage.UploadPartResponse(nil), parts...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PartNumber < sorted[j].PartNumber })
 	ossParts := make([]oss.UploadPart, 0, len(sorted))
+	seen := make(map[int]struct{}, len(sorted))
 	for _, p := range sorted {
+		if err := validatePartNumber(p.PartNumber); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.ETag) == "" {
+			return nil, errors.New("part ETag is empty")
+		}
+		if _, ok := seen[p.PartNumber]; ok {
+			return nil, fmt.Errorf("duplicate partNumber %d", p.PartNumber)
+		}
+		seen[p.PartNumber] = struct{}{}
 		ossParts = append(ossParts, oss.UploadPart{PartNumber: int32(p.PartNumber), ETag: oss.Ptr(p.ETag)})
 	}
-	return ossParts
+	return ossParts, nil
+}
+
+func base64MD5(body []byte) string {
+	sum := md5.Sum(body)
+	return base64.StdEncoding.EncodeToString(sum[:])
 }
