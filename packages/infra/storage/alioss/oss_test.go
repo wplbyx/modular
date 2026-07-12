@@ -346,6 +346,7 @@ func TestOSS_PresignMultipartDirectUpload(t *testing.T) {
 	initReq, err := s.PresignMultipartInitiate(context.Background(), "videos/movie.mp4", storage.DirectMultipartInitiateOptions{
 		Expires:         time.Minute,
 		ContentType:     "video/mp4",
+		Meta:            map[string]string{"tenant": "acme"},
 		ForbidOverwrite: true,
 	})
 	require.NoError(t, err)
@@ -353,6 +354,7 @@ func TestOSS_PresignMultipartDirectUpload(t *testing.T) {
 	assert.Equal(t, http.MethodPost, initReq.Method)
 	assert.Contains(t, initReq.URL, "uploads")
 	assert.Equal(t, "video/mp4", initReq.Headers.Get("Content-Type"))
+	assert.Equal(t, "acme", initReq.Headers.Get("x-oss-meta-tenant"))
 	assert.Equal(t, "true", initReq.Headers.Get("x-oss-forbid-overwrite"))
 	assert.Empty(t, initReq.Body)
 
@@ -416,6 +418,18 @@ func TestOSS_PresignRejectsInvalidInputs(t *testing.T) {
 	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "upload-1", math.MaxInt, storage.DirectMultipartPartOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "partNumber must be <= 10000")
+
+	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "", 1, storage.DirectMultipartPartOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadID is empty")
+
+	_, err = s.PresignMultipartComplete(context.Background(), "file.bin", "", []storage.UploadPartResponse{{PartNumber: 1, ETag: "etag-1"}}, storage.DirectMultipartCompleteOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadID is empty")
+
+	_, err = s.PresignMultipartAbort(context.Background(), "file.bin", "", storage.DirectMultipartAbortOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadID is empty")
 
 	_, err = s.PresignMultipartComplete(context.Background(), "file.bin", "upload-1", []storage.UploadPartResponse{{PartNumber: 1}}, storage.DirectMultipartCompleteOptions{})
 	require.Error(t, err)
