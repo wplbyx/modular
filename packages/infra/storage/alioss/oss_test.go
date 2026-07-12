@@ -492,6 +492,28 @@ func TestOSS_CompleteMultipartUploadSortsParts(t *testing.T) {
 	}
 }
 
+func TestOSS_CompleteMultipartUploadLeavesPartValidationToOSS(t *testing.T) {
+	var called bool
+	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.Method != http.MethodPost || !r.URL.Query().Has("uploadId") {
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	sess := storage.MultipartUploadSession{UploadID: "uid-1", Key: "prefix/big/file"}
+	err := s.CompleteMultipartUpload(context.Background(), sess, []storage.UploadPartResponse{
+		{PartNumber: 1},
+	})
+
+	require.NoError(t, err)
+	assert.True(t, called)
+}
+
 func TestOSSDefaultURLPreservesHTTPEndpoint(t *testing.T) {
 	got := ossDefaultURL("bucket", "", "http://oss.example.com", "a/b.txt", false)
 	want := "http://bucket.oss.example.com/a/b.txt"

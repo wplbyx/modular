@@ -534,9 +534,6 @@ func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storag
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
-	if err := validateUploadParts(parts); err != nil {
-		return err
-	}
 	_, err := s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
 		Bucket:                  oss.Ptr(s.bucket),
 		Key:                     oss.Ptr(session.Key),
