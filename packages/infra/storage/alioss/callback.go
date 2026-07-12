@@ -16,9 +16,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 )
 
-const callbackOKResponse = `{"Status":"OK"}`
+const (
+	callbackOKResponse               = `{"Status":"OK"}`
+	defaultCallbackMaxBodyBytes      = int64(1 << 20)
+	defaultCallbackPublicKeyCacheTTL = time.Hour
+	defaultCallbackPublicKeyTimeout  = 5 * time.Second
+)
+
+var (
+	defaultCallbackHTTPClient = &http.Client{Timeout: defaultCallbackPublicKeyTimeout}
+	errCallbackBodyTooLarge   = errors.New("callback body is too large")
+)
 
 // PublicKeyFetcher 在公钥 URL 解码并校验通过后加载 OSS 回调公钥。
 type PublicKeyFetcher func(ctx context.Context, publicKeyURL string) ([]byte, error)
@@ -34,7 +46,10 @@ type CallbackPayload struct {
 type CallbackProcessor func(ctx context.Context, payload CallbackPayload) error
 
 type callbackConfig struct {
-	fetcher PublicKeyFetcher
+	fetcher           PublicKeyFetcher
+	maxBodyBytes      int64
+	publicKeyCacheTTL time.Duration
+	publicKeyCache    *callbackPublicKeyCache
 }
 
 // CallbackOption 配置 NewCallbackHandler。
@@ -49,10 +64,31 @@ func WithCallbackPublicKeyFetcher(fetcher PublicKeyFetcher) CallbackOption {
 	}
 }
 
+// WithCallbackMaxBodyBytes 设置回调 body 最大读取字节数。
+func WithCallbackMaxBodyBytes(maxBytes int64) CallbackOption {
+	return func(cfg *callbackConfig) {
+		if maxBytes > 0 {
+			cfg.maxBodyBytes = maxBytes
+		}
+	}
+}
+
+// WithCallbackPublicKeyCacheTTL 设置 OSS 回调公钥缓存时长；ttl <= 0 表示关闭缓存。
+func WithCallbackPublicKeyCacheTTL(ttl time.Duration) CallbackOption {
+	return func(cfg *callbackConfig) {
+		cfg.publicKeyCacheTTL = ttl
+	}
+}
+
 // NewCallbackHandler 返回标准库 HTTP handler，用于处理 OSS 上传回调。
 // 业务服务可以把它挂到任意路由，也可以直接调用底层函数。
 func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) http.Handler {
-	cfg := callbackConfig{fetcher: defaultCallbackPublicKeyFetcher}
+	cfg := callbackConfig{
+		fetcher:           defaultCallbackPublicKeyFetcher,
+		maxBodyBytes:      defaultCallbackMaxBodyBytes,
+		publicKeyCacheTTL: defaultCallbackPublicKeyCacheTTL,
+		publicKeyCache:    newCallbackPublicKeyCache(),
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -67,12 +103,16 @@ func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) htt
 			http.Error(w, "callback processor is nil", http.StatusInternalServerError)
 			return
 		}
-		body, err := io.ReadAll(r.Body)
+		body, err := readCallbackBody(r.Body, cfg.maxBodyBytes)
 		if err != nil {
+			if errors.Is(err, errCallbackBodyTooLarge) {
+				http.Error(w, "callback body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "read callback body", http.StatusBadRequest)
 			return
 		}
-		if err = VerifyCallbackSignature(r, body, cfg.fetcher); err != nil {
+		if err = verifyCallbackSignature(r, body, cfg.cachedPublicKeyProvider()); err != nil {
 			http.Error(w, "invalid callback signature", http.StatusForbidden)
 			return
 		}
@@ -92,14 +132,34 @@ func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) htt
 	})
 }
 
+func (cfg callbackConfig) cachedPublicKeyProvider() callbackPublicKeyProvider {
+	return func(ctx context.Context, publicKeyURL string) (*rsa.PublicKey, error) {
+		if cfg.publicKeyCache == nil || cfg.publicKeyCacheTTL <= 0 {
+			return fetchCallbackPublicKey(ctx, publicKeyURL, cfg.fetcher)
+		}
+		return cfg.publicKeyCache.fetch(ctx, publicKeyURL, cfg.publicKeyCacheTTL, cfg.fetcher)
+	}
+}
+
 // VerifyCallbackSignature 按 OSS 回调规则校验请求签名：
 // 对 path[?query] + "\n" + body 取 MD5 后用 RSA 验签。
 func VerifyCallbackSignature(r *http.Request, body []byte, fetcher PublicKeyFetcher) error {
+	if fetcher == nil {
+		return errors.New("public key fetcher is nil")
+	}
+	return verifyCallbackSignature(r, body, func(ctx context.Context, publicKeyURL string) (*rsa.PublicKey, error) {
+		return fetchCallbackPublicKey(ctx, publicKeyURL, fetcher)
+	})
+}
+
+type callbackPublicKeyProvider func(ctx context.Context, publicKeyURL string) (*rsa.PublicKey, error)
+
+func verifyCallbackSignature(r *http.Request, body []byte, provider callbackPublicKeyProvider) error {
 	if r == nil {
 		return errors.New("request is nil")
 	}
-	if fetcher == nil {
-		return errors.New("public key fetcher is nil")
+	if provider == nil {
+		return errors.New("public key provider is nil")
 	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if auth == "" {
@@ -113,11 +173,7 @@ func VerifyCallbackSignature(r *http.Request, body []byte, fetcher PublicKeyFetc
 	if err != nil {
 		return err
 	}
-	publicKeyPEM, err := fetcher(r.Context(), publicKeyURL)
-	if err != nil {
-		return fmt.Errorf("fetch callback public key: %w", err)
-	}
-	publicKey, err := parseCallbackPublicKey(publicKeyPEM)
+	publicKey, err := provider(r.Context(), publicKeyURL)
 	if err != nil {
 		return err
 	}
@@ -126,6 +182,14 @@ func VerifyCallbackSignature(r *http.Request, body []byte, fetcher PublicKeyFetc
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
 	return nil
+}
+
+func fetchCallbackPublicKey(ctx context.Context, publicKeyURL string, fetcher PublicKeyFetcher) (*rsa.PublicKey, error) {
+	publicKeyPEM, err := fetcher(ctx, publicKeyURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch callback public key: %w", err)
+	}
+	return parseCallbackPublicKey(publicKeyPEM)
 }
 
 // ParseCallbackPayload 解析 JSON 或表单编码的 OSS 回调 body。
@@ -243,7 +307,7 @@ func defaultCallbackPublicKeyFetcher(ctx context.Context, publicKeyURL string) (
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := defaultCallbackHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -252,4 +316,54 @@ func defaultCallbackPublicKeyFetcher(ctx context.Context, publicKeyURL string) (
 		return nil, fmt.Errorf("fetch public key returned status %d", resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+func readCallbackBody(body io.Reader, maxBytes int64) ([]byte, error) {
+	if body == nil {
+		return nil, errors.New("callback body is nil")
+	}
+	if maxBytes <= 0 {
+		return io.ReadAll(body)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, errCallbackBodyTooLarge
+	}
+	return data, nil
+}
+
+type callbackPublicKeyCache struct {
+	mu      sync.Mutex
+	entries map[string]callbackPublicKeyCacheEntry
+}
+
+type callbackPublicKeyCacheEntry struct {
+	publicKey *rsa.PublicKey
+	expiresAt time.Time
+}
+
+func newCallbackPublicKeyCache() *callbackPublicKeyCache {
+	return &callbackPublicKeyCache{entries: map[string]callbackPublicKeyCacheEntry{}}
+}
+
+func (c *callbackPublicKeyCache) fetch(ctx context.Context, publicKeyURL string, ttl time.Duration, fetcher PublicKeyFetcher) (*rsa.PublicKey, error) {
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if entry, ok := c.entries[publicKeyURL]; ok && now.Before(entry.expiresAt) {
+		return entry.publicKey, nil
+	}
+	publicKey, err := fetchCallbackPublicKey(ctx, publicKeyURL, fetcher)
+	if err != nil {
+		return nil, err
+	}
+	c.entries[publicKeyURL] = callbackPublicKeyCacheEntry{
+		publicKey: publicKey,
+		expiresAt: now.Add(ttl),
+	}
+	return publicKey, nil
 }

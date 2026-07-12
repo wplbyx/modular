@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,6 +115,26 @@ func TestCallbackHandler_VerifiesParsesAndProcessesRequest(t *testing.T) {
 	assert.Equal(t, "prefix/a.txt", received.Values["object"])
 }
 
+func TestCallbackHandler_RejectsOversizedBodyBeforeVerification(t *testing.T) {
+	privateKey, _ := testCallbackKeyPair(t)
+	body := []byte(`{"object":"` + strings.Repeat("a", 64) + `"}`)
+	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
+	req.Header.Set("Content-Type", "application/json")
+
+	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
+		t.Fatalf("processor should not be called for oversized body")
+		return nil
+	}, WithCallbackMaxBodyBytes(16), WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+		t.Fatalf("public key fetcher should not be called for oversized body")
+		return nil, nil
+	}))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+}
+
 func TestCallbackHandler_RejectsBadMethodAndProcessorError(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
@@ -145,13 +167,82 @@ func TestCallbackHandler_ProcessesLargeSignedBody(t *testing.T) {
 		return nil
 	}, WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
 		return publicKeyPEM, nil
-	}))
+	}), WithCallbackMaxBodyBytes(int64(len(body))))
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Len(t, received.Values["object"], 1<<20)
+}
+
+func TestCallbackHandler_CachesPublicKeyByDefault(t *testing.T) {
+	privateKey, publicKeyPEM := testCallbackKeyPair(t)
+	body := []byte(`{"object":"prefix/a.txt"}`)
+	var fetches int32
+	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
+		return nil
+	}, WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+		atomic.AddInt32(&fetches, 1)
+		return publicKeyPEM, nil
+	}))
+
+	for range 2 {
+		req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&fetches))
+}
+
+func TestCallbackHandler_CanDisablePublicKeyCache(t *testing.T) {
+	privateKey, publicKeyPEM := testCallbackKeyPair(t)
+	body := []byte(`{"object":"prefix/a.txt"}`)
+	var fetches int32
+	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
+		return nil
+	}, WithCallbackPublicKeyCacheTTL(0), WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+		atomic.AddInt32(&fetches, 1)
+		return publicKeyPEM, nil
+	}))
+
+	for range 2 {
+		req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+	assert.Equal(t, int32(2), atomic.LoadInt32(&fetches))
+}
+
+func TestCallbackHandler_RefetchesExpiredPublicKeyCache(t *testing.T) {
+	privateKey, publicKeyPEM := testCallbackKeyPair(t)
+	body := []byte(`{"object":"prefix/a.txt"}`)
+	var fetches int32
+	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
+		return nil
+	}, WithCallbackPublicKeyCacheTTL(time.Nanosecond), WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+		atomic.AddInt32(&fetches, 1)
+		return publicKeyPEM, nil
+	}))
+
+	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	time.Sleep(time.Millisecond)
+
+	req = signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&fetches))
 }
 
 func signedCallbackRequest(t *testing.T, privateKey *rsa.PrivateKey, target string, body []byte) *http.Request {
