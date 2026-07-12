@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -581,12 +581,9 @@ func isOSSNotFound(err error) bool {
 func objectURL(publicBaseURL, fallbackBaseURL, key string) string {
 	base := strings.TrimSpace(publicBaseURL)
 	if base == "" {
-		base = fallbackBaseURL
+		return strings.TrimSpace(fallbackBaseURL)
 	}
-	if base == "" {
-		return ""
-	}
-	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(key, "/")
+	return strings.TrimRight(base, "/") + "/" + escapedObjectKeyPath(key)
 }
 
 func normalizeEndpoint(endpoint string, disableSSL bool) string {
@@ -608,14 +605,14 @@ func ossDefaultURL(bucket, region, endpoint, key string, useCName bool) string {
 	key = strings.TrimLeft(key, "/")
 	if endpoint != "" {
 		if useCName {
-			return strings.TrimRight(endpoint, "/") + "/" + key
+			return strings.TrimRight(endpoint, "/") + "/" + escapedObjectKeyPath(key)
 		}
 		return joinEndpointPath(endpoint, bucket, key)
 	}
 	if bucket == "" || region == "" {
 		return ""
 	}
-	return fmt.Sprintf("https://%s.oss-%s.aliyuncs.com/%s", bucket, region, key)
+	return fmt.Sprintf("https://%s.oss-%s.aliyuncs.com/%s", bucket, region, escapedObjectKeyPath(key))
 }
 
 func joinEndpointPath(endpoint, bucket, key string) string {
@@ -631,7 +628,19 @@ func joinEndpointPath(endpoint, bucket, key string) string {
 	} else if strings.HasPrefix(endpoint, "https://") {
 		host = strings.TrimPrefix(endpoint, "https://")
 	}
-	return scheme + bucket + "." + host + "/" + strings.Trim(path.Join("/", key), "/")
+	return scheme + bucket + "." + host + "/" + escapedObjectKeyPath(key)
+}
+
+func escapedObjectKeyPath(key string) string {
+	key = strings.TrimLeft(key, "/")
+	if key == "" {
+		return ""
+	}
+	parts := strings.Split(key, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }
 
 func (s *OssStorage) directObjectKey(key string) (string, error) {

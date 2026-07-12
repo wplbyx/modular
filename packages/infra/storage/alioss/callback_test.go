@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,6 +61,25 @@ func TestVerifyCallbackSignature_RejectsInvalidPublicKeyURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "public key url is not allowed")
 }
 
+func TestVerifyCallbackSignature_NormalizesAllowedHTTPPublicKeyURL(t *testing.T) {
+	privateKey, publicKeyPEM := testCallbackKeyPair(t)
+	body := []byte(`{"object":"prefix/a.txt"}`)
+	req := signedCallbackRequest(t, privateKey, "/callbacks/oss", body)
+	req.Header.Set("x-oss-pub-key-url", base64.StdEncoding.EncodeToString([]byte("http://gosspublic.alicdn.com/test-public-key.pem")))
+
+	err := VerifyCallbackSignature(req, body, func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+		assert.Equal(t, "https://gosspublic.alicdn.com/test-public-key.pem", publicKeyURL)
+		return publicKeyPEM, nil
+	})
+	require.NoError(t, err)
+}
+
+func TestNormalizeCallbackPublicKeyURL_RejectsLookalikeHost(t *testing.T) {
+	_, err := normalizeCallbackPublicKeyURL("https://gosspublic.alicdn.com.evil.example/key.pem")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "public key url is not allowed")
+}
+
 func TestVerifyCallbackSignature_UsesURLDecodedPathAndRawQuery(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	body := []byte(`{"object":"prefix/a/b.txt"}`)
@@ -90,6 +110,15 @@ func TestParseCallbackPayload_SupportsJSONAndForm(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "test-bucket", payload.Values["bucket"])
 	assert.Equal(t, "prefix/a.txt", payload.Values["object"])
+}
+
+func TestParseCallbackPayload_RejectsTrailingJSON(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/callbacks/oss", strings.NewReader(`{"bucket":"test-bucket"} garbage`))
+	req.Header.Set("Content-Type", "application/json")
+
+	_, err := ParseCallbackPayload(req, []byte(`{"bucket":"test-bucket"} garbage`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode json callback body")
 }
 
 func TestCallbackHandler_VerifiesParsesAndProcessesRequest(t *testing.T) {
@@ -243,6 +272,45 @@ func TestCallbackHandler_RefetchesExpiredPublicKeyCache(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, int32(2), atomic.LoadInt32(&fetches))
+}
+
+func TestCallbackPublicKeyCache_DoesNotBlockDifferentKeyWhileFetching(t *testing.T) {
+	_, publicKeyPEM := testCallbackKeyPair(t)
+	cache := newCallbackPublicKeyCache()
+	slowStarted := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	fetcher := func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+		if strings.Contains(publicKeyURL, "slow") {
+			close(slowStarted)
+			<-releaseSlow
+		}
+		return publicKeyPEM, nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = cache.fetch(context.Background(), "https://gosspublic.alicdn.com/slow.pem", time.Minute, fetcher)
+	}()
+	<-slowStarted
+
+	fastDone := make(chan error, 1)
+	go func() {
+		_, err := cache.fetch(context.Background(), "https://gosspublic.alicdn.com/fast.pem", time.Minute, fetcher)
+		fastDone <- err
+	}()
+
+	select {
+	case err := <-fastDone:
+		require.NoError(t, err)
+	case <-time.After(100 * time.Millisecond):
+		close(releaseSlow)
+		wg.Wait()
+		t.Fatal("cache fetch for a different public key URL blocked behind slow fetch")
+	}
+	close(releaseSlow)
+	wg.Wait()
 }
 
 func signedCallbackRequest(t *testing.T, privateKey *rsa.PrivateKey, target string, body []byte) *http.Request {

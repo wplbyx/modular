@@ -1,6 +1,7 @@
 package alioss
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/md5"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -215,10 +218,17 @@ func ParseCallbackPayload(r *http.Request, body []byte) (CallbackPayload, error)
 			return payload, nil
 		}
 		var values map[string]any
-		decoder := json.NewDecoder(strings.NewReader(string(body)))
+		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.UseNumber()
 		if err := decoder.Decode(&values); err != nil {
 			return CallbackPayload{}, fmt.Errorf("decode json callback body: %w", err)
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			if err != nil {
+				return CallbackPayload{}, fmt.Errorf("decode json callback body: %w", err)
+			}
+			return CallbackPayload{}, errors.New("decode json callback body: multiple JSON values")
 		}
 		for k, v := range values {
 			payload.Values[k] = callbackValueString(v)
@@ -249,12 +259,7 @@ func callbackPublicKeyURL(r *http.Request) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode x-oss-pub-key-url: %w", err)
 	}
-	publicKeyURL := string(raw)
-	if !strings.HasPrefix(publicKeyURL, "http://gosspublic.alicdn.com/") &&
-		!strings.HasPrefix(publicKeyURL, "https://gosspublic.alicdn.com/") {
-		return "", errors.New("public key url is not allowed")
-	}
-	return publicKeyURL, nil
+	return normalizeCallbackPublicKeyURL(string(raw))
 }
 
 func callbackStringToSign(r *http.Request, body []byte) string {
@@ -303,6 +308,10 @@ func callbackValueString(value any) string {
 }
 
 func defaultCallbackPublicKeyFetcher(ctx context.Context, publicKeyURL string) ([]byte, error) {
+	publicKeyURL, err := normalizeCallbackPublicKeyURL(publicKeyURL)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, publicKeyURL, nil)
 	if err != nil {
 		return nil, err
@@ -338,6 +347,7 @@ func readCallbackBody(body io.Reader, maxBytes int64) ([]byte, error) {
 type callbackPublicKeyCache struct {
 	mu      sync.Mutex
 	entries map[string]callbackPublicKeyCacheEntry
+	group   singleflight.Group
 }
 
 type callbackPublicKeyCacheEntry struct {
@@ -351,19 +361,74 @@ func newCallbackPublicKeyCache() *callbackPublicKeyCache {
 
 func (c *callbackPublicKeyCache) fetch(ctx context.Context, publicKeyURL string, ttl time.Duration, fetcher PublicKeyFetcher) (*rsa.PublicKey, error) {
 	now := time.Now()
+	if publicKey, ok := c.get(publicKeyURL, now); ok {
+		return publicKey, nil
+	}
+
+	value, err, _ := c.group.Do(publicKeyURL, func() (any, error) {
+		if publicKey, ok := c.get(publicKeyURL, time.Now()); ok {
+			return publicKey, nil
+		}
+		publicKey, err := fetchCallbackPublicKey(ctx, publicKeyURL, fetcher)
+		if err != nil {
+			return nil, err
+		}
+		c.set(publicKeyURL, publicKey, time.Now().Add(ttl))
+		return publicKey, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	publicKey, ok := value.(*rsa.PublicKey)
+	if !ok {
+		return nil, errors.New("callback public key cache returned invalid value")
+	}
+	return publicKey, nil
+}
+
+func (c *callbackPublicKeyCache) get(publicKeyURL string, now time.Time) (*rsa.PublicKey, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if entry, ok := c.entries[publicKeyURL]; ok && now.Before(entry.expiresAt) {
-		return entry.publicKey, nil
+		return entry.publicKey, true
 	}
-	publicKey, err := fetchCallbackPublicKey(ctx, publicKeyURL, fetcher)
-	if err != nil {
-		return nil, err
-	}
+	return nil, false
+}
+
+func (c *callbackPublicKeyCache) set(publicKeyURL string, publicKey *rsa.PublicKey, expiresAt time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.entries[publicKeyURL] = callbackPublicKeyCacheEntry{
 		publicKey: publicKey,
-		expiresAt: now.Add(ttl),
+		expiresAt: expiresAt,
 	}
-	return publicKey, nil
+}
+
+func normalizeCallbackPublicKeyURL(publicKeyURL string) (string, error) {
+	u, err := parseAllowedCallbackPublicKeyURL(publicKeyURL)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "http" {
+		u.Scheme = "https"
+	}
+	return u.String(), nil
+}
+
+func parseAllowedCallbackPublicKeyURL(publicKeyURL string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(publicKeyURL))
+	if err != nil {
+		return nil, fmt.Errorf("parse public key url: %w", err)
+	}
+	if u.Hostname() != "gosspublic.alicdn.com" {
+		return nil, errors.New("public key url is not allowed")
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return nil, errors.New("public key url must use http or https")
+	}
+	return u, nil
 }

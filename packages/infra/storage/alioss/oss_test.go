@@ -479,6 +479,19 @@ func TestOSS_PresignUsesEscapedObjectKeys(t *testing.T) {
 	assert.WithinDuration(t, time.Now().Add(15*time.Minute), req.ExpiresAt, 3*time.Second)
 }
 
+func TestOSS_PublicURLEscapesObjectKeys(t *testing.T) {
+	s := newPresignTestStorage(t)
+
+	req, err := s.PresignUpload(context.Background(), "docs/a b#c?.txt", storage.DirectUploadOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "https://cdn.example.com/prefix/docs/a%20b%23c%3F.txt", req.PublicURL)
+
+	s.publicBaseURL = ""
+	req, err = s.PresignUpload(context.Background(), "docs/a b#c?.txt", storage.DirectUploadOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "https://test-bucket.oss-cn-hangzhou.aliyuncs.com/prefix/docs/a%20b%23c%3F.txt", req.PublicURL)
+}
+
 func TestOSS_CompleteMultipartUploadSortsParts(t *testing.T) {
 	var completeBody string
 	s := newTestStorage(t, func(w http.ResponseWriter, r *http.Request) {
