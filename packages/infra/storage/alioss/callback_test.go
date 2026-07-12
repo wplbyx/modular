@@ -114,6 +114,40 @@ func TestCallbackHandler_VerifiesParsesAndProcessesRequest(t *testing.T) {
 	assert.Equal(t, "prefix/a.txt", received.Values["object"])
 }
 
+func TestCallbackHandler_RejectsOversizedBodyBeforeSignatureFetch(t *testing.T) {
+	oversizedBody := []byte(`{"object":"` + strings.Repeat("a", 1<<20) + `"}`)
+	tests := []struct {
+		name          string
+		contentLength int64
+	}{
+		{name: "declared content length", contentLength: int64(len(oversizedBody))},
+		{name: "unknown content length", contentLength: -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/callbacks/oss", bytes.NewReader(oversizedBody))
+			req.ContentLength = tt.contentLength
+			req.Header.Set("Content-Type", "application/json")
+
+			var processorCalled bool
+			handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {
+				processorCalled = true
+				return nil
+			}, WithCallbackPublicKeyFetcher(func(ctx context.Context, publicKeyURL string) ([]byte, error) {
+				t.Fatalf("fetcher should not be called for oversized callback body")
+				return nil, nil
+			}))
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+			assert.False(t, processorCalled)
+		})
+	}
+}
+
 func TestCallbackHandler_RejectsBadMethodAndProcessorError(t *testing.T) {
 	privateKey, publicKeyPEM := testCallbackKeyPair(t)
 	handler := NewCallbackHandler(func(ctx context.Context, payload CallbackPayload) error {

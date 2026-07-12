@@ -437,18 +437,128 @@ func TestOSS_PresignRejectsSecurityToken(t *testing.T) {
 
 func TestOSS_PresignRejectsInvalidInputs(t *testing.T) {
 	s := newPresignTestStorage(t)
+	ctx := context.Background()
+	tooLong := 8 * 24 * time.Hour
+	validParts := []storage.UploadPartResponse{{PartNumber: 1, ETag: "etag-1"}}
 
-	_, err := s.PresignUpload(context.Background(), "", storage.DirectUploadOptions{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "key is empty")
+	tests := []struct {
+		name    string
+		call    func() error
+		wantErr string
+	}{
+		{
+			name: "upload empty key",
+			call: func() error {
+				_, err := s.PresignUpload(ctx, "", storage.DirectUploadOptions{})
+				return err
+			},
+			wantErr: "key is empty",
+		},
+		{
+			name: "download empty key",
+			call: func() error {
+				_, err := s.PresignDownload(ctx, "", storage.DirectDownloadOptions{})
+				return err
+			},
+			wantErr: "key is empty",
+		},
+		{
+			name: "multipart initiate empty key",
+			call: func() error {
+				_, err := s.PresignMultipartInitiate(ctx, "", storage.DirectMultipartInitiateOptions{})
+				return err
+			},
+			wantErr: "key is empty",
+		},
+		{
+			name: "multipart upload part empty key",
+			call: func() error {
+				_, err := s.PresignMultipartUploadPart(ctx, "", "upload-1", 1, storage.DirectMultipartPartOptions{})
+				return err
+			},
+			wantErr: "key is empty",
+		},
+		{
+			name: "multipart complete empty key",
+			call: func() error {
+				_, err := s.PresignMultipartComplete(ctx, "", "upload-1", validParts, storage.DirectMultipartCompleteOptions{})
+				return err
+			},
+			wantErr: "key is empty",
+		},
+		{
+			name: "multipart abort empty key",
+			call: func() error {
+				_, err := s.PresignMultipartAbort(ctx, "", "upload-1", storage.DirectMultipartAbortOptions{})
+				return err
+			},
+			wantErr: "key is empty",
+		},
+		{
+			name: "upload expires too long",
+			call: func() error {
+				_, err := s.PresignUpload(ctx, "file.bin", storage.DirectUploadOptions{Expires: tooLong})
+				return err
+			},
+			wantErr: "expires must not be greater than 7 days",
+		},
+		{
+			name: "download expires too long",
+			call: func() error {
+				_, err := s.PresignDownload(ctx, "file.bin", storage.DirectDownloadOptions{Expires: tooLong})
+				return err
+			},
+			wantErr: "expires must not be greater than 7 days",
+		},
+		{
+			name: "multipart initiate expires too long",
+			call: func() error {
+				_, err := s.PresignMultipartInitiate(ctx, "file.bin", storage.DirectMultipartInitiateOptions{Expires: tooLong})
+				return err
+			},
+			wantErr: "expires must not be greater than 7 days",
+		},
+		{
+			name: "multipart upload part expires too long",
+			call: func() error {
+				_, err := s.PresignMultipartUploadPart(ctx, "file.bin", "upload-1", 1, storage.DirectMultipartPartOptions{Expires: tooLong})
+				return err
+			},
+			wantErr: "expires must not be greater than 7 days",
+		},
+		{
+			name: "multipart complete expires too long",
+			call: func() error {
+				_, err := s.PresignMultipartComplete(ctx, "file.bin", "upload-1", validParts, storage.DirectMultipartCompleteOptions{Expires: tooLong})
+				return err
+			},
+			wantErr: "expires must not be greater than 7 days",
+		},
+		{
+			name: "multipart abort expires too long",
+			call: func() error {
+				_, err := s.PresignMultipartAbort(ctx, "file.bin", "upload-1", storage.DirectMultipartAbortOptions{Expires: tooLong})
+				return err
+			},
+			wantErr: "expires must not be greater than 7 days",
+		},
+		{
+			name: "multipart upload part invalid part number",
+			call: func() error {
+				_, err := s.PresignMultipartUploadPart(ctx, "file.bin", "upload-1", 0, storage.DirectMultipartPartOptions{})
+				return err
+			},
+			wantErr: "partNumber must be >= 1",
+		},
+	}
 
-	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "upload-1", 0, storage.DirectMultipartPartOptions{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "partNumber must be >= 1")
-
-	_, err = s.PresignDownload(context.Background(), "file.bin", storage.DirectDownloadOptions{Expires: 8 * 24 * time.Hour})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 func TestOSS_PresignUsesEscapedObjectKeys(t *testing.T) {

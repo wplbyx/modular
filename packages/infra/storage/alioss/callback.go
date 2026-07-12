@@ -23,7 +23,10 @@ const (
 	callbackOKResponse            = `{"Status":"OK"}`
 	callbackPublicKeyHost         = "gosspublic.alicdn.com"
 	callbackPublicKeyFetchTimeout = 5 * time.Second
+	callbackMaxBodyBytes          = 1 << 20
 )
+
+var errCallbackBodyTooLarge = errors.New("callback body too large")
 
 // PublicKeyFetcher 在公钥 URL 解码并校验通过后加载 OSS 回调公钥。
 type PublicKeyFetcher func(ctx context.Context, publicKeyURL string) ([]byte, error)
@@ -72,8 +75,12 @@ func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) htt
 			http.Error(w, "callback processor is nil", http.StatusInternalServerError)
 			return
 		}
-		body, err := io.ReadAll(r.Body)
+		body, err := readCallbackBody(r)
 		if err != nil {
+			if errors.Is(err, errCallbackBodyTooLarge) {
+				http.Error(w, "callback body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "read callback body", http.StatusBadRequest)
 			return
 		}
@@ -95,6 +102,20 @@ func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) htt
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(callbackOKResponse))
 	})
+}
+
+func readCallbackBody(r *http.Request) ([]byte, error) {
+	if r.ContentLength > callbackMaxBodyBytes {
+		return nil, errCallbackBodyTooLarge
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, callbackMaxBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > callbackMaxBodyBytes {
+		return nil, errCallbackBodyTooLarge
+	}
+	return body, nil
 }
 
 // VerifyCallbackSignature 按 OSS 回调规则校验请求签名：
