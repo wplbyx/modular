@@ -222,6 +222,9 @@ func (s *OssStorage) PresignMultipartComplete(ctx context.Context, key, uploadID
 	if len(parts) == 0 {
 		return storage.DirectTransferRequest{}, errors.New("no parts to complete")
 	}
+	if err := validateUploadParts(parts); err != nil {
+		return storage.DirectTransferRequest{}, err
+	}
 	expires, err := normalizeDirectExpires(opts.Expires)
 	if err != nil {
 		return storage.DirectTransferRequest{}, err
@@ -531,6 +534,9 @@ func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storag
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
+	if err := validateUploadParts(parts); err != nil {
+		return err
+	}
 	_, err := s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
 		Bucket:                  oss.Ptr(s.bucket),
 		Key:                     oss.Ptr(session.Key),
@@ -663,6 +669,23 @@ func normalizeDirectExpires(expires time.Duration) (time.Duration, error) {
 		return 0, errors.New("expires must not be greater than 7 days")
 	}
 	return expires, nil
+}
+
+func validateUploadParts(parts []storage.UploadPartResponse) error {
+	seen := make(map[int]struct{}, len(parts))
+	for _, p := range parts {
+		if p.PartNumber < 1 {
+			return errors.New("partNumber must be >= 1")
+		}
+		if strings.TrimSpace(p.ETag) == "" {
+			return fmt.Errorf("etag is empty for partNumber %d", p.PartNumber)
+		}
+		if _, ok := seen[p.PartNumber]; ok {
+			return fmt.Errorf("duplicate partNumber %d", p.PartNumber)
+		}
+		seen[p.PartNumber] = struct{}{}
+	}
+	return nil
 }
 
 func directUploadParts(parts []storage.UploadPartResponse) []oss.UploadPart {

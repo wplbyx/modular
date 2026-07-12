@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -133,6 +134,38 @@ func TestCallbackHandler_RejectsBadMethodAndProcessorError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+func TestDefaultCallbackPublicKeyFetcherRejectsCrossHostRedirect(t *testing.T) {
+	oldClient := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = oldClient })
+
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "gosspublic.alicdn.com":
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://evil.example.com/key.pem"}},
+				Body:       http.NoBody,
+				Request:    r,
+			}, nil
+		case "evil.example.com":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("evil public key")),
+				Request:    r,
+			}, nil
+		default:
+			t.Fatalf("unexpected public key fetch host: %s", r.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	_, err := defaultCallbackPublicKeyFetcher(context.Background(), "https://gosspublic.alicdn.com/test-public-key.pem")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "redirect")
+}
+
 func signedCallbackRequest(t *testing.T, privateKey *rsa.PrivateKey, target string, body []byte) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
@@ -157,4 +190,10 @@ func testCallbackKeyPair(t *testing.T) (*rsa.PrivateKey, []byte) {
 	der, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 	require.NoError(t, err)
 	return privateKey, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
 }

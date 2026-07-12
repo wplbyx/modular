@@ -323,12 +323,14 @@ func TestOSS_PresignMultipartDirectUpload(t *testing.T) {
 	initReq, err := s.PresignMultipartInitiate(context.Background(), "videos/movie.mp4", storage.DirectMultipartInitiateOptions{
 		Expires:     time.Minute,
 		ContentType: "video/mp4",
+		Meta:        map[string]string{"tenant": "acme"},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "prefix/videos/movie.mp4", initReq.Key)
 	assert.Equal(t, http.MethodPost, initReq.Method)
 	assert.Contains(t, initReq.URL, "uploads")
 	assert.Equal(t, "video/mp4", initReq.Headers.Get("Content-Type"))
+	assert.Equal(t, "acme", initReq.Headers.Get("x-oss-meta-tenant"))
 	assert.Empty(t, initReq.Body)
 
 	partReq, err := s.PresignMultipartUploadPart(context.Background(), "videos/movie.mp4", "upload-1", 2, storage.DirectMultipartPartOptions{
@@ -358,7 +360,11 @@ func TestOSS_PresignMultipartDirectUpload(t *testing.T) {
 	assert.Contains(t, completeReq.URL, "uploadId=upload-1")
 	assert.Equal(t, "callback-base64", completeReq.Headers.Get("x-oss-callback"))
 	assert.Equal(t, "callback-var-base64", completeReq.Headers.Get("x-oss-callback-var"))
+	assert.Contains(t, string(completeReq.Body), "<CompleteMultipartUpload>")
 	assert.Contains(t, string(completeReq.Body), "<PartNumber>1</PartNumber>")
+	assert.Contains(t, string(completeReq.Body), "<ETag>etag-1</ETag>")
+	assert.Contains(t, string(completeReq.Body), "<ETag>etag-2</ETag>")
+	assert.Contains(t, string(completeReq.Body), "<ETag>etag-3</ETag>")
 	assert.Less(t, strings.Index(string(completeReq.Body), "<PartNumber>1</PartNumber>"), strings.Index(string(completeReq.Body), "<PartNumber>2</PartNumber>"))
 	assert.Less(t, strings.Index(string(completeReq.Body), "<PartNumber>2</PartNumber>"), strings.Index(string(completeReq.Body), "<PartNumber>3</PartNumber>"))
 
@@ -368,6 +374,44 @@ func TestOSS_PresignMultipartDirectUpload(t *testing.T) {
 	assert.Equal(t, http.MethodDelete, abortReq.Method)
 	assert.Contains(t, abortReq.URL, "uploadId=upload-1")
 	assert.Empty(t, abortReq.Body)
+}
+
+func TestOSS_PresignMultipartCompleteRejectsInvalidParts(t *testing.T) {
+	s := newPresignTestStorage(t)
+
+	tests := []struct {
+		name    string
+		parts   []storage.UploadPartResponse
+		wantErr string
+	}{
+		{
+			name:    "zero part number",
+			parts:   []storage.UploadPartResponse{{PartNumber: 0, ETag: "etag-1"}},
+			wantErr: "partNumber must be >= 1",
+		},
+		{
+			name:    "empty etag",
+			parts:   []storage.UploadPartResponse{{PartNumber: 1}},
+			wantErr: "etag is empty",
+		},
+		{
+			name: "duplicate part number",
+			parts: []storage.UploadPartResponse{
+				{PartNumber: 1, ETag: "etag-1"},
+				{PartNumber: 1, ETag: "etag-1-dup"},
+			},
+			wantErr: "duplicate partNumber",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := s.PresignMultipartComplete(context.Background(), "videos/movie.mp4", "upload-1", tt.parts, storage.DirectMultipartCompleteOptions{})
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 func TestOSS_PresignRejectsSecurityToken(t *testing.T) {

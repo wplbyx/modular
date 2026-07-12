@@ -16,9 +16,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
-const callbackOKResponse = `{"Status":"OK"}`
+const (
+	callbackOKResponse            = `{"Status":"OK"}`
+	callbackPublicKeyHost         = "gosspublic.alicdn.com"
+	callbackPublicKeyFetchTimeout = 5 * time.Second
+)
 
 // PublicKeyFetcher 在公钥 URL 解码并校验通过后加载 OSS 回调公钥。
 type PublicKeyFetcher func(ctx context.Context, publicKeyURL string) ([]byte, error)
@@ -186,11 +191,21 @@ func callbackPublicKeyURL(r *http.Request) (string, error) {
 		return "", fmt.Errorf("decode x-oss-pub-key-url: %w", err)
 	}
 	publicKeyURL := string(raw)
-	if !strings.HasPrefix(publicKeyURL, "http://gosspublic.alicdn.com/") &&
-		!strings.HasPrefix(publicKeyURL, "https://gosspublic.alicdn.com/") {
+	return validateCallbackPublicKeyURL(publicKeyURL)
+}
+
+func validateCallbackPublicKeyURL(publicKeyURL string) (string, error) {
+	u, err := url.Parse(publicKeyURL)
+	if err != nil {
+		return "", fmt.Errorf("parse public key url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("public key url scheme is not allowed")
+	}
+	if u.User != nil || !strings.EqualFold(u.Hostname(), callbackPublicKeyHost) {
 		return "", errors.New("public key url is not allowed")
 	}
-	return publicKeyURL, nil
+	return u.String(), nil
 }
 
 func callbackStringToSign(r *http.Request, body []byte) string {
@@ -239,11 +254,18 @@ func callbackValueString(value any) string {
 }
 
 func defaultCallbackPublicKeyFetcher(ctx context.Context, publicKeyURL string) ([]byte, error) {
+	publicKeyURL, err := validateCallbackPublicKeyURL(publicKeyURL)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, publicKeyURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := *http.DefaultClient
+	client.Timeout = callbackPublicKeyFetchTimeout
+	client.CheckRedirect = callbackPublicKeyRedirectPolicy
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -252,4 +274,22 @@ func defaultCallbackPublicKeyFetcher(ctx context.Context, publicKeyURL string) (
 		return nil, fmt.Errorf("fetch public key returned status %d", resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+func callbackPublicKeyRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if req == nil || req.URL == nil || via[0] == nil || via[0].URL == nil {
+		return errors.New("callback public key redirect has invalid url")
+	}
+	if req.URL.Scheme != via[0].URL.Scheme ||
+		!strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) ||
+		req.URL.User != nil {
+		return fmt.Errorf("callback public key redirect to untrusted url %s", req.URL.Redacted())
+	}
+	if _, err := validateCallbackPublicKeyURL(req.URL.String()); err != nil {
+		return fmt.Errorf("callback public key redirect: %w", err)
+	}
+	return nil
 }
