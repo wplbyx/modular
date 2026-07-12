@@ -179,7 +179,7 @@ func (s *OssStorage) PresignMultipartInitiate(ctx context.Context, key string, o
 	if opts.ContentType != "" {
 		req.ContentType = oss.Ptr(opts.ContentType)
 	}
-	return s.presign(ctx, objKey, req, expires, nil, true)
+	return s.presign(ctx, objKey, req, expires, nil, false)
 }
 
 // PresignMultipartUploadPart 生成直传分片 PUT 预签名请求。
@@ -219,8 +219,8 @@ func (s *OssStorage) PresignMultipartComplete(ctx context.Context, key, uploadID
 	if uploadID == "" {
 		return storage.DirectTransferRequest{}, errors.New("uploadID is empty")
 	}
-	if len(parts) == 0 {
-		return storage.DirectTransferRequest{}, errors.New("no parts to complete")
+	if err := validateDirectUploadParts(parts); err != nil {
+		return storage.DirectTransferRequest{}, err
 	}
 	expires, err := normalizeDirectExpires(opts.Expires)
 	if err != nil {
@@ -528,8 +528,8 @@ func (s *OssStorage) MultipartUpload(ctx context.Context, session storage.Multip
 
 // CompleteMultipartUpload 完成分片上传。
 func (s *OssStorage) CompleteMultipartUpload(ctx context.Context, session storage.MultipartUploadSession, parts []storage.UploadPartResponse, _ ...storage.IOConfigOptionFunc) error {
-	if len(parts) == 0 {
-		return errors.New("no parts to complete")
+	if err := validateDirectUploadParts(parts); err != nil {
+		return err
 	}
 	_, err := s.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
 		Bucket:                  oss.Ptr(s.bucket),
@@ -673,4 +673,24 @@ func directUploadParts(parts []storage.UploadPartResponse) []oss.UploadPart {
 		ossParts = append(ossParts, oss.UploadPart{PartNumber: int32(p.PartNumber), ETag: oss.Ptr(p.ETag)})
 	}
 	return ossParts
+}
+
+func validateDirectUploadParts(parts []storage.UploadPartResponse) error {
+	if len(parts) == 0 {
+		return errors.New("no parts to complete")
+	}
+	seen := make(map[int]struct{}, len(parts))
+	for _, part := range parts {
+		if part.PartNumber < 1 {
+			return errors.New("partNumber must be >= 1")
+		}
+		if strings.TrimSpace(part.ETag) == "" {
+			return fmt.Errorf("part %d ETag is empty", part.PartNumber)
+		}
+		if _, ok := seen[part.PartNumber]; ok {
+			return fmt.Errorf("duplicate partNumber %d", part.PartNumber)
+		}
+		seen[part.PartNumber] = struct{}{}
+	}
+	return nil
 }
