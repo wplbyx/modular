@@ -398,11 +398,68 @@ func TestOSS_PresignRejectsInvalidInputs(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "key is empty")
 
+	_, err = s.PresignDownload(context.Background(), "", storage.DirectDownloadOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key is empty")
+
+	_, err = s.PresignMultipartInitiate(context.Background(), "", storage.DirectMultipartInitiateOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key is empty")
+
+	_, err = s.PresignMultipartUploadPart(context.Background(), "", "upload-1", 1, storage.DirectMultipartPartOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key is empty")
+
+	_, err = s.PresignMultipartComplete(context.Background(), "", "upload-1", []storage.UploadPartResponse{{PartNumber: 1, ETag: "etag-1"}}, storage.DirectMultipartCompleteOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key is empty")
+
+	_, err = s.PresignMultipartAbort(context.Background(), "", "upload-1", storage.DirectMultipartAbortOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key is empty")
+
 	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "upload-1", 0, storage.DirectMultipartPartOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "partNumber must be >= 1")
 
-	_, err = s.PresignDownload(context.Background(), "file.bin", storage.DirectDownloadOptions{Expires: 8 * 24 * time.Hour})
+	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "", 1, storage.DirectMultipartPartOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadID is empty")
+
+	_, err = s.PresignMultipartComplete(context.Background(), "file.bin", "", []storage.UploadPartResponse{{PartNumber: 1, ETag: "etag-1"}}, storage.DirectMultipartCompleteOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadID is empty")
+
+	_, err = s.PresignMultipartAbort(context.Background(), "file.bin", "", storage.DirectMultipartAbortOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadID is empty")
+
+	_, err = s.PresignMultipartComplete(context.Background(), "file.bin", "upload-1", nil, storage.DirectMultipartCompleteOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no parts to complete")
+
+	tooLong := 8 * 24 * time.Hour
+	_, err = s.PresignUpload(context.Background(), "file.bin", storage.DirectUploadOptions{Expires: tooLong})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
+
+	_, err = s.PresignDownload(context.Background(), "file.bin", storage.DirectDownloadOptions{Expires: tooLong})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
+
+	_, err = s.PresignMultipartInitiate(context.Background(), "file.bin", storage.DirectMultipartInitiateOptions{Expires: tooLong})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
+
+	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "upload-1", 1, storage.DirectMultipartPartOptions{Expires: tooLong})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
+
+	_, err = s.PresignMultipartComplete(context.Background(), "file.bin", "upload-1", []storage.UploadPartResponse{{PartNumber: 1, ETag: "etag-1"}}, storage.DirectMultipartCompleteOptions{Expires: tooLong})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
+
+	_, err = s.PresignMultipartAbort(context.Background(), "file.bin", "upload-1", storage.DirectMultipartAbortOptions{Expires: tooLong})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
 }
