@@ -4,17 +4,16 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-
-	"github.com/wplbyx/modular/packages/config"
 )
 
 func TestNewLoggerManagerFailureDoesNotPoisonGlobalLogger(t *testing.T) {
 	lm = nil
 	t.Cleanup(func() { lm = nil })
 
-	_, err := NewLoggerManager(&config.Logging{Level: "info"})
+	_, err := NewLoggerManager(&configitem.Logging{Level: "info"})
 	if err == nil {
 		t.Fatal("NewLoggerManager() error = nil")
 	}
@@ -36,7 +35,7 @@ func TestNewLoggerManagerSuccessSetsGlobalLogger(t *testing.T) {
 	t.Cleanup(func() { lm = nil })
 
 	var buf bytes.Buffer
-	manager, err := NewLoggerManager(&config.Logging{Level: "info"}, withBufferOutput(&buf))
+	manager, err := NewLoggerManager(&configitem.Logging{Level: "info"}, withBufferOutput(&buf))
 	if err != nil {
 		t.Fatalf("NewLoggerManager() error = %v", err)
 	}

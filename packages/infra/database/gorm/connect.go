@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	gormlib "gorm.io/gorm"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/infra/database"
 )
 
@@ -19,7 +19,7 @@ import (
 var globalDB *gormlib.DB
 
 // NewGormConnection creates a GORM database connection and stores it as the global instance.
-func NewGormConnection(cfg *config.Database) (*gormlib.DB, error) {
+func NewGormConnection(cfg *configitem.Database) (*gormlib.DB, error) {
 	if cfg == nil {
 		return nil, errors.New("database config is nil")
 	}

@@ -8,10 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-
-	"github.com/wplbyx/modular/packages/config"
 )
 
 // 全局日志管理器
@@ -21,7 +20,7 @@ type LoggerManagerOption func(*LoggerManager)
 
 // LoggerManager 日志管理器
 type LoggerManager struct {
-	config  *config.Logging
+	config  *configitem.Logging
 	level   zapcore.Level
 	logger  *zap.Logger
 	cores   []zapcore.Core
@@ -37,7 +36,7 @@ func GetLogger() *zap.Logger {
 }
 
 // NewLoggerManager 创建日志管理器
-func NewLoggerManager(cfg *config.Logging, options ...LoggerManagerOption) (*LoggerManager, error) {
+func NewLoggerManager(cfg *configitem.Logging, options ...LoggerManagerOption) (*LoggerManager, error) {
 	if cfg == nil {
 		return nil, errors.New("logger config is nil")
 	}

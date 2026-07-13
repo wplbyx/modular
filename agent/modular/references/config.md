@@ -11,26 +11,37 @@ The config layer. Read when adding config. Source of truth: `packages/config/`.
 
 ## Strong types
 
-All config is typed structs with `mapstructure` tags (pascal-case). Use these, never bare `map[string]any`:
+All infrastructure config items live in `packages/config/configitem` and use typed structs with `mapstructure` tags. Use these, never bare `map[string]any`:
 
-- `config.Application`: `Name` (required), `Mode` (required, oneof dev|test|prod), `Version` (required), `ShutdownTimeout`.
-- `config.HTTP`: `Host` (required), `Port` (required, 1000-65535), `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
-- `config.GRPC`: `Host` (required), `Port` (required, 1000-65535), `Timeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
-- `config.Database`: `Dsn` (required, oneof sqlite|mysql|postgres|clickhouse|mongodb), `Urls`, `Host`, `Port`, `Path` (sqlite), `Database`, `Username`, `Password`, `MaxOpenConn`, `MaxIdleConn`, `MaxPoolSize` (MongoDB), `ReplicaSet` (MongoDB), `ConnMaxLifetime`, `ConnMaxIdleTime`, `EnableTLS`.
-- `config.Redis`: `Urls`, `Host`, `Port`, `Username`, `Password`, `Database`, `PoolSize`, `MinIdleConn`, `DialTimeout`, `ReadTimeout`, `WriteTimeout`, `MaxRetries`, `MinRetryBackoff`, `MaxRetryBackoff`.
-- `config.Storage`: `Type` (required, oneof disk|oss), `PublicBaseURL`, `Disk *DiskStorageConfig`, `OSS *OSSStorageConfig`. `DiskStorageConfig`: `RootDir`, `BaseUrl`. `OSSStorageConfig`: `AccessKeyID`, `AccessKeySecret`, `SecurityToken`, `Region`, `Bucket`, `Endpoint`, `BaseDir`, `DisableSSL`, `UseCName`, `Timeout`, `MaxRetries`.
-- `config.Telemetry`: `Logger`, `Metric`, `Tracer` (each an OTLP gRPC endpoint string; empty disables that signal).
-- `config.Logging`: `Level` (required, oneof debug|info|warn|error), `Output []string`, `File FileConfig`, `OTel OTelConfig`. `FileConfig`: `Filename`, `MaxSize`, `MaxBackups`, `MaxAge`, `Compress`, `SplitRange`. `OTelConfig`: `Endpoint`, `Insecure`.
+- `configitem.Application`: `Name` (required), `Mode` (required, oneof dev|test|prod), `Version` (required), `ShutdownTimeout`.
+- `configitem.HTTP`: `Host` (required), `Port` (required, 1000-65535), `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
+- `configitem.GRPC`: `Host` (required), `Port` (required, 1000-65535), `Timeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
+- `configitem.Database`: `Dsn` (required, oneof sqlite|mysql|postgres|clickhouse|mongodb), `Urls`, `Host`, `Port`, `Path` (sqlite), `Database`, `Username`, `Password`, `MaxOpenConn`, `MaxIdleConn`, `MaxPoolSize` (MongoDB), `ReplicaSet` (MongoDB), `ConnMaxLifetime`, `ConnMaxIdleTime`, `EnableTLS`.
+- `configitem.Redis`: `Urls`, `Host`, `Port`, `Username`, `Password`, `Database`, `PoolSize`, `MinIdleConn`, `DialTimeout`, `ReadTimeout`, `WriteTimeout`, `MaxRetries`, `MinRetryBackoff`, `MaxRetryBackoff`.
+- `configitem.Storage`: `Type` (required, oneof disk|oss), `PublicBaseURL`, `Disk *DiskStorageConfig`, `OSS *OSSStorageConfig`.
+- `configitem.Telemetry`: `Logger`, `Metric`, `Tracer`.
+- `configitem.Logging`: `Level`, `Output`, `File`, `OTel`.
 - `config.CustomConfig` is a ready-made aggregate embedding `Application`, `Database`, `Redis`, `HTTP`. Prefer building a project-specific aggregate (see below).
 
 ## Loading
 
 `config.InitConfigure(target, options...)` unmarshals into the target via Viper, with a `time.Duration` decode hook, then runs `validator` on the struct. Options:
 
-- `config.WithConfigFile(filename, filetype, paths...)` - read a file (e.g. "config", "yaml", "./config"). A missing file is not fatal (ConfigFileNotFoundError is tolerated); a malformed one is.
-- `config.WithEnvPrefix(prefix, replaces...)` - load env vars matching `<PREFIX>_KEY`, lowercased with `_` -> `.`. Automatic env is intentionally disabled (Viper quirks); env is read manually.
-- `config.WithCommandLine(flagSet *pflag.FlagSet)` - bind pflag flags. Pass nil to use a default flag set.
-- `config.WithRemoteProvider(provider, endpoint, path)` - etcd/consul/firestore remote config; reads via `ReadRemoteConfig`.
+- `config.WithConfigFile(path, ignoreNotFound)` - read one exact file path (e.g. `"./config/user/config.yaml"`). It does not search directories or infer an extension. When `ignoreNotFound` is true, only a missing file is ignored; malformed files, permission failures, and other errors are still returned.
+- `config.WithEnvPrefix(prefix, replaces...)` - bind env vars matching `<PREFIX>_KEY`, lowercased with `_` -> `.`.
+- `config.WithRemoteProvider(provider, endpoint, path)` - configure a Viper remote provider directly. The content format is inferred from the key extension and defaults to YAML.
+- `config.WithRemoteURL(url)` - configure etcd or Consul through a single URL. `etcd://10.0.0.1:2379/config/myapp` maps to the modern `etcd3` provider; `consul://10.0.0.1:8500/config/myapp` maps to Consul. Add `?format=json` when the remote value is not YAML and the key has no extension.
+
+For Cobra applications, prefer `config.NewRoot[T](config.Options[T]{...})`. It registers only the `configitem` modules selected by `T`, plus the shared source flags:
+
+```text
+--config, -c <path>   local config file
+--remote <url>        etcd or Consul remote config
+```
+
+`Options.DefaultFile` and `Options.DefaultRemote` set their defaults. The flags can be used together. Precedence is explicit config flag > environment > local file > remote KV > `FlagSpec` default.
+
+A missing `DefaultFile` is tolerated, while a path explicitly supplied through `--config` must exist. If remote loading fails and a local file was successfully loaded, the loader logs a warning and continues with the local file. Without a valid local file, the remote error is returned. When both sources are present their canonical formats must match; otherwise the remote source is skipped with a warning. Unknown remote keys are ignored when unmarshalling into the strongly typed aggregate.
 
 At least one option is required or `NewConfigureLoader` errors.
 
@@ -42,26 +53,31 @@ A project defines one aggregate per svc in `config/<svc>/config.go`, next to `co
 
     package config
 
-    import modularconfig "github.com/wplbyx/modular/packages/config"
+    import (
+        modularconfig "github.com/wplbyx/modular/packages/config"
+        "github.com/wplbyx/modular/packages/config/configitem"
+    )
 
     type Config struct {
-        modularconfig.Application `mapstructure:"application,squash"`
-        HTTP    modularconfig.HTTP     `mapstructure:"http"`
-        GRPC    modularconfig.GRPC     `mapstructure:"grpc"`
-        Database modularconfig.Database `mapstructure:"database"`
-        Redis   modularconfig.Redis    `mapstructure:"redis"`
-        Storage modularconfig.Storage  `mapstructure:"storage"`
-        Telemetry modularconfig.Telemetry `mapstructure:"telemetry"`
-        Logging modularconfig.Logging  `mapstructure:"logging"`
+        configitem.Application `mapstructure:"application,squash"`
+        HTTP      configitem.HTTP      `mapstructure:"http"`
+        GRPC      configitem.GRPC      `mapstructure:"grpc"`
+        Database  configitem.Database  `mapstructure:"database"`
+        Redis     configitem.Redis     `mapstructure:"redis"`
+        Storage   configitem.Storage   `mapstructure:"storage"`
+        Telemetry configitem.Telemetry `mapstructure:"telemetry"`
+        Logging   configitem.Logging   `mapstructure:"logging"`
     }
 
-    func Load(paths ...string) (*Config, error) {
-        cfg := new(Config)
-        if len(paths) == 0 {
-            paths = []string{"./config/user"}
+    func Load(files ...string) (*Config, error) {
+        configFile := "./config/user/config.yaml"
+        if len(files) > 0 {
+            configFile = files[0]
         }
+
+        cfg := new(Config)
         err := modularconfig.InitConfigure(cfg,
-            modularconfig.WithConfigFile("config", "yaml", paths...),
+            modularconfig.WithConfigFile(configFile, false),
         )
         return cfg, err
     }

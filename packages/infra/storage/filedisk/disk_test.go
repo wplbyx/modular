@@ -6,7 +6,6 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
-	"github.com/wplbyx/modular/packages/infra/storage"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,16 +13,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
+	"github.com/wplbyx/modular/packages/infra/storage"
 )
 
 const testBaseUrl = "https://cdn.example.com/"
 
 func newTestStorage(t *testing.T) *DiskStorage {
 	t.Helper()
-	s, err := NewDiskStorage(&config.Storage{
+	s, err := NewDiskStorage(&configitem.Storage{
 		Type: "disk",
-		Disk: &config.DiskStorageConfig{
+		Disk: &configitem.DiskStorageConfig{
 			RootDir: t.TempDir(),
 			BaseUrl: testBaseUrl,
 		},
@@ -98,13 +98,13 @@ func TestNewDiskStorage(t *testing.T) {
 	})
 
 	t.Run("empty root dir", func(t *testing.T) {
-		_, err := NewDiskStorage(&config.Storage{Type: "disk", Disk: &config.DiskStorageConfig{BaseUrl: testBaseUrl}})
+		_, err := NewDiskStorage(&configitem.Storage{Type: "disk", Disk: &configitem.DiskStorageConfig{BaseUrl: testBaseUrl}})
 		errContains(t, err, "RootDir is empty")
 	})
 
 	t.Run("creates root dir and resolves abs", func(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "nested", "root")
-		s, err := NewDiskStorage(&config.Storage{Type: "disk", Disk: &config.DiskStorageConfig{RootDir: root, BaseUrl: testBaseUrl}})
+		s, err := NewDiskStorage(&configitem.Storage{Type: "disk", Disk: &configitem.DiskStorageConfig{RootDir: root, BaseUrl: testBaseUrl}})
 		noErr(t, err)
 		abs, err := filepath.Abs(root)
 		noErr(t, err)
@@ -124,7 +124,7 @@ func TestNewDiskStorage(t *testing.T) {
 			"cdn.example.com",
 		}
 		for _, in := range cases {
-			s, err := NewDiskStorage(&config.Storage{Type: "disk", Disk: &config.DiskStorageConfig{RootDir: t.TempDir(), BaseUrl: in}})
+			s, err := NewDiskStorage(&configitem.Storage{Type: "disk", Disk: &configitem.DiskStorageConfig{RootDir: t.TempDir(), BaseUrl: in}})
 			noErr(t, err)
 			assertEq(t, s.baseUrl, "cdn.example.com")
 		}
@@ -563,7 +563,7 @@ func TestDiskStorage_PersistToUploadDir(t *testing.T) {
 	_ = os.RemoveAll(uploadDir)
 	noErr(t, os.MkdirAll(uploadDir, 0o755))
 
-	s, err := NewDiskStorage(&config.Storage{Type: "disk", Disk: &config.DiskStorageConfig{RootDir: uploadDir, BaseUrl: testBaseUrl}})
+	s, err := NewDiskStorage(&configitem.Storage{Type: "disk", Disk: &configitem.DiskStorageConfig{RootDir: uploadDir, BaseUrl: testBaseUrl}})
 	noErr(t, err)
 
 	t.Run("single upload+download roundtrip", func(t *testing.T) {

@@ -7,8 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
 
 // globalClient 是全局 Redis 客户端，供需要直接访问 Redis 的包在装配阶段使用。
@@ -21,7 +20,7 @@ func GetClient() redis.UniversalClient {
 }
 
 // NewRedisClient 根据配置创建 go-redis 客户端，Ping 探活后存为全局实例并返回。
-func NewRedisClient(cfg *config.Redis) (redis.UniversalClient, error) {
+func NewRedisClient(cfg *configitem.Redis) (redis.UniversalClient, error) {
 	if cfg == nil {
 		return nil, errors.New("redis config is nil")
 	}

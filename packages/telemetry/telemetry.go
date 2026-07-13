@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -16,14 +17,12 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.38.0"
-
-	"github.com/wplbyx/modular/packages/config"
 )
 
 type OpenTelemetry struct {
 	name    string
 	version string
-	cfg     *config.Telemetry
+	cfg     *configitem.Telemetry
 	setup   bool
 	res     *resource.Resource
 	Tp      *trace.TracerProvider
@@ -31,7 +30,7 @@ type OpenTelemetry struct {
 	Lp      *log.LoggerProvider
 }
 
-func NewOpenTelemetry(ctx context.Context, name, version string, telemetry *config.Telemetry) (*OpenTelemetry, error) {
+func NewOpenTelemetry(ctx context.Context, name, version string, telemetry *configitem.Telemetry) (*OpenTelemetry, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -96,7 +95,7 @@ func (o *OpenTelemetry) Close(ctx context.Context) error {
 	return joined
 }
 
-func (o *OpenTelemetry) newTracerProvider(ctx context.Context, telemetry *config.Telemetry, res *resource.Resource) error {
+func (o *OpenTelemetry) newTracerProvider(ctx context.Context, telemetry *configitem.Telemetry, res *resource.Resource) error {
 	if telemetry == nil || telemetry.Tracer == "" {
 		return nil
 	}
@@ -120,7 +119,7 @@ func (o *OpenTelemetry) newTracerProvider(ctx context.Context, telemetry *config
 	return nil
 }
 
-func (o *OpenTelemetry) newMetricProvider(ctx context.Context, telemetry *config.Telemetry, res *resource.Resource) error {
+func (o *OpenTelemetry) newMetricProvider(ctx context.Context, telemetry *configitem.Telemetry, res *resource.Resource) error {
 	if telemetry == nil || telemetry.Metric == "" {
 		return nil
 	}
@@ -142,7 +141,7 @@ func (o *OpenTelemetry) newMetricProvider(ctx context.Context, telemetry *config
 	return nil
 }
 
-func (o *OpenTelemetry) newLoggerProvider(ctx context.Context, telemetry *config.Telemetry, res *resource.Resource) error {
+func (o *OpenTelemetry) newLoggerProvider(ctx context.Context, telemetry *configitem.Telemetry, res *resource.Resource) error {
 	if telemetry == nil || telemetry.Logger == "" {
 		return nil
 	}

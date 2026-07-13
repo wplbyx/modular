@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	bunlib "github.com/uptrace/bun"
+	"github.com/wplbyx/modular/packages/config/configitem"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 )
 
@@ -14,15 +14,15 @@ var _ core.Resource = (*Resource)(nil)
 
 // Resource 将 Bun 数据库连接纳入 Application 生命周期。
 type Resource struct {
-	cfg     *config.Database
+	cfg     *configitem.Database
 	db      *bunlib.DB
-	connect func(*config.Database) (*bunlib.DB, error)
+	connect func(*configitem.Database) (*bunlib.DB, error)
 }
 
 type ResourceOption func(*Resource)
 
 // WithConnector 覆盖 Bun 建连函数，主要用于测试或自定义连接。
-func WithConnector(fn func(*config.Database) (*bunlib.DB, error)) ResourceOption {
+func WithConnector(fn func(*configitem.Database) (*bunlib.DB, error)) ResourceOption {
 	return func(r *Resource) {
 		if fn != nil {
 			r.connect = fn
@@ -31,7 +31,7 @@ func WithConnector(fn func(*config.Database) (*bunlib.DB, error)) ResourceOption
 }
 
 // NewResource 创建 Bun 生命周期资源。
-func NewResource(cfg *config.Database, opts ...ResourceOption) *Resource {
+func NewResource(cfg *configitem.Database, opts ...ResourceOption) *Resource {
 	r := &Resource{cfg: cfg, connect: NewBunConnection}
 	for _, opt := range opts {
 		if opt != nil {

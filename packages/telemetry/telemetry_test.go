@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
 
 func TestNewOpenTelemetryDefersProviderInitializationToSetup(t *testing.T) {
-	ot, err := NewOpenTelemetry(context.Background(), "orders", "v1", &config.Telemetry{Tracer: "localhost:4317"})
+	ot, err := NewOpenTelemetry(context.Background(), "orders", "v1", &configitem.Telemetry{Tracer: "localhost:4317"})
 	if err != nil {
 		t.Fatalf("NewOpenTelemetry() error = %v", err)
 	}
@@ -28,7 +28,7 @@ func TestNewOpenTelemetryDefersProviderInitializationToSetup(t *testing.T) {
 }
 
 func TestOpenTelemetrySetupIsIdempotent(t *testing.T) {
-	ot, err := NewOpenTelemetry(context.Background(), "orders", "v1", &config.Telemetry{})
+	ot, err := NewOpenTelemetry(context.Background(), "orders", "v1", &configitem.Telemetry{})
 	if err != nil {
 		t.Fatalf("NewOpenTelemetry() error = %v", err)
 	}

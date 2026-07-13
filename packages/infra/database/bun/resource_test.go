@@ -9,8 +9,8 @@ import (
 	bunlib "github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
+	"github.com/wplbyx/modular/packages/config/configitem"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 )
 
@@ -20,7 +20,7 @@ func TestResourceImplementsCoreResource(t *testing.T) {
 
 func TestResourceSetupAndClose(t *testing.T) {
 	db := bunlib.NewDB(sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN("postgres://user:pass@localhost:5432/db?sslmode=disable"))), pgdialect.New())
-	res := NewResource(&config.Database{}, WithConnector(func(*config.Database) (*bunlib.DB, error) {
+	res := NewResource(&configitem.Database{}, WithConnector(func(*configitem.Database) (*bunlib.DB, error) {
 		return db, nil
 	}))
 
@@ -40,7 +40,7 @@ func TestResourceSetupAndClose(t *testing.T) {
 
 func TestResourceSetupFailureDoesNotSetDB(t *testing.T) {
 	setupErr := errors.New("setup boom")
-	res := NewResource(&config.Database{}, WithConnector(func(*config.Database) (*bunlib.DB, error) {
+	res := NewResource(&configitem.Database{}, WithConnector(func(*configitem.Database) (*bunlib.DB, error) {
 		return nil, setupErr
 	}))
 

@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/log"
 )
@@ -29,7 +29,7 @@ type Server struct {
 	grpcServer     *grpc.Server
 	listener       net.Listener
 	health         *health.Server
-	config         *config.GRPC
+	config         *configitem.GRPC
 	credentials    credentials.TransportCredentials
 	unaryInts      []grpc.UnaryServerInterceptor
 	streamInts     []grpc.StreamServerInterceptor
@@ -45,9 +45,9 @@ type Option func(*Server) error
 type RegisterFunc func(grpc.ServiceRegistrar) error
 
 // NewServer creates a new gRPC server instance
-func NewServer(cfg *config.GRPC, register RegisterFunc, opts ...Option) (*Server, error) {
+func NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Server, error) {
 	if cfg == nil {
-		cfg = &config.GRPC{}
+		cfg = &configitem.GRPC{}
 	}
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	listener, err := net.Listen("tcp", addr)

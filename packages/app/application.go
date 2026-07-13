@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/registry"
@@ -34,7 +34,7 @@ type Option func(*Application)
 //	  → Resource.Close()  (LIFO)
 type Application struct {
 	ctx context.Context
-	cfg *config.Application
+	cfg *configitem.Application
 
 	// 服务节点元数据（一个 app 对应一个 node）
 	node *core.ServiceNode
@@ -51,7 +51,7 @@ type Application struct {
 }
 
 // NewApplication 创建应用程序实例
-func NewApplication(ctx context.Context, cfg *config.Application, options ...Option) (*Application, error) {
+func NewApplication(ctx context.Context, cfg *configitem.Application, options ...Option) (*Application, error) {
 	if cfg == nil {
 		return nil, errors.New("config.Application instance is nil")
 	}

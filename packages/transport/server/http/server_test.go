@@ -13,8 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
 
 func withStop(t *testing.T, srv *Server) {
@@ -31,13 +30,13 @@ func doRequest(t *testing.T, srv *Server, method, path string) *httptest.Respons
 }
 
 func TestNewServerTLSConfigIncomplete(t *testing.T) {
-	_, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0, EnableTLS: true})
+	_, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0, EnableTLS: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "TLS")
 }
 
 func TestNewServerDefaultsTimeouts(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)
 	withStop(t, srv)
 
@@ -48,7 +47,7 @@ func TestNewServerDefaultsTimeouts(t *testing.T) {
 }
 
 func TestDefaultHealthHandler(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)
 	withStop(t, srv)
 
@@ -58,7 +57,7 @@ func TestDefaultHealthHandler(t *testing.T) {
 }
 
 func TestHealthDisabled(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0}, WithHealth(""))
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0}, WithHealth(""))
 	require.NoError(t, err)
 	withStop(t, srv)
 
@@ -67,7 +66,7 @@ func TestHealthDisabled(t *testing.T) {
 }
 
 func TestServerStartServeAndStop(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)
 
 	// 浠?listener 鑾峰彇鐪熷疄绔彛锛屾瀯閫?URL
@@ -92,7 +91,7 @@ func TestServerStartServeAndStop(t *testing.T) {
 }
 
 func TestServerShutdownBeforeStartupReleasesListener(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)
 
 	addr := srv.Addr().String()
@@ -104,7 +103,7 @@ func TestServerShutdownBeforeStartupReleasesListener(t *testing.T) {
 }
 
 func TestServerAddrExposesAllocatedPort(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)
 	withStop(t, srv)
 
@@ -120,7 +119,7 @@ func TestServerAddrExposesAllocatedPort(t *testing.T) {
 }
 
 func TestRegisterRoute(t *testing.T) {
-	srv, err := NewServer(&config.HTTP{Host: "127.0.0.1", Port: 0})
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)
 	withStop(t, srv)
 

@@ -5,11 +5,11 @@ import (
 	"net"
 	"testing"
 
-	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
 
 func TestServerName(t *testing.T) {
-	server, err := NewServer(&config.GRPC{Host: "0.0.0.0", Port: 50051}, nil)
+	server, err := NewServer(&configitem.GRPC{Host: "0.0.0.0", Port: 50051}, nil)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -19,7 +19,7 @@ func TestServerName(t *testing.T) {
 }
 
 func TestServerShutdownBeforeStart(t *testing.T) {
-	server, err := NewServer(&config.GRPC{Host: "127.0.0.1", Port: 50051}, nil)
+	server, err := NewServer(&configitem.GRPC{Host: "127.0.0.1", Port: 50051}, nil)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -30,7 +30,7 @@ func TestServerShutdownBeforeStart(t *testing.T) {
 }
 
 func TestServerAddrExposesAllocatedPortBeforeStartup(t *testing.T) {
-	server, err := NewServer(&config.GRPC{Host: "127.0.0.1", Port: 0}, nil)
+	server, err := NewServer(&configitem.GRPC{Host: "127.0.0.1", Port: 0}, nil)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}

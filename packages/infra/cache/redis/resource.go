@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/wplbyx/modular/packages/config/configitem"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 )
 
@@ -14,16 +14,16 @@ var _ core.Resource = (*Resource)(nil)
 
 // Resource 将 Redis 客户端纳入 Application 生命周期。
 type Resource struct {
-	cfg     *config.Redis
+	cfg     *configitem.Redis
 	client  goredis.UniversalClient
-	connect func(*config.Redis) (goredis.UniversalClient, error)
+	connect func(*configitem.Redis) (goredis.UniversalClient, error)
 }
 
 // ResourceOption 配置 Redis Resource。
 type ResourceOption func(*Resource)
 
 // WithConnector 覆盖 Redis 建连函数，主要用于测试或自定义客户端创建。
-func WithConnector(fn func(*config.Redis) (goredis.UniversalClient, error)) ResourceOption {
+func WithConnector(fn func(*configitem.Redis) (goredis.UniversalClient, error)) ResourceOption {
 	return func(r *Resource) {
 		if fn != nil {
 			r.connect = fn
@@ -32,7 +32,7 @@ func WithConnector(fn func(*config.Redis) (goredis.UniversalClient, error)) Reso
 }
 
 // NewResource 创建 Redis 生命周期资源。
-func NewResource(cfg *config.Redis, opts ...ResourceOption) *Resource {
+func NewResource(cfg *configitem.Redis, opts ...ResourceOption) *Resource {
 	r := &Resource{cfg: cfg, connect: NewRedisClient}
 	for _, opt := range opts {
 		if opt != nil {

@@ -38,7 +38,7 @@ From `packages/app/application.go`:
 4. Run state: waits until any endpoint exits or the context is cancelled.
 5. On exit: `Endpoint.Shutdown` (parallel) then `Unregister(node)` then `Resource.Close` (LIFO, reverse registration order).
 
-Shutdown is guarded by an Application-level `sync.Once`, shared by `Run` and manual `Close(ctx)`. It runs entirely within one `shutdownTimeout` budget when triggered by `Run` (default 10s; configurable via `config.Application.ShutdownTimeout`).
+Shutdown is guarded by an Application-level `sync.Once`, shared by `Run` and manual `Close(ctx)`. It runs entirely within one `shutdownTimeout` budget when triggered by `Run` (default 10s; configurable via `configitem.Application.ShutdownTimeout`).
 
 ## Assembly in cmd/main.go
 
@@ -66,7 +66,7 @@ A real cmd builds transports (which are already `core.Endpoint`), resources, the
 
 Graceful shutdown on `SIGINT`/`SIGTERM`: build the root context with `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`. `Application.Run`'s errgroup cancels on context cancellation and triggers shutdown once. `Application.Close(ctx)` is the manual trigger if needed.
 
-Each endpoint's `Shutdown` honors its own timeout: HTTP server uses `config.HTTP.ShutdownTimeout` (default 5s), gRPC uses `config.GRPC.ShutdownTimeout` (default 5s, then force-stop).
+Each endpoint's `Shutdown` honors its own timeout: HTTP server uses `configitem.HTTP.ShutdownTimeout` (default 5s), gRPC uses `configitem.GRPC.ShutdownTimeout` (default 5s, then force-stop).
 
 ## Signals and zero-endpoint
 
