@@ -7,15 +7,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
-
-	"github.com/wplbyx/modular/packages/infra/storage"
+	"time"
 
 	aliyunoss "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/infra/storage"
 )
 
 // newTestStorage 起一个本地 httptest.Server，构造指向它的真实 *oss.Client。
@@ -33,6 +36,23 @@ func newTestStorage(t *testing.T, h http.HandlerFunc) *OssStorage {
 		bucket:        "test-bucket",
 		region:        "cn-hangzhou",
 		endpoint:      "",
+		useCName:      false,
+		publicBaseURL: "https://cdn.example.com",
+		baseDir:       "prefix",
+	}
+}
+
+func newPresignTestStorage(t *testing.T) *OssStorage {
+	t.Helper()
+	cfg := aliyunoss.LoadDefaultConfig().
+		WithRegion("cn-hangzhou").
+		WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test-ak", "test-sk")).
+		WithEndpoint("oss-cn-hangzhou.aliyuncs.com")
+	return &OssStorage{
+		client:        aliyunoss.NewClient(cfg),
+		bucket:        "test-bucket",
+		region:        "cn-hangzhou",
+		endpoint:      "https://oss-cn-hangzhou.aliyuncs.com",
 		useCName:      false,
 		publicBaseURL: "https://cdn.example.com",
 		baseDir:       "prefix",
@@ -250,6 +270,153 @@ func TestOSS_MultipartFlow(t *testing.T) {
 
 	require.NoError(t, s.CompleteMultipartUpload(ctx, sess, []storage.UploadPartResponse{{PartNumber: 1, ETag: "etag-uid-1"}}))
 	require.NoError(t, s.CancelMultipartUpload(ctx, sess))
+}
+
+func TestOSS_ImplementsDirectStorage(t *testing.T) {
+	var _ storage.DirectStorage = (*OssStorage)(nil)
+}
+
+func TestOSS_PresignUploadAndDownload(t *testing.T) {
+	s := newPresignTestStorage(t)
+	expires := 15 * time.Minute
+
+	upload, err := s.PresignUpload(context.Background(), "images/a.png", storage.DirectUploadOptions{
+		Expires:         expires,
+		ContentType:     "image/png",
+		ContentMD5:      "1B2M2Y8AsgTpgAmY7PhCfg==",
+		Meta:            map[string]string{"tenant": "acme"},
+		ForbidOverwrite: true,
+		Callback:        "callback-base64",
+		CallbackVar:     "callback-var-base64",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "prefix/images/a.png", upload.Key)
+	assert.Equal(t, http.MethodPut, upload.Method)
+	assert.Contains(t, upload.URL, "test-bucket.oss-cn-hangzhou.aliyuncs.com/prefix/images/a.png")
+	assert.True(t, strings.Contains(upload.URL, "Signature=") || strings.Contains(upload.URL, "x-oss-signature="), "url=%s", upload.URL)
+	assert.NotContains(t, upload.URL, "test-sk")
+	assert.NotContains(t, upload.URL, "test-token")
+	assert.Equal(t, "https://cdn.example.com/prefix/images/a.png", upload.PublicURL)
+	assert.WithinDuration(t, time.Now().Add(expires), upload.ExpiresAt, 3*time.Second)
+	assert.Equal(t, "image/png", upload.Headers.Get("Content-Type"))
+	assert.Equal(t, "1B2M2Y8AsgTpgAmY7PhCfg==", upload.Headers.Get("Content-MD5"))
+	assert.Equal(t, "acme", upload.Headers.Get("x-oss-meta-tenant"))
+	assert.Equal(t, "true", upload.Headers.Get("x-oss-forbid-overwrite"))
+	assert.Equal(t, "callback-base64", upload.Headers.Get("x-oss-callback"))
+	assert.Equal(t, "callback-var-base64", upload.Headers.Get("x-oss-callback-var"))
+	assert.Empty(t, upload.Body)
+
+	download, err := s.PresignDownload(context.Background(), "images/a.png", storage.DirectDownloadOptions{Expires: expires})
+	require.NoError(t, err)
+	assert.Equal(t, "prefix/images/a.png", download.Key)
+	assert.Equal(t, http.MethodGet, download.Method)
+	assert.Contains(t, download.URL, "test-bucket.oss-cn-hangzhou.aliyuncs.com/prefix/images/a.png")
+	assert.Empty(t, download.Headers)
+	assert.Empty(t, download.Body)
+	assert.Equal(t, "https://cdn.example.com/prefix/images/a.png", download.PublicURL)
+}
+
+func TestOSS_PresignMultipartDirectUpload(t *testing.T) {
+	s := newPresignTestStorage(t)
+
+	initReq, err := s.PresignMultipartInitiate(context.Background(), "videos/movie.mp4", storage.DirectMultipartInitiateOptions{
+		Expires:     time.Minute,
+		ContentType: "video/mp4",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "prefix/videos/movie.mp4", initReq.Key)
+	assert.Equal(t, http.MethodPost, initReq.Method)
+	assert.Contains(t, initReq.URL, "uploads")
+	assert.Equal(t, "video/mp4", initReq.Headers.Get("Content-Type"))
+	assert.Empty(t, initReq.Body)
+
+	partReq, err := s.PresignMultipartUploadPart(context.Background(), "videos/movie.mp4", "upload-1", 2, storage.DirectMultipartPartOptions{
+		Expires:    time.Minute,
+		ContentMD5: "1B2M2Y8AsgTpgAmY7PhCfg==",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "prefix/videos/movie.mp4", partReq.Key)
+	assert.Equal(t, http.MethodPut, partReq.Method)
+	assert.Contains(t, partReq.URL, "uploadId=upload-1")
+	assert.Contains(t, partReq.URL, "partNumber=2")
+	assert.Equal(t, "1B2M2Y8AsgTpgAmY7PhCfg==", partReq.Headers.Get("Content-MD5"))
+	assert.Empty(t, partReq.Body)
+
+	completeReq, err := s.PresignMultipartComplete(context.Background(), "videos/movie.mp4", "upload-1", []storage.UploadPartResponse{
+		{PartNumber: 3, ETag: "etag-3"},
+		{PartNumber: 1, ETag: "etag-1"},
+		{PartNumber: 2, ETag: "etag-2"},
+	}, storage.DirectMultipartCompleteOptions{
+		Expires:     time.Minute,
+		Callback:    "callback-base64",
+		CallbackVar: "callback-var-base64",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "prefix/videos/movie.mp4", completeReq.Key)
+	assert.Equal(t, http.MethodPost, completeReq.Method)
+	assert.Contains(t, completeReq.URL, "uploadId=upload-1")
+	assert.Equal(t, "callback-base64", completeReq.Headers.Get("x-oss-callback"))
+	assert.Equal(t, "callback-var-base64", completeReq.Headers.Get("x-oss-callback-var"))
+	assert.Contains(t, string(completeReq.Body), "<PartNumber>1</PartNumber>")
+	assert.Less(t, strings.Index(string(completeReq.Body), "<PartNumber>1</PartNumber>"), strings.Index(string(completeReq.Body), "<PartNumber>2</PartNumber>"))
+	assert.Less(t, strings.Index(string(completeReq.Body), "<PartNumber>2</PartNumber>"), strings.Index(string(completeReq.Body), "<PartNumber>3</PartNumber>"))
+
+	abortReq, err := s.PresignMultipartAbort(context.Background(), "videos/movie.mp4", "upload-1", storage.DirectMultipartAbortOptions{Expires: time.Minute})
+	require.NoError(t, err)
+	assert.Equal(t, "prefix/videos/movie.mp4", abortReq.Key)
+	assert.Equal(t, http.MethodDelete, abortReq.Method)
+	assert.Contains(t, abortReq.URL, "uploadId=upload-1")
+	assert.Empty(t, abortReq.Body)
+}
+
+func TestOSS_PresignRejectsSecurityToken(t *testing.T) {
+	s, err := NewOSSStorage(&config.Storage{
+		PublicBaseURL: "https://cdn.example.com",
+		OSS: &config.OSSStorageConfig{
+			AccessKeyID:     "test-ak",
+			AccessKeySecret: "test-sk",
+			SecurityToken:   "test-token",
+			Region:          "cn-hangzhou",
+			Bucket:          "test-bucket",
+			Endpoint:        "oss-cn-hangzhou.aliyuncs.com",
+			BaseDir:         "prefix",
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = s.PresignUpload(context.Background(), "images/a.png", storage.DirectUploadOptions{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "security token")
+}
+
+func TestOSS_PresignRejectsInvalidInputs(t *testing.T) {
+	s := newPresignTestStorage(t)
+
+	_, err := s.PresignUpload(context.Background(), "", storage.DirectUploadOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key is empty")
+
+	_, err = s.PresignMultipartUploadPart(context.Background(), "file.bin", "upload-1", 0, storage.DirectMultipartPartOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "partNumber must be >= 1")
+
+	_, err = s.PresignDownload(context.Background(), "file.bin", storage.DirectDownloadOptions{Expires: 8 * 24 * time.Hour})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expires must not be greater than 7 days")
+}
+
+func TestOSS_PresignUsesEscapedObjectKeys(t *testing.T) {
+	s := newPresignTestStorage(t)
+
+	req, err := s.PresignUpload(context.Background(), "docs/a b.txt", storage.DirectUploadOptions{})
+	require.NoError(t, err)
+	u, err := url.Parse(req.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "/prefix/docs/a b.txt", u.Path)
+	assert.True(t, strings.Contains(req.URL, "Signature=") || strings.Contains(req.URL, "x-oss-signature="), "url=%s", req.URL)
+	assert.WithinDuration(t, time.Now().Add(15*time.Minute), req.ExpiresAt, 3*time.Second)
 }
 
 func TestOSS_CompleteMultipartUploadSortsParts(t *testing.T) {
