@@ -158,9 +158,9 @@ application, err := app.NewApplication(
 
 | 后端 | 构造函数 | DSN | 说明 |
 | --- | --- | --- | --- |
-| Bun | `bun.NewBunConnection(cfg *config.Database)` | `database.DSNPostgres` | 仅支持 Postgres，适合需要 Bun ORM 和迁移工具的项目。 |
-| GORM | `gorm.NewGormConnection(cfg *config.Database)` | `DSNSqlite`、`DSNMySQL`、`DSNPostgres`、`DSNClickhouse` | 默认 `SkipDefaultTransaction: true`，适合常规关系型数据库。 |
-| MongoDB | `mongo.NewMongoConnection(cfg *config.Database)` | `database.DSNMongo` | 使用 `go.mongodb.org/mongo-driver/v2`，支持 `Urls`、单节点 `Host`+`Port`、`ReplicaSet`、`MaxPoolSize`。 |
+| Bun | `bun.NewBunConnection(cfg *configitem.Database)` | `database.DSNPostgres` | 仅支持 Postgres，适合需要 Bun ORM 和迁移工具的项目。 |
+| GORM | `gorm.NewGormConnection(cfg *configitem.Database)` | `DSNSqlite`、`DSNMySQL`、`DSNPostgres`、`DSNClickhouse` | 默认 `SkipDefaultTransaction: true`，适合常规关系型数据库。 |
+| MongoDB | `mongo.NewMongoConnection(cfg *configitem.Database)` | `database.DSNMongo` | 使用 `go.mongodb.org/mongo-driver/v2`，支持 `Urls`、单节点 `Host`+`Port`、`ReplicaSet`、`MaxPoolSize`。 |
 
 这些构造函数都会在连接后 ping，并保留包级全局实例用于兼容；业务代码仍应优先接收构造函数返回的实例，而不是直接依赖 `GetDB()` / `GetClient()`。
 

@@ -1,7 +1,9 @@
-package config
+package configitem
 
 import (
 	"time"
+
+	"github.com/wplbyx/modular/packages/config"
 )
 
 //go:generate gomodifytags -file $GOFILE -add-tags mapstructure -remove-tags json,yaml,default -transform pascalcase -all -w --override --sort --quiet
@@ -50,13 +52,33 @@ type MQTTConsumer struct {
 	DLQTopic       string        `mapstructure:"DLQTopic"`       // 死信队列主题
 }
 
-// SetFlags implements Configurer.
-func (m *MQTT) SetFlags() {
-	// MQTT配置不设置命令行标志
-}
-
-// Validate implements Configurer.
-func (m *MQTT) Validate() error {
-	// 使用validator标签进行验证
-	return nil
+// Flags 返回 MQTT 配置的命令行元数据。
+func (MQTT) Flags(prefix string) []config.FlagSpec {
+	return []config.FlagSpec{
+		{Name: prefix + ".brokerurl", Default: "", Usage: "MQTT broker地址"},
+		{Name: prefix + ".clientid", Default: "", Usage: "MQTT客户端标识符"},
+		{Name: prefix + ".username", Default: "", Usage: "MQTT用户名"},
+		{Name: prefix + ".password", Default: "", Usage: "MQTT密码"},
+		{Name: prefix + ".client.connecttimeout", Default: 30 * time.Second, Usage: "MQTT连接超时"},
+		{Name: prefix + ".client.writetimeout", Default: 30 * time.Second, Usage: "MQTT写入超时"},
+		{Name: prefix + ".client.keepalive", Default: 30 * time.Second, Usage: "MQTT保活间隔"},
+		{Name: prefix + ".client.pingtimeout", Default: 10 * time.Second, Usage: "MQTT ping超时"},
+		{Name: prefix + ".client.maxreconnectdelay", Default: 10 * time.Minute, Usage: "MQTT最大重连延迟"},
+		{Name: prefix + ".client.autoreconnect", Default: true, Usage: "MQTT是否自动重连"},
+		{Name: prefix + ".client.cleansession", Default: true, Usage: "MQTT是否清除会话"},
+		{Name: prefix + ".client.ordermatters", Default: true, Usage: "MQTT是否保证消息顺序"},
+		{Name: prefix + ".producer.defaultqos", Default: uint8(0), Usage: "MQTT默认QoS级别"},
+		{Name: prefix + ".producer.defaultretained", Default: false, Usage: "MQTT默认保留消息标志"},
+		{Name: prefix + ".producer.willtopic", Default: "", Usage: "MQTT遗嘱主题"},
+		{Name: prefix + ".producer.willpayload", Default: "", Usage: "MQTT遗嘱消息"},
+		{Name: prefix + ".producer.willqos", Default: uint8(0), Usage: "MQTT遗嘱QoS级别"},
+		{Name: prefix + ".producer.willretained", Default: false, Usage: "MQTT遗嘱保留标志"},
+		{Name: prefix + ".consumer.topic", Default: "", Usage: "MQTT默认订阅主题"},
+		{Name: prefix + ".consumer.qos", Default: uint8(0), Usage: "MQTT订阅QoS级别"},
+		{Name: prefix + ".consumer.autoreconnect", Default: true, Usage: "MQTT是否自动重新订阅"},
+		{Name: prefix + ".consumer.reconnectdelay", Default: time.Second, Usage: "MQTT重订阅延迟"},
+		{Name: prefix + ".consumer.maxretries", Default: 3, Usage: "MQTT消息处理失败重试次数"},
+		{Name: prefix + ".consumer.processtimeout", Default: 30 * time.Second, Usage: "MQTT消息处理超时"},
+		{Name: prefix + ".consumer.dlqtopic", Default: "", Usage: "MQTT死信队列主题"},
+	}
 }

@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/log"
 )
@@ -46,7 +46,7 @@ type Server struct {
 	server   *http.Server
 	engine   *gin.Engine
 	listener net.Listener
-	cfg      *config.HTTP
+	cfg      *configitem.HTTP
 
 	enableTLS   bool
 	tlsCertFile string
@@ -69,9 +69,9 @@ type Server struct {
 }
 
 // NewServer 创建并预监听一个 HTTP 服务。
-func NewServer(cfg *config.HTTP, opts ...ServerOption) (*Server, error) {
+func NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error) {
 	if cfg == nil {
-		cfg = &config.HTTP{}
+		cfg = &configitem.HTTP{}
 	}
 
 	srv := &Server{cfg: cfg}

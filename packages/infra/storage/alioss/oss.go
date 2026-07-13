@@ -13,9 +13,9 @@ import (
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/infra/storage"
 )
 
@@ -44,7 +44,7 @@ type OssStorage struct {
 }
 
 // NewOSSStorage 构造 OSS Storage。
-func NewOSSStorage(cfg *config.Storage) (*OssStorage, error) {
+func NewOSSStorage(cfg *configitem.Storage) (*OssStorage, error) {
 	if cfg == nil || cfg.OSS == nil {
 		return nil, errors.New("oss storage config is nil")
 	}

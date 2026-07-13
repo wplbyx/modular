@@ -15,9 +15,9 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/infra/storage"
 )
 
@@ -33,7 +33,7 @@ type DiskStorage struct {
 }
 
 // NewDiskStorage 构造一个新的本地磁盘 Storage 实例。
-func NewDiskStorage(cfg *config.Storage) (*DiskStorage, error) {
+func NewDiskStorage(cfg *configitem.Storage) (*DiskStorage, error) {
 	if cfg == nil || cfg.Disk == nil {
 		return nil, errors.New("disk storage config is nil")
 	}

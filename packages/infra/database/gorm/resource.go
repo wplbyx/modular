@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	gormlib "gorm.io/gorm"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 )
 
@@ -14,15 +14,15 @@ var _ core.Resource = (*Resource)(nil)
 
 // Resource 将 GORM 数据库连接纳入 Application 生命周期。
 type Resource struct {
-	cfg     *config.Database
+	cfg     *configitem.Database
 	db      *gormlib.DB
-	connect func(*config.Database) (*gormlib.DB, error)
+	connect func(*configitem.Database) (*gormlib.DB, error)
 }
 
 type ResourceOption func(*Resource)
 
 // WithConnector 覆盖 GORM 建连函数，主要用于测试或自定义连接。
-func WithConnector(fn func(*config.Database) (*gormlib.DB, error)) ResourceOption {
+func WithConnector(fn func(*configitem.Database) (*gormlib.DB, error)) ResourceOption {
 	return func(r *Resource) {
 		if fn != nil {
 			r.connect = fn
@@ -31,7 +31,7 @@ func WithConnector(fn func(*config.Database) (*gormlib.DB, error)) ResourceOptio
 }
 
 // NewResource 创建 GORM 生命周期资源。
-func NewResource(cfg *config.Database, opts ...ResourceOption) *Resource {
+func NewResource(cfg *configitem.Database, opts ...ResourceOption) *Resource {
 	r := &Resource{cfg: cfg, connect: NewGormConnection}
 	for _, opt := range opts {
 		if opt != nil {

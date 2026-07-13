@@ -395,7 +395,7 @@ def render_main(project: Path, svcs: list[str], *, aggregate: bool) -> str:
         '"github.com/wplbyx/modular/packages/core"',
     ])
     if aggregate:
-        imports.append('modularconfig "github.com/wplbyx/modular/packages/config"')
+        imports.append('"github.com/wplbyx/modular/packages/config/configitem"')
     imports.extend([
         'httpserver "github.com/wplbyx/modular/packages/transport/server/http"',
         'rpcserver "github.com/wplbyx/modular/packages/transport/server/rpc"',
@@ -441,7 +441,7 @@ def render_main(project: Path, svcs: list[str], *, aggregate: bool) -> str:
 
     if aggregate:
         lines.extend([
-            "\tapplicationCfg := modularconfig.Application{",
+            "\tapplicationCfg := configitem.Application{",
             f'\t\tName: "{project_name(project)}",',
             '\t\tMode: "dev",',
             '\t\tVersion: "v0.1.0",',
@@ -497,7 +497,7 @@ def render_svc_wiring(project: Path, svc: str) -> list[str]:
     repo_var = lower_camel(svc) + "AppRepo"
     repo_alias = alias(svc, "app_repository")
     lines = [
-        f"\t{cfg_var}, err := {cfg_alias}.Load(\"./config/{svc}\")",
+        f"\t{cfg_var}, err := {cfg_alias}.Load(\"./config/{svc}/config.yaml\")",
         "\tif err != nil {",
         f'\t\tfmt.Printf("load {svc} config failed: %v\\n", err)',
         "\t\tos.Exit(1)",
@@ -677,9 +677,9 @@ def update_config_go(project: Path, svc: str, field_line: str) -> bool:
         return False
     text = path.read_text(encoding="utf-8")
     field_name = field_line.strip().split(None, 1)[0]
-    if re.search(rf"\b{re.escape(field_name)}\s+modularconfig\.", text):
+    if re.search(rf"\b{re.escape(field_name)}\s+configitem\.", text):
         return False
-    anchor = "\tLogging modularconfig.Logging"
+    anchor = "\tLogging configitem.Logging"
     if anchor in text:
         text = text.replace(anchor, field_line.rstrip() + "\n" + anchor, 1)
     else:
@@ -721,22 +721,22 @@ def command_resource(args: argparse.Namespace) -> int:
     if kind == "db":
         if driver not in {"bun", "gorm", "mongo"}:
             return fail("--driver for db must be bun, gorm, or mongo")
-        update_config_go(project, svc, '\tDatabase modularconfig.Database `mapstructure:"database"`\n')
+        update_config_go(project, svc, '\tDatabase configitem.Database `mapstructure:"database"`\n')
         update_config_yaml(project, svc, "database", DATABASE_MONGO_YAML if driver == "mongo" else DATABASE_YAML)
         resources["db"] = driver
         if driver == "mongo":
             write_file(project / "internal" / svc / "repository" / "mongo_resource.go", render_template("resource/mongo_resource.go.tmpl", {"PROJECT": module}), overwrite=True)
     elif kind == "redis":
-        update_config_go(project, svc, '\tRedis modularconfig.Redis `mapstructure:"redis"`\n')
+        update_config_go(project, svc, '\tRedis configitem.Redis `mapstructure:"redis"`\n')
         update_config_yaml(project, svc, "redis", REDIS_YAML)
         resources["redis"] = True
     elif kind == "storage":
-        update_config_go(project, svc, '\tStorage modularconfig.Storage `mapstructure:"storage"`\n')
+        update_config_go(project, svc, '\tStorage configitem.Storage `mapstructure:"storage"`\n')
         update_config_yaml(project, svc, "storage", STORAGE_YAML)
         resources["storage"] = True
         write_file(project / "internal" / svc / "repository" / "storage_resource.go", render_template("resource/storage_resource.go.tmpl", {"PROJECT": module}), overwrite=True)
     elif kind == "telemetry":
-        update_config_go(project, svc, '\tTelemetry modularconfig.Telemetry `mapstructure:"telemetry"`\n')
+        update_config_go(project, svc, '\tTelemetry configitem.Telemetry `mapstructure:"telemetry"`\n')
         update_config_yaml(project, svc, "telemetry", TELEMETRY_YAML)
         resources["telemetry"] = True
     else:

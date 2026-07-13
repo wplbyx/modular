@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"github.com/wplbyx/modular/packages/core"
 	"reflect"
 	"strings"
 	"sync"
@@ -11,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
+	"github.com/wplbyx/modular/packages/core"
 )
 
 // --- test Resource ---
@@ -110,7 +110,7 @@ func TestApplicationRunStopsEndpointAndClosesResource(t *testing.T) {
 	var order []string
 	res := &testResource{name: "db", initOrder: &order}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
 		WithResource(res),
 		WithEndpoint(endpoint),
 	)
@@ -159,7 +159,7 @@ func TestApplicationRegistersServiceNode(t *testing.T) {
 	)
 	reg := &testRegistrar{}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "holo", Version: "v1.2.3"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "holo", Version: "v1.2.3"},
 		WithRegistrar(reg),
 		WithServiceNode(node),
 		WithEndpoint(endpoint),
@@ -208,7 +208,7 @@ func TestApplicationRegisterFailureDoesNotStartEndpoint(t *testing.T) {
 	)
 	reg := &testRegistrar{registerErr: errors.New("registry unavailable")}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "holo"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "holo"},
 		WithRegistrar(reg),
 		WithServiceNode(node),
 		WithEndpoint(endpoint),
@@ -232,7 +232,7 @@ func TestApplicationRunResourceInitFails(t *testing.T) {
 	sentinel := errors.New("init boom")
 	res := &testResource{name: "db", initErr: sentinel}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
 		WithResource(res),
 		WithEndpoint(&testEndpoint{started: make(chan struct{})}),
 	)
@@ -255,7 +255,7 @@ func TestApplicationRunParallelStop(t *testing.T) {
 	ep1 := &slowEndpoint{started: make(chan struct{}), stopDelay: stopDelay, count: &stopCount}
 	ep2 := &slowEndpoint{started: make(chan struct{}), stopDelay: stopDelay, count: &stopCount}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
 		WithEndpoint(ep1),
 		WithEndpoint(ep2),
 	)
@@ -300,7 +300,7 @@ func TestApplicationRunNoEndpointsExitsCleanly(t *testing.T) {
 
 	res := &testResource{name: "only", initOrder: &[]string{}}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
 		WithResource(res),
 	)
 	if err != nil {
@@ -331,7 +331,7 @@ func TestApplicationRunEndpointErrorPropagated(t *testing.T) {
 		startErr:      endpointErr,
 	}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
 		WithEndpoint(ep),
 	)
 	if err != nil {
@@ -361,7 +361,7 @@ func TestApplicationRunShutdownErrorJoinedOnEarlyReturn(t *testing.T) {
 	ready := &testResource{name: "ready", closeErr: closeErr, initOrder: &order}
 	failed := &testResource{name: "failed", initErr: initErr, closeErr: errors.New("failed close should not run"), initOrder: &order}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
 		WithResource(ready),
 		WithResource(failed),
 		WithEndpoint(&testEndpoint{started: make(chan struct{})}),
@@ -395,7 +395,7 @@ func TestApplicationRunDoesNotCloseResourceThatFailedSetup(t *testing.T) {
 	second := &testResource{name: "second", initErr: setupErr, initOrder: &order}
 	third := &testResource{name: "third", initOrder: &order}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
 		WithResource(first),
 		WithResource(second),
 		WithResource(third),
@@ -424,7 +424,7 @@ func TestApplicationCloseAndRunShutdownOnlyOnce(t *testing.T) {
 	res := &testResource{name: "db", initOrder: &order}
 	endpoint := &slowEndpoint{started: make(chan struct{}), stopDelay: 10 * time.Millisecond, count: new(int64)}
 
-	application, err := NewApplication(ctx, &config.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
 		WithResource(res),
 		WithEndpoint(endpoint),
 	)

@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/wplbyx/modular/packages/config/configitem"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 )
 
@@ -17,7 +17,7 @@ func TestResourceImplementsCoreResource(t *testing.T) {
 
 func TestResourceSetupAndClose(t *testing.T) {
 	client := goredis.NewUniversalClient(&goredis.UniversalOptions{Addrs: []string{"127.0.0.1:0"}})
-	res := NewResource(&config.Redis{}, WithConnector(func(*config.Redis) (goredis.UniversalClient, error) {
+	res := NewResource(&configitem.Redis{}, WithConnector(func(*configitem.Redis) (goredis.UniversalClient, error) {
 		return client, nil
 	}))
 
@@ -37,7 +37,7 @@ func TestResourceSetupAndClose(t *testing.T) {
 
 func TestResourceSetupFailureDoesNotSetClient(t *testing.T) {
 	setupErr := errors.New("setup boom")
-	res := NewResource(&config.Redis{}, WithConnector(func(*config.Redis) (goredis.UniversalClient, error) {
+	res := NewResource(&configitem.Redis{}, WithConnector(func(*configitem.Redis) (goredis.UniversalClient, error) {
 		return nil, setupErr
 	}))
 

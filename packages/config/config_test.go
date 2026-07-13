@@ -1,14 +1,30 @@
-package config
+package config_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kelseyhightower/envconfig"
+
+	modularconfig "github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
+
+type CustomConfig struct {
+	Application configitem.Application `mapstructure:"application"`
+	Database    configitem.Database    `mapstructure:"database"`
+	Redis       configitem.Redis       `mapstructure:"redis"`
+	HTTP        configitem.HTTP        `mapstructure:"http"`
+}
+
+func NewCustomConfig() *CustomConfig {
+	return &CustomConfig{}
+}
 
 func TestConfigure(t *testing.T) {
 	os.Setenv("CUSTOM_APPLICATION_SERVICE", "IT_WORKS_NOW")
@@ -16,10 +32,9 @@ func TestConfigure(t *testing.T) {
 	// 1. 创建各个模块需要的配置实例
 	customConfig := NewCustomConfig()
 
-	if err := InitConfigure(customConfig,
-		// config.WithConfigFile("develop", "yaml", "."),
-		WithEnvPrefix("HELLO", strings.NewReplacer(".", "_")),
-		// config.WithCommandLine(pflag.CommandLine),
+	if err := modularconfig.InitConfigure(customConfig,
+		// config.WithConfigFile("./develop.yaml", true),
+		modularconfig.WithEnvPrefix("HELLO", strings.NewReplacer(".", "_")),
 	); err != nil {
 		fmt.Println(err)
 		return
@@ -27,9 +42,8 @@ func TestConfigure(t *testing.T) {
 
 	// // 2. 创建中央加载器，并一次性加载所有指定配置
 	// loader, err := NewConfigureLoader(
-	//	WithConfigFile("app", "yaml", "."),
+	//	WithConfigFile("./app.yml", false),
 	//	WithEnvPrefix("CUSTOM", strings.NewReplacer(".", "_")),
-	//	WithCommandLine(pflag.CommandLine),
 	// )
 	// if err != nil {
 	//	log.Fatal(err)
@@ -62,8 +76,8 @@ func TestWithEnv(t *testing.T) {
 }
 
 func TestStorageConfig_DiskFields(t *testing.T) {
-	c := &Storage{Type: "disk", PublicBaseURL: "https://cdn.example.com",
-		Disk: &DiskStorageConfig{RootDir: "/data", BaseUrl: "cdn.example.com"}}
+	c := &configitem.Storage{Type: "disk", PublicBaseURL: "https://cdn.example.com",
+		Disk: &configitem.DiskStorageConfig{RootDir: "/data", BaseUrl: "cdn.example.com"}}
 	if c.Disk.RootDir != "/data" || c.Disk.BaseUrl != "cdn.example.com" {
 		t.Fatalf("unexpected disk config: %+v", c.Disk)
 	}
@@ -73,32 +87,32 @@ func TestStorageConfig_DiskFields(t *testing.T) {
 }
 
 func TestStorageConfig_OSSBaseDir(t *testing.T) {
-	c := &Storage{Type: "oss", OSS: &OSSStorageConfig{Bucket: "b", Region: "cn-hangzhou", BaseDir: "prefix"}}
+	c := &configitem.Storage{Type: "oss", OSS: &configitem.OSSStorageConfig{Bucket: "b", Region: "cn-hangzhou", BaseDir: "prefix"}}
 	if c.OSS.BaseDir != "prefix" {
 		t.Fatalf("BaseDir not set: %+v", c.OSS)
 	}
 }
 
 func TestDatabaseConfigAllowsClickhouseForGORM(t *testing.T) {
-	cfg := &Database{Dsn: "clickhouse"}
-	if err := ValidateNode(cfg); err != nil {
+	cfg := &configitem.Database{Dsn: "clickhouse"}
+	if err := modularconfig.ValidateNode(cfg); err != nil {
 		t.Fatalf("ValidateNode(clickhouse database) error = %v", err)
 	}
 }
 
 func TestAppYAMLLoadsCurrentConfig(t *testing.T) {
 	type appYAMLConfig struct {
-		Application Application `mapstructure:"application"`
-		Logging     Logging     `mapstructure:"logging"`
-		Database    Database    `mapstructure:"database"`
-		Redis       Redis       `mapstructure:"redis"`
-		HTTP        HTTP        `mapstructure:"http"`
-		GRPC        GRPC        `mapstructure:"grpc"`
-		Storage     Storage     `mapstructure:"storage"`
+		Application configitem.Application `mapstructure:"application"`
+		Logging     configitem.Logging     `mapstructure:"logging"`
+		Database    configitem.Database    `mapstructure:"database"`
+		Redis       configitem.Redis       `mapstructure:"redis"`
+		HTTP        configitem.HTTP        `mapstructure:"http"`
+		GRPC        configitem.GRPC        `mapstructure:"grpc"`
+		Storage     configitem.Storage     `mapstructure:"storage"`
 	}
 
 	var cfg appYAMLConfig
-	if err := InitConfigure(&cfg, WithConfigFile("app", "yaml", ".")); err != nil {
+	if err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFile("app.yml", false)); err != nil {
 		t.Fatalf("InitConfigure(app.yml) error = %v", err)
 	}
 	if cfg.Storage.Type != "disk" {
@@ -106,5 +120,55 @@ func TestAppYAMLLoadsCurrentConfig(t *testing.T) {
 	}
 	if cfg.Storage.Disk == nil || cfg.Storage.Disk.RootDir == "" {
 		t.Fatalf("disk storage config not loaded: %+v", cfg.Storage.Disk)
+	}
+}
+
+func TestWithConfigFileLoadsExactPath(t *testing.T) {
+	type exactPathConfig struct {
+		Name string `mapstructure:"name"`
+	}
+
+	configFile := filepath.Join(t.TempDir(), "custom-name.yaml")
+	if err := os.WriteFile(configFile, []byte("name: exact-path\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var cfg exactPathConfig
+	if err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFile(configFile, false)); err != nil {
+		t.Fatalf("InitConfigure() error = %v", err)
+	}
+	if cfg.Name != "exact-path" {
+		t.Fatalf("Name = %q, want exact-path", cfg.Name)
+	}
+}
+
+func TestWithConfigFileIgnoresMissingPath(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	var cfg struct{}
+
+	if err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFile(missing, true)); err != nil {
+		t.Fatalf("InitConfigure() error = %v", err)
+	}
+}
+
+func TestWithConfigFileReturnsMissingPathError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	var cfg struct{}
+
+	err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFile(missing, false))
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("InitConfigure() error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestWithConfigFileDoesNotIgnoreMalformedFile(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "malformed.yaml")
+	if err := os.WriteFile(configFile, []byte("name: [\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var cfg struct{}
+	if err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFile(configFile, true)); err == nil {
+		t.Fatalf("InitConfigure() error = nil, want malformed config error")
 	}
 }

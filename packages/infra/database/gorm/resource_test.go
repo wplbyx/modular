@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"gorm.io/driver/sqlite"
 	gormlib "gorm.io/gorm"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 )
 
@@ -21,7 +21,7 @@ func TestResourceSetupAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	res := NewResource(&config.Database{}, WithConnector(func(*config.Database) (*gormlib.DB, error) {
+	res := NewResource(&configitem.Database{}, WithConnector(func(*configitem.Database) (*gormlib.DB, error) {
 		return db, nil
 	}))
 
@@ -41,7 +41,7 @@ func TestResourceSetupAndClose(t *testing.T) {
 
 func TestResourceSetupFailureDoesNotSetDB(t *testing.T) {
 	setupErr := errors.New("setup boom")
-	res := NewResource(&config.Database{}, WithConnector(func(*config.Database) (*gormlib.DB, error) {
+	res := NewResource(&configitem.Database{}, WithConnector(func(*configitem.Database) (*gormlib.DB, error) {
 		return nil, setupErr
 	}))
 

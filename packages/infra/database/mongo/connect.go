@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/infra/database"
 )
 
@@ -22,7 +22,7 @@ const defaultMongoPort = 27017
 var globalClient *mongodriver.Client
 
 // NewMongoConnection creates a MongoDB client and stores it as the global instance.
-func NewMongoConnection(cfg *config.Database) (*mongodriver.Client, error) {
+func NewMongoConnection(cfg *configitem.Database) (*mongodriver.Client, error) {
 	opts, err := newClientOptions(cfg)
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func GetClient() *mongodriver.Client {
 	return globalClient
 }
 
-func newClientOptions(cfg *config.Database) (*options.ClientOptions, error) {
+func newClientOptions(cfg *configitem.Database) (*options.ClientOptions, error) {
 	if cfg == nil {
 		return nil, errors.New("database config is nil")
 	}
@@ -89,7 +89,7 @@ func newClientOptions(cfg *config.Database) (*options.ClientOptions, error) {
 	return opts, nil
 }
 
-func mongoEndpoint(cfg *config.Database) (string, []string, error) {
+func mongoEndpoint(cfg *configitem.Database) (string, []string, error) {
 	if len(cfg.Urls) > 0 {
 		if len(cfg.Urls) == 1 && isMongoURI(cfg.Urls[0]) {
 			return cfg.Urls[0], nil, nil

@@ -1,7 +1,9 @@
-package config
+package configitem
 
 import (
 	"time"
+
+	"github.com/wplbyx/modular/packages/config"
 )
 
 //go:generate gomodifytags -file $GOFILE -add-tags mapstructure -remove-tags json,yaml,default -transform pascalcase -all -w --override --sort --quiet
@@ -36,4 +38,29 @@ type RocketConsumer struct {
 	Orderly                    bool   `mapstructure:"Orderly"`                                               // 是否顺序消费
 	InstanceName               string `mapstructure:"InstanceName"`                                          // 实例名称
 	LogLevel                   string `mapstructure:"LogLevel" validate:"oneof=error warn info debug"`       // 客户端日志级别
+}
+
+// Flags 返回 RocketMQ 配置的命令行元数据。
+func (RocketMQ) Flags(prefix string) []config.FlagSpec {
+	return []config.FlagSpec{
+		{Name: prefix + ".nameservers", Default: []string(nil), Usage: "RocketMQ NameServer地址列表"},
+		{Name: prefix + ".producer.groupname", Default: "", Usage: "RocketMQ生产者组名"},
+		{Name: prefix + ".producer.retry", Default: 3, Usage: "RocketMQ发送失败重试次数"},
+		{Name: prefix + ".producer.timeout", Default: 30 * time.Second, Usage: "RocketMQ发送消息超时"},
+		{Name: prefix + ".producer.compress", Default: false, Usage: "RocketMQ是否压缩消息"},
+		{Name: prefix + ".producer.instancename", Default: "", Usage: "RocketMQ生产者实例名称"},
+		{Name: prefix + ".producer.loglevel", Default: "info", Usage: "RocketMQ生产者客户端日志级别"},
+
+		{Name: prefix + ".consumer.groupname", Default: "", Usage: "RocketMQ消费者组名"},
+		{Name: prefix + ".consumer.topic", Default: "", Usage: "RocketMQ订阅主题"},
+		{Name: prefix + ".consumer.expression", Default: "", Usage: "RocketMQ消息过滤表达式"},
+		{Name: prefix + ".consumer.maxreconsumetimes", Default: 16, Usage: "RocketMQ最大重试消费次数"},
+		{Name: prefix + ".consumer.consumemessagebatchmaxsize", Default: 1, Usage: "RocketMQ一批最大消费消息数"},
+		{Name: prefix + ".consumer.consumethreadmin", Default: 20, Usage: "RocketMQ最小消费线程数"},
+		{Name: prefix + ".consumer.consumethreadmax", Default: 20, Usage: "RocketMQ最大消费线程数"},
+		{Name: prefix + ".consumer.messagemodel", Default: "clustering", Usage: "RocketMQ消费模式"},
+		{Name: prefix + ".consumer.orderly", Default: false, Usage: "RocketMQ是否顺序消费"},
+		{Name: prefix + ".consumer.instancename", Default: "", Usage: "RocketMQ消费者实例名称"},
+		{Name: prefix + ".consumer.loglevel", Default: "info", Usage: "RocketMQ消费者客户端日志级别"},
+	}
 }

@@ -8,8 +8,8 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
+	"github.com/wplbyx/modular/packages/config/configitem"
 
-	"github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/infra/database"
 )
 
@@ -17,7 +17,7 @@ import (
 var globalDB *bun.DB
 
 // NewBunConnection creates a Bun database connection and stores it as the global instance.
-func NewBunConnection(cfg *config.Database) (*bun.DB, error) {
+func NewBunConnection(cfg *configitem.Database) (*bun.DB, error) {
 	if cfg == nil {
 		return nil, errors.New("database config is nil")
 	}

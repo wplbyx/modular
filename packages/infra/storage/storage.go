@@ -150,7 +150,7 @@ type MultipartStore interface {
 var ErrUnsupportedStorageType = fmt.Errorf("unsupported storage type")
 
 //// NewStorage 根据配置创建 Storage 实例。
-//func NewStorage(cfg *config.Storage) (Storage, error) {
+//func NewStorage(cfg *configitem.Storage) (Storage, error) {
 //	if cfg == nil {
 //		return nil, fmt.Errorf("storage config is nil")
 //	}

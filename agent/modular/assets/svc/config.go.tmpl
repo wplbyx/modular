@@ -1,21 +1,26 @@
 package config
 
-import modularconfig "github.com/wplbyx/modular/packages/config"
+import (
+	modularconfig "github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
+)
 
 type Config struct {
-	modularconfig.Application `mapstructure:"application,squash"`
-	HTTP    modularconfig.HTTP    `mapstructure:"http"`
-	GRPC    modularconfig.GRPC    `mapstructure:"grpc"`
-	Logging modularconfig.Logging `mapstructure:"logging"`
+	configitem.Application `mapstructure:"application,squash"`
+	HTTP                   configitem.HTTP    `mapstructure:"http"`
+	GRPC                   configitem.GRPC    `mapstructure:"grpc"`
+	Logging                configitem.Logging `mapstructure:"logging"`
 }
 
-func Load(paths ...string) (*Config, error) {
-	cfg := new(Config)
-	if len(paths) == 0 {
-		paths = []string{"./config/{{SVC}}"}
+func Load(files ...string) (*Config, error) {
+	configFile := "./config/{{SVC}}/config.yaml"
+	if len(files) > 0 {
+		configFile = files[0]
 	}
+
+	cfg := new(Config)
 	err := modularconfig.InitConfigure(cfg,
-		modularconfig.WithConfigFile("config", "yaml", paths...),
+		modularconfig.WithConfigFile(configFile, false),
 	)
 	return cfg, err
 }
