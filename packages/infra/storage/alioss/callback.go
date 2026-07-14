@@ -1,6 +1,7 @@
 package alioss
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/md5"
@@ -16,9 +17,19 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
-const callbackOKResponse = `{"Status":"OK"}`
+const (
+	callbackOKResponse              = `{"Status":"OK"}`
+	defaultCallbackMaxBodyBytes     = int64(1 << 20)
+	defaultCallbackPublicKeyTimeout = 5 * time.Second
+)
+
+var (
+	defaultCallbackHTTPClient = &http.Client{Timeout: defaultCallbackPublicKeyTimeout}
+	errCallbackBodyTooLarge   = errors.New("callback body is too large")
+)
 
 // PublicKeyFetcher 在公钥 URL 解码并校验通过后加载 OSS 回调公钥。
 type PublicKeyFetcher func(ctx context.Context, publicKeyURL string) ([]byte, error)
@@ -34,7 +45,8 @@ type CallbackPayload struct {
 type CallbackProcessor func(ctx context.Context, payload CallbackPayload) error
 
 type callbackConfig struct {
-	fetcher PublicKeyFetcher
+	fetcher      PublicKeyFetcher
+	maxBodyBytes int64
 }
 
 // CallbackOption 配置 NewCallbackHandler。
@@ -49,10 +61,22 @@ func WithCallbackPublicKeyFetcher(fetcher PublicKeyFetcher) CallbackOption {
 	}
 }
 
+// WithCallbackMaxBodyBytes 设置回调 body 最大读取字节数。
+func WithCallbackMaxBodyBytes(maxBytes int64) CallbackOption {
+	return func(cfg *callbackConfig) {
+		if maxBytes > 0 {
+			cfg.maxBodyBytes = maxBytes
+		}
+	}
+}
+
 // NewCallbackHandler 返回标准库 HTTP handler，用于处理 OSS 上传回调。
 // 业务服务可以把它挂到任意路由，也可以直接调用底层函数。
 func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) http.Handler {
-	cfg := callbackConfig{fetcher: defaultCallbackPublicKeyFetcher}
+	cfg := callbackConfig{
+		fetcher:      defaultCallbackPublicKeyFetcher,
+		maxBodyBytes: defaultCallbackMaxBodyBytes,
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -67,8 +91,12 @@ func NewCallbackHandler(processor CallbackProcessor, opts ...CallbackOption) htt
 			http.Error(w, "callback processor is nil", http.StatusInternalServerError)
 			return
 		}
-		body, err := io.ReadAll(r.Body)
+		body, err := readCallbackBody(r.Body, cfg.maxBodyBytes)
 		if err != nil {
+			if errors.Is(err, errCallbackBodyTooLarge) {
+				http.Error(w, "callback body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "read callback body", http.StatusBadRequest)
 			return
 		}
@@ -151,10 +179,17 @@ func ParseCallbackPayload(r *http.Request, body []byte) (CallbackPayload, error)
 			return payload, nil
 		}
 		var values map[string]any
-		decoder := json.NewDecoder(strings.NewReader(string(body)))
+		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.UseNumber()
 		if err := decoder.Decode(&values); err != nil {
 			return CallbackPayload{}, fmt.Errorf("decode json callback body: %w", err)
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			if err != nil {
+				return CallbackPayload{}, fmt.Errorf("decode json callback body: %w", err)
+			}
+			return CallbackPayload{}, errors.New("decode json callback body: multiple JSON values")
 		}
 		for k, v := range values {
 			payload.Values[k] = callbackValueString(v)
@@ -185,12 +220,7 @@ func callbackPublicKeyURL(r *http.Request) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode x-oss-pub-key-url: %w", err)
 	}
-	publicKeyURL := string(raw)
-	if !strings.HasPrefix(publicKeyURL, "http://gosspublic.alicdn.com/") &&
-		!strings.HasPrefix(publicKeyURL, "https://gosspublic.alicdn.com/") {
-		return "", errors.New("public key url is not allowed")
-	}
-	return publicKeyURL, nil
+	return normalizeCallbackPublicKeyURL(string(raw))
 }
 
 func callbackStringToSign(r *http.Request, body []byte) string {
@@ -239,11 +269,15 @@ func callbackValueString(value any) string {
 }
 
 func defaultCallbackPublicKeyFetcher(ctx context.Context, publicKeyURL string) ([]byte, error) {
+	publicKeyURL, err := normalizeCallbackPublicKeyURL(publicKeyURL)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, publicKeyURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := defaultCallbackHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -252,4 +286,39 @@ func defaultCallbackPublicKeyFetcher(ctx context.Context, publicKeyURL string) (
 		return nil, fmt.Errorf("fetch public key returned status %d", resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+func readCallbackBody(body io.Reader, maxBytes int64) ([]byte, error) {
+	if body == nil {
+		return nil, errors.New("callback body is nil")
+	}
+	if maxBytes <= 0 {
+		return io.ReadAll(body)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, errCallbackBodyTooLarge
+	}
+	return data, nil
+}
+
+func normalizeCallbackPublicKeyURL(publicKeyURL string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(publicKeyURL))
+	if err != nil {
+		return "", fmt.Errorf("parse public key url: %w", err)
+	}
+	if u.Hostname() != "gosspublic.alicdn.com" {
+		return "", errors.New("public key url is not allowed")
+	}
+	switch u.Scheme {
+	case "http":
+		u.Scheme = "https"
+	case "https":
+	default:
+		return "", errors.New("public key url must use http or https")
+	}
+	return u.String(), nil
 }
