@@ -40,28 +40,43 @@ Resource.Setup()  FIFO
 | --- | --- |
 | `packages/core` | 零依赖核心抽象：`Resource`、`Endpoint`、`Transport`、`ServiceNode`。 |
 | `packages/app` | 应用生命周期编排器，提供 `WithServiceNode`、`WithRegistrar`、`WithResource`、`WithEndpoint`。 |
-| `packages/config` | 基于 Viper 的配置加载和强类型配置结构体，支持文件、环境变量、命令行和远程配置。 |
+| `packages/config` | Viper 配置加载器与 Cobra 命令集成，支持本地文件、远程 KV、环境变量和自动模块 flags。 |
+| `packages/config/configitem` | 可组合的强类型基础设施配置：Application、HTTP、GRPC、Database、Redis、Storage、Logging、Telemetry 和消息中间件。 |
 | `packages/log` | Zap 日志封装，支持控制台、文件轮转、OpenTelemetry 输出；使用包级日志函数。 |
 | `packages/errs` | 自定义错误封装，主要用于 resilience 相关能力。 |
-| `packages/util` | AES/RSA、随机字符串、URL、请求和 context 工具。 |
+| `packages/util` | AES/RSA/ECC、随机字符串、URL、HTTP 请求和 context 工具。 |
 | `packages/transport/server/http` | 基于 Gin 的 HTTP endpoint，支持中间件、健康检查、TLS、h2c；构造时即监听端口。 |
 | `packages/transport/server/rpc` | gRPC endpoint，支持健康检查、拦截器和 mTLS。 |
 | `packages/transport/server/sse` | SSE 服务，可挂载到 HTTP 路由，作为 `core.Endpoint` 管理连接生命周期。 |
 | `packages/transport/client` | HTTP / gRPC 客户端封装。保留全局单例能力，但应用装配时优先依赖注入。 |
 | `packages/transport/pubsub` | 消息订阅 endpoint 抽象，以及 Kafka、MQTT、RocketMQ、Redis Pub/Sub、Redis Stream 适配。 |
 | `packages/registry` | Consul 注册发现、K8s discovery、gRPC resolver；Consul 按 transport 注册服务记录。 |
-| `packages/infra/database` | Bun / GORM / MongoDB 数据库连接能力，支持 sqlite、mysql、postgres、clickhouse、mongodb 等配置。 |
+| `packages/infra/database` | Bun / GORM / MongoDB 数据库连接能力；Bun、GORM 提供可直接注入 Application 的 Resource。 |
 | `packages/infra/cache/redis` | go-redis 客户端、布隆过滤器、幂等工具。 |
-| `packages/infra/storage` | 统一对象存储接口，当前实现为本地磁盘 `filedisk` 和阿里云 OSS v2 `alioss`。 |
+| `packages/infra/storage` | 对象存储富接口与可选直传预签名接口，当前实现为本地磁盘 `filedisk` 和阿里云 OSS v2 `alioss`。 |
 | `packages/telemetry` | OpenTelemetry trace、metric、log provider，作为 `core.Resource` 注入应用。 |
 | `packages/resilience` | 熔断、重试、限流、隔板，以及 middleware chain 风格 wrapper。 |
 | `packages/patterns` | 缓存模式（Cache-Aside、Write-Through、Write-Behind、Refresh-Ahead）和并发模式。 |
-| `packages/pool` | 标准协程池和 ants 协程池适配。 |
-| `packages/command` | 基于 struct tag 的命令行参数解析。 |
+| `packages/pool` | `WorkerPool` 抽象与 ants 协程池实现。 |
 
 ## 典型使用方式
 
-下游项目通常只在 `cmd/<svc>/main.go` 里直接组装 `modular` 的基础设施。业务代码放在 `internal/`，通过 proto 生成的接口暴露能力；切换 DB、Redis、Storage、HTTP/gRPC 或单体/微服务拓扑时，优先改 `cmd` 装配层。
+下游项目通常只在 `cmd/<process>/main.go` 里组装 `modular` 基础设施。业务代码放在 `internal/`，通过 proto 生成的接口暴露能力；切换 DB、Redis、Storage、HTTP/gRPC 或进程拓扑时，优先改 `cmd` 装配层。
+
+配置入口推荐使用 `config.NewRoot[T]`。它会扫描业务聚合配置中实现 `FlagProvider` 的模块，注册 Cobra flags，并按以下优先级合并：
+
+```text
+显式 Cobra 配置参数 > 环境变量 > 本地文件 > 远程 KV > FlagSpec 默认值
+```
+
+共享配置源参数：
+
+```text
+--config, -c <path>   本地配置文件
+--remote <url>        etcd://host/key 或 consul://host/key
+```
+
+本地与远程可以同时使用；远程读取失败时，只有已经成功读取的本地文件可以兜底。两者格式不一致时会记录 warning 并忽略远程配置。`etcd://` 默认映射到 etcd v3，远程值没有扩展名时默认按 YAML 解析，可用 `?format=json` 显式指定。
 
 一个最小 HTTP 应用大致如下：
 
@@ -70,35 +85,52 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/wplbyx/modular/packages/app"
+	modularconfig "github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/log"
 	httpserver "github.com/wplbyx/modular/packages/transport/server/http"
 
-	projectconfig "<project>/config"
+	projectconfig "<project>/config/user"
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-	cfg, err := projectconfig.Load("./config")
-	if err != nil {
-		panic(err)
+	command := modularconfig.NewRoot[projectconfig.Config](modularconfig.Options[projectconfig.Config]{
+		AppName:     "user",
+		DefaultFile: "./config/user/config.yaml",
+		EnvPrefix:   "USER",
+		Run:         run,
+	})
+	command.SetContext(ctx)
+	command.SilenceErrors = true
+	command.SilenceUsage = true
+	if err := command.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "application exited: %v\n", err)
+		os.Exit(1)
 	}
+}
 
+func run(ctx context.Context, cfg *projectconfig.Config) error {
 	logger, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("create logger: %w", err)
 	}
 	defer logger.Close()
 
 	httpSrv, err := httpserver.NewServer(&cfg.HTTP)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("create HTTP server: %w", err)
 	}
 	httpSrv.RegisterRoute(func(r *gin.Engine) {
 		r.GET("/ping", func(c *gin.Context) {
@@ -106,16 +138,7 @@ func main() {
 		})
 	})
 
-	node := core.NewServiceNode(
-		cfg.Application.Name,
-		cfg.Application.Version,
-		core.Transport{
-			Protocol:   "http",
-			Address:    core.NormalizeHost(cfg.HTTP.Host),
-			Port:       cfg.HTTP.Port,
-			HealthPath: httpserver.DefaultHealthPath,
-		},
-	)
+	node := core.NewServiceNode(cfg.Name, cfg.Version, httpSrv.Transport())
 
 	application, err := app.NewApplication(
 		ctx,
@@ -124,14 +147,22 @@ func main() {
 		app.WithEndpoint(httpSrv),
 	)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("create application: %w", err)
 	}
 
-	if err := application.Run(); err != nil {
-		log.Errorf("application exited: %v", err)
-	}
+	return application.Run()
 }
 ```
+
+运行时可以组合配置来源和覆盖参数：
+
+```bash
+user --config ./config/user/config.yaml \
+  --remote etcd://10.0.0.1:2379/config/user \
+  --http.port 18080
+```
+
+single 拓扑的进程配置会嵌套多个 svc，此时模块参数也带 svc 前缀，例如 `--user.http.port`、`--billing.redis.host`。
 
 需要注册中心时，在 `cmd` 中构造 registrar 并注入：
 
@@ -156,13 +187,13 @@ application, err := app.NewApplication(
 
 `packages/infra/database` 当前提供三类连接适配：
 
-| 后端 | 构造函数 | DSN | 说明 |
+| 后端 | 连接构造函数 | Application Resource | DSN |
 | --- | --- | --- | --- |
-| Bun | `bun.NewBunConnection(cfg *configitem.Database)` | `database.DSNPostgres` | 仅支持 Postgres，适合需要 Bun ORM 和迁移工具的项目。 |
-| GORM | `gorm.NewGormConnection(cfg *configitem.Database)` | `DSNSqlite`、`DSNMySQL`、`DSNPostgres`、`DSNClickhouse` | 默认 `SkipDefaultTransaction: true`，适合常规关系型数据库。 |
-| MongoDB | `mongo.NewMongoConnection(cfg *configitem.Database)` | `database.DSNMongo` | 使用 `go.mongodb.org/mongo-driver/v2`，支持 `Urls`、单节点 `Host`+`Port`、`ReplicaSet`、`MaxPoolSize`。 |
+| Bun | `bun.NewBunConnection(cfg)` | `bun.NewResource(cfg)` | `database.DSNPostgres` |
+| GORM | `gorm.NewGormConnection(cfg)` | `gorm.NewResource(cfg)` | `database.DSNSqlite`、`DSNMySQL`、`DSNPostgres`、`DSNClickhouse` |
+| MongoDB | `mongo.NewMongoConnection(cfg)` | 当前需要项目侧 Resource 包装 | `database.DSNMongo` |
 
-这些构造函数都会在连接后 ping，并保留包级全局实例用于兼容；业务代码仍应优先接收构造函数返回的实例，而不是直接依赖 `GetDB()` / `GetClient()`。
+这些连接构造函数都会在连接后 ping，并保留包级全局实例用于兼容。应用装配优先注入 `bun.NewResource` / `gorm.NewResource`，或接收构造函数返回的实例，不直接依赖 `GetDB()` / `GetClient()`。Redis 同样提供 `redis.NewResource(cfg)`。
 
 ## 推荐项目分层
 
@@ -173,9 +204,13 @@ application, err := app.NewApplication(
   cmd/
     <svc>/main.go            # 只做配置加载、资源构造、endpoint 注册、Application 装配
   config/
-    <svc>/
-      config.go              # 项目自己的 Config 聚合类型和 Load 函数
+    <project>/               # single 拓扑进程配置，由 skill 聚合生成
+      config.go
       config.yaml
+    <svc>/
+      config.go              # svc Config 聚合类型，同时实现 FlagProvider
+      config.yaml            # svc 配置片段；service 拓扑直接作为运行配置
+      resources.json         # skill 的资源装配元数据
   common/                    # protoc 生成物，不手写；目录结构镜像 proto/
     <svc>/
       <svc>.pb.go
@@ -230,12 +265,14 @@ application, err := app.NewApplication(
 - `app/<surface>/adapter.go` 和 `domain/adapter.go` 是两类接口边界：前者服务简单用例，后者服务复杂领域模型。两者的实现都交给 `repository` 层。
 - `repository` 是基础设施实现区：`repository/app` 实现 app 层简单接口，`repository/domain` 实现 domain 层复杂端口，`repository/dto` 和 `repository/model` 按需放 DTO、持久化模型和 ORM/BSON tag。
 - `internal/` 的业务逻辑不直接依赖 `github.com/wplbyx/modular/packages/app.Application`。
-- 项目自己的 `Config` 聚合类型按业务模块放在 `config/<svc>` 包里，和 `config.yaml` 同目录；`cmd` 只调用对应的 `project/config/<svc>.Load(...)`，不在入口里匿名定义配置结构。
+- 项目自己的 svc `Config` 聚合类型放在 `config/<svc>`，并通过 `GetConfigFlagSpecsWithPrefix` 实现 `FlagProvider`。
+- service 拓扑由 `cmd/<svc>` 使用 `NewRoot[config/<svc>.Config]`；single 拓扑由 `cmd/<project>` 使用生成的 `config/<project>.Config`，其中嵌套各 svc 配置。
+- single 的 `config/<project>/config.go|yaml` 是 skill 生成物；业务配置以 `config/<svc>` 为来源，重新执行 scaffold/resource 命令会刷新进程聚合配置。
 - `cmd` 可以依赖 `github.com/wplbyx/modular/packages/*`，负责把资源、endpoint 和业务实现接起来。
 
 ## Agent 使用方式
 
-仓库内提供了一个 Codex skill：`agent/modular`。技能列表里只会显示一个顶层 skill 名称 `modular`；`init`、`service`、`surface`、`method`、`resource`、`gen`、`switch` 是这个 skill 内部的命令语义，不是独立的 `modular:init` 或 `modular:service` 子 skill。
+仓库内提供了一个 Codex skill：`agent/modular`。技能列表里只会显示一个顶层 skill 名称 `modular`；`init`、`service`、`surface`、`method`、`resource`、`repository`、`doctor`、`gen` 是这个 skill 内部的命令语义，不是独立的子 skill。
 
 可以这样让 Agent 使用它：
 
@@ -246,7 +283,8 @@ application, err := app.NewApplication(
 使用 modular skill 给 user/admin 接口实现 CreateUser 方法骨架
 使用 modular skill 给项目接入 redis resource
 使用 modular skill 重新生成 proto
-使用 modular skill 把当前项目从单体切到微服务拓扑
+使用 modular skill 审计当前项目结构
+使用 modular skill 规划从单体到微服务的 cmd/config 迁移
 ```
 
 内部命令语义：
@@ -263,7 +301,8 @@ application, err := app.NewApplication(
 | `repository domain <svc>` | 为复杂领域模型生成 `domain/adapter.go` 和 `repository/domain` 实现。 |
 | `doctor` | 检查旧结构残留、生成目录误写、跨 svc `internal` 引用等约束。 |
 | `gen` | 从 `proto/` 重新生成 `common/`。 |
-| `switch [single|service]` | 只重写 `cmd` 装配层，在单体和微服务拓扑之间切换。 |
+
+拓扑迁移是 Agent 工作流，不是 `modular.py` 子命令。迁移时只调整进程级 `cmd` 和配置聚合，不改写 `proto/`、`common/` 或 `internal/` 业务代码。
 
 Agent 处理这些任务时会按需读取 `agent/modular/references/`：
 

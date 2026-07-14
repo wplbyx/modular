@@ -7,7 +7,8 @@ The README svc layout is authoritative. Read this before `service`, `surface`,
 
 - `proto/<svc>/...` - source interface contracts for one business module.
 - `common/<svc>/...` - generated protobuf output only, mirroring `proto/<svc>`.
-- `config/<svc>/...` - per-svc config aggregate and YAML.
+- `config/<svc>/...` - per-svc config aggregate, editable YAML fragment, and resource metadata.
+- `config/<project>/...` - single-topology generated process aggregate and runtime YAML.
 - `internal/<svc>/api/<surface>/...` - inbound adapters for HTTP/gRPC/event.
 - `internal/<svc>/app/<surface>/...` - generated pb server implementation and simple app-layer use-case ports.
 - `internal/<svc>/domain/...` - complex domain model, domain ports, entities, and real domain services.
@@ -35,6 +36,7 @@ The README svc layout is authoritative. Read this before `service`, `surface`,
 5. Creates `internal/<svc>/domain/adapter.go`.
 6. Creates `internal/<svc>/repository/app` with a minimal repository root.
 7. Rewrites cmd wiring with HTTP and gRPC endpoints.
+8. In single topology, rebuilds `config/<project>/config.go|yaml` and nests the svc config.
 
 Multiple surfaces in the same svc share one Go package under `common/<svc>`. Avoid generic message names that collide across surfaces; prefer `<MethodName>Request` / `<MethodName>Response`.
 
@@ -48,8 +50,8 @@ Multiple surfaces in the same svc share one Go package under `common/<svc>`. Avo
 
 ## Topology
 
-Single topology uses one `cmd/<project>/main.go` that loads each `config/<svc>` and aggregates all endpoints/resources into one `Application`.
+Single topology uses one `cmd/<project>/main.go` and one `config.NewRoot[config/<project>.Config]`. The process config contains the root Application plus nested svc configs. Generated module flags carry svc prefixes such as `user.http.port`.
 
-Service topology uses `cmd/<svc>/main.go` per svc. Each process loads `config/<svc>` and owns one `Application`.
+Service topology uses `cmd/<svc>/main.go` per svc. Each process runs `config.NewRoot[config/<svc>.Config]` and owns one `Application`.
 
-Switching topology rewrites only `cmd/`; it must not rewrite `proto/`, `common/`, or `internal/`.
+Topology migration is agent-driven because the CLI has no `switch` subcommand. Rewrite only `cmd/` and process-level config aggregation; do not rewrite `proto/`, `common/`, or `internal/`.

@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/infra/storage"
 )
 
@@ -371,9 +371,9 @@ func TestOSS_PresignMultipartDirectUpload(t *testing.T) {
 }
 
 func TestOSS_PresignRejectsSecurityToken(t *testing.T) {
-	s, err := NewOSSStorage(&config.Storage{
+	s, err := NewOSSStorage(&configitem.Storage{
 		PublicBaseURL: "https://cdn.example.com",
-		OSS: &config.OSSStorageConfig{
+		OSS: &configitem.OSSStorageConfig{
 			AccessKeyID:     "test-ak",
 			AccessKeySecret: "test-sk",
 			SecurityToken:   "test-token",

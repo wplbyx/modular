@@ -104,6 +104,16 @@ func NewRoot[T any](opts Options[T]) *cobra.Command {
 // 字段对应的配置类型实现 FlagProvider 时，才会参与命令行参数注册。
 // 字段的 mapstructure tag 决定配置键前缀，例如 mapstructure:"http" 会生成 http.port。
 func GetConfigFlagSpecs[T any]() []FlagSpec {
+	return GetConfigFlagSpecsWithPrefix[T]("")
+}
+
+// GetConfigFlagSpecsWithPrefix 返回配置聚合对象中所有模块声明的命令行元数据，
+// 并在每个配置键前追加 parentPrefix。
+//
+// 该函数用于把一个业务 Config 继续组合到更高层配置对象中。例如 user.Config
+// 实现 FlagProvider 时，可以在 Flags("user") 中调用本函数，最终生成
+// user.http.port、user.redis.host 等带业务模块前缀的配置键。
+func GetConfigFlagSpecsWithPrefix[T any](parentPrefix string) []FlagSpec {
 	// 通过 (*T)(nil) 获取 T 的 reflect.Type，即使 T 本身是指针类型也不会实例化配置对象。
 	typ := reflect.TypeOf((*T)(nil)).Elem()
 	// 兼容 T、*T、**T 等形式，最终只处理底层结构体。
@@ -123,8 +133,8 @@ func GetConfigFlagSpecs[T any]() []FlagSpec {
 		}
 
 		// mapstructure:"-" 明确表示该字段不属于配置输入。
-		prefix := configPrefix(field)
-		if prefix == "-" {
+		fieldPrefix := configPrefix(field)
+		if fieldPrefix == "-" {
 			continue
 		}
 
@@ -134,7 +144,11 @@ func GetConfigFlagSpecs[T any]() []FlagSpec {
 			continue
 		}
 
-		specs = append(specs, provider.Flags(prefix)...)
+		fieldSpecs := provider.Flags(joinConfigPrefix(parentPrefix, fieldPrefix))
+		if parentPrefix != "" {
+			fieldSpecs = qualifyNestedFlagSpecs(fieldSpecs, parentPrefix)
+		}
+		specs = append(specs, fieldSpecs...)
 	}
 	return specs
 }
@@ -269,6 +283,35 @@ func configPrefix(field reflect.StructField) string {
 		return strings.ToLower(strings.Split(name, ",")[0])
 	}
 	return strings.ToLower(field.Name)
+}
+
+func joinConfigPrefix(parent, child string) string {
+	parent = strings.Trim(parent, ".")
+	child = strings.Trim(child, ".")
+	switch {
+	case parent == "":
+		return child
+	case child == "":
+		return parent
+	default:
+		return parent + "." + child
+	}
+}
+
+func qualifyNestedFlagSpecs(specs []FlagSpec, parentPrefix string) []FlagSpec {
+	qualified := make([]FlagSpec, len(specs))
+	for i, spec := range specs {
+		qualified[i] = spec
+		qualified[i].Shorthand = ""
+		if len(spec.Aliases) == 0 {
+			continue
+		}
+		qualified[i].Aliases = make([]string, 0, len(spec.Aliases))
+		for _, alias := range spec.Aliases {
+			qualified[i].Aliases = append(qualified[i].Aliases, joinConfigPrefix(parentPrefix, alias))
+		}
+	}
+	return qualified
 }
 
 // flagProvider 为配置字段类型创建一个零值实例，并判断它是否实现 FlagProvider。

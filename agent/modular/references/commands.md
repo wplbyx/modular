@@ -24,7 +24,7 @@ python scripts/gen_proto.py --project-dir <project>
 - `init <project> [single|service] [--out DIR] [--go-version 1.26.0] [--modular-path PATH]`
   creates the project shell. It does not create top-level `config/config.go`.
 - `service <svc> [--surface public] [--methods CreateX,ListX] [--method Method] [--gen auto|skip|required] [--project-dir DIR]`
-  creates a svc module and rewrites HTTP+gRPC cmd wiring.
+  creates a svc module and rewrites HTTP+gRPC cmd wiring. Generated entrypoints use `config.NewRoot`.
 - `surface <svc> <surface> [--methods ...] [--method ...] [--gen auto|skip|required] [--project-dir DIR]`
   adds another surface to an existing svc.
 - `method <svc> <surface> <MethodName> [--gen auto|skip|required] [--project-dir DIR]`
@@ -48,6 +48,9 @@ python scripts/gen_proto.py --project-dir <project>
 - `--gen skip` is for early scaffolds and tests.
 - `--gen required` fails if buf is unavailable.
 - The CLI runs `gofmt -w` on generated Go files when `gofmt` is available.
+- Single topology regenerates `config/<project>/config.go|yaml` from svc config fragments whenever cmd wiring is rebuilt.
+- Service topology uses `config/<svc>/config.go|yaml` directly.
+- Generated ServiceNode metadata comes from each server's `Transport()` method.
 
 ## Resource Mapping
 
@@ -57,5 +60,6 @@ python scripts/gen_proto.py --project-dir <project>
 
 ## Safety
 
-- `doctor` catches top-level `config/config.go|yaml`, old `domain/repository.go`, old `repository/repository.go`, `internal/infra`, hand-written `common/*.go`, and cross-svc `internal` imports.
+- `doctor` catches top-level `config/config.go|yaml`, missing process/svc configs, old repository layouts, `internal/infra`, hand-written `common/*.go`, cross-svc `internal` imports, and cmd entrypoints that bypass `config.NewRoot`.
 - Repository scaffold commands overwrite only when `--force` is passed for existing files.
+- There is no `switch` subcommand. Topology migration is an agent workflow that rewrites cmd and process-level config only.

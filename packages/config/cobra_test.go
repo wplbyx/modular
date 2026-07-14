@@ -9,7 +9,21 @@ import (
 	"testing"
 
 	modularconfig "github.com/wplbyx/modular/packages/config"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
+
+type nestedServiceConfig struct {
+	HTTP  configitem.HTTP  `mapstructure:"http"`
+	Redis configitem.Redis `mapstructure:"redis"`
+}
+
+func (nestedServiceConfig) Flags(prefix string) []modularconfig.FlagSpec {
+	return modularconfig.GetConfigFlagSpecsWithPrefix[nestedServiceConfig](prefix)
+}
+
+type nestedRuntimeConfig struct {
+	User nestedServiceConfig `mapstructure:"user"`
+}
 
 func TestNewRootLoadsConfigFileAndFlagOverride(t *testing.T) {
 	file := writeCobraTestConfig(t, 18080)
@@ -228,6 +242,26 @@ func TestConfigFlagSpecsUsesCustomConfigModules(t *testing.T) {
 	}
 }
 
+func TestConfigFlagSpecsSupportsNestedConfigPrefix(t *testing.T) {
+	specs := modularconfig.GetConfigFlagSpecs[nestedRuntimeConfig]()
+
+	if !hasFlagSpec(specs, "user.http.port") {
+		t.Fatalf("user.http.port spec missing")
+	}
+	if !hasFlagSpec(specs, "user.redis.host") {
+		t.Fatalf("user.redis.host spec missing")
+	}
+	if hasFlagSpec(specs, "http.port") {
+		t.Fatalf("unprefixed http.port spec should not be registered")
+	}
+	if !hasFlagAlias(specs, "user.http.port", "user.port") {
+		t.Fatalf("user.http.port alias user.port missing")
+	}
+	if hasAnyFlagAlias(specs, "port") {
+		t.Fatalf("bare alias port should not be registered for nested config")
+	}
+}
+
 func TestNewRootExplicitMissingConfigReturnsError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
 	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
@@ -298,6 +332,31 @@ func hasFlagSpec(specs []modularconfig.FlagSpec, name string) bool {
 	for _, spec := range specs {
 		if spec.Name == name {
 			return true
+		}
+	}
+	return false
+}
+
+func hasFlagAlias(specs []modularconfig.FlagSpec, name, alias string) bool {
+	for _, spec := range specs {
+		if spec.Name != name {
+			continue
+		}
+		for _, candidate := range spec.Aliases {
+			if candidate == alias {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasAnyFlagAlias(specs []modularconfig.FlagSpec, alias string) bool {
+	for _, spec := range specs {
+		for _, candidate := range spec.Aliases {
+			if candidate == alias {
+				return true
+			}
 		}
 	}
 	return false

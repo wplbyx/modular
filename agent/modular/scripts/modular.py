@@ -63,6 +63,10 @@ def lower_camel(value: str) -> str:
     return p[:1].lower() + p[1:] if p else ""
 
 
+def env_prefix(value: str) -> str:
+    return normalize_identifier(value, lower=False).upper()
+
+
 def render_template(relative: str, tokens: dict[str, str]) -> str:
     text = (ASSETS_DIR / relative).read_text(encoding="utf-8")
     for key, value in tokens.items():
@@ -97,6 +101,10 @@ def read_module(project: Path) -> str:
 
 def project_name(project: Path) -> str:
     return read_module(project).split("/")[-1]
+
+
+def process_config_dir(project: Path) -> Path:
+    return project / "config" / project_name(project)
 
 
 def svc_pascal(svc: str, surface: str) -> str:
@@ -251,6 +259,49 @@ def scaffold_svc_config(project: Path, svc: str) -> None:
     write_file(project / "config" / svc / "config.yaml", render_template("svc/config.yaml.tmpl", tokens))
 
 
+def render_process_config_go(project: Path, svcs: list[str]) -> str:
+    module = read_module(project)
+    imports = [f'\t{alias(svc, "config")} "{module}/config/{svc}"' for svc in svcs]
+    fields = [
+        f'\t{pascal_case(svc)} {alias(svc, "config")}.Config `mapstructure:"{svc}"`'
+        for svc in svcs
+    ]
+    return render_template(
+        "project/runtime_config.go.tmpl",
+        {
+            "SVC_IMPORTS": "\n".join(imports),
+            "SVC_FIELDS": "\n".join(fields),
+        },
+    )
+
+
+def render_process_config_yaml(project: Path, svcs: list[str]) -> str:
+    sections: list[str] = []
+    for svc in svcs:
+        source = project / "config" / svc / "config.yaml"
+        if not source.exists():
+            continue
+        body = source.read_text(encoding="utf-8").strip()
+        indented = "\n".join(("  " + line if line else "") for line in body.splitlines())
+        sections.append(f"{svc}:\n{indented}")
+    return render_template(
+        "project/runtime_config.yaml.tmpl",
+        {
+            "PROJECT": project_name(project),
+            "SVC_CONFIGS": "\n\n".join(sections),
+        },
+    )
+
+
+def rebuild_process_config(project: Path, svcs: list[str]) -> None:
+    if not svcs:
+        return
+    target = process_config_dir(project)
+    write_file(target / "config.go", render_process_config_go(project, svcs), overwrite=True)
+    write_file(target / "config.yaml", render_process_config_yaml(project, svcs), overwrite=True)
+    gofmt_paths([target / "config.go"])
+
+
 def scaffold_surface(project: Path, svc: str, surface: str, *, create_svc: bool) -> None:
     tokens = base_tokens(project, svc, surface)
     write_file(proto_path(project, svc, surface), render_template("svc/proto.tmpl", tokens))
@@ -274,6 +325,11 @@ def command_service(args: argparse.Namespace) -> int:
         _ = read_module(project)
     except ValueError as err:
         return fail(str(err))
+
+    if is_single_topology(project) and svc.casefold() == project_name(project).casefold():
+        return fail(
+            f"single topology svc name '{svc}' conflicts with process config directory config/{project_name(project)}"
+        )
 
     scaffold_svc_config(project, svc)
     scaffold_surface(project, svc, surface, create_svc=True)
@@ -362,7 +418,9 @@ def command_method(args: argparse.Namespace) -> int:
 
 def rebuild_cmd(project: Path, touched_svc: str | None = None) -> None:
     if is_single_topology(project):
-        write_file(project / "cmd" / project_name(project) / "main.go", render_main(project, discover_svcs(project), aggregate=True), overwrite=True)
+        svcs = discover_svcs(project)
+        rebuild_process_config(project, svcs)
+        write_file(project / "cmd" / project_name(project) / "main.go", render_main(project, svcs, aggregate=True), overwrite=True)
         return
     if touched_svc is not None:
         write_file(project / "cmd" / touched_svc / "main.go", render_main(project, [touched_svc], aggregate=False), overwrite=True)
@@ -378,6 +436,10 @@ def render_main(project: Path, svcs: list[str], *, aggregate: bool) -> str:
     if not svcs:
         return render_empty_main("no svc has been scaffolded yet")
 
+    command_name = project_name(project) if aggregate else svcs[0]
+    config_name = project_name(project) if aggregate else svcs[0]
+    default_file = f"./config/{config_name}/config.yaml"
+
     imports: list[str] = [
         '"context"',
         '"fmt"',
@@ -385,24 +447,20 @@ def render_main(project: Path, svcs: list[str], *, aggregate: bool) -> str:
         '"os/signal"',
         '"syscall"',
     ]
-    if aggregate:
-        imports.append('"time"')
     imports.extend([
         "",
         '"google.golang.org/grpc"',
         "",
         '"github.com/wplbyx/modular/packages/app"',
+        'modularconfig "github.com/wplbyx/modular/packages/config"',
         '"github.com/wplbyx/modular/packages/core"',
-    ])
-    if aggregate:
-        imports.append('"github.com/wplbyx/modular/packages/config/configitem"')
-    imports.extend([
         'httpserver "github.com/wplbyx/modular/packages/transport/server/http"',
         'rpcserver "github.com/wplbyx/modular/packages/transport/server/rpc"',
+        "",
+        f'projectconfig "{module}/config/{config_name}"',
     ])
 
     for svc in svcs:
-        imports.append(f'{alias(svc, "config")} "{module}/config/{svc}"')
         imports.append(f'{alias(svc, "app_repository")} "{module}/internal/{svc}/repository/app"')
         resources = read_resources(project, svc)
         if resources.get("db") == "bun":
@@ -430,6 +488,24 @@ def render_main(project: Path, svcs: list[str], *, aggregate: bool) -> str:
         "\tctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)",
         "\tdefer cancel()",
         "",
+        "\tcommand := modularconfig.NewRoot[projectconfig.Config](modularconfig.Options[projectconfig.Config]{",
+        f'\t\tAppName: "{command_name}",',
+        f'\t\tShort: "{command_name} service",',
+        f'\t\tDefaultFile: "{default_file}",',
+        f'\t\tEnvPrefix: "{env_prefix(command_name)}",',
+        "\t\tRun: run,",
+        "\t})",
+        "\tcommand.SetContext(ctx)",
+        "\tcommand.SilenceErrors = true",
+        "\tcommand.SilenceUsage = true",
+        "",
+        "\tif err := command.Execute(); err != nil {",
+        '\t\tfmt.Fprintf(os.Stderr, "application exited: %v\\n", err)',
+        "\t\tos.Exit(1)",
+        "\t}",
+        "}",
+        "",
+        "func run(ctx context.Context, cfg *projectconfig.Config) error {",
         "\tendpoints := make([]core.Endpoint, 0)",
         "\tresources := make([]core.Resource, 0)",
         "\ttransports := make([]core.Transport, 0)",
@@ -437,29 +513,14 @@ def render_main(project: Path, svcs: list[str], *, aggregate: bool) -> str:
     ]
 
     for svc in svcs:
-        lines.extend(render_svc_wiring(project, svc))
+        cfg_expr = f"&cfg.{pascal_case(svc)}" if aggregate else "cfg"
+        lines.extend(render_svc_wiring(project, svc, cfg_expr))
 
-    if aggregate:
-        lines.extend([
-            "\tapplicationCfg := configitem.Application{",
-            f'\t\tName: "{project_name(project)}",',
-            '\t\tMode: "dev",',
-            '\t\tVersion: "v0.1.0",',
-            "\t\tShutdownTimeout: 10 * time.Second,",
-            "\t}",
-            "",
-            f'\tnode := core.NewServiceNode("{project_name(project)}", "v0.1.0", transports...)',
-            "",
-            "\toptions := []app.Option{app.WithServiceNode(node)}",
-        ])
-    else:
-        svc = svcs[0]
-        cfg_var = lower_camel(svc) + "Cfg"
-        lines.extend([
-            f"\tnode := core.NewServiceNode({cfg_var}.Name, {cfg_var}.Version, transports...)",
-            "",
-            "\toptions := []app.Option{app.WithServiceNode(node)}",
-        ])
+    lines.extend([
+        "\tnode := core.NewServiceNode(cfg.Name, cfg.Version, transports...)",
+        "",
+        "\toptions := []app.Option{app.WithServiceNode(node)}",
+    ])
     lines.extend([
         "\tfor _, endpoint := range endpoints {",
         "\t\toptions = append(options, app.WithEndpoint(endpoint))",
@@ -469,44 +530,31 @@ def render_main(project: Path, svcs: list[str], *, aggregate: bool) -> str:
         "\t}",
         "",
     ])
-    if aggregate:
-        lines.append("\tapplication, err := app.NewApplication(ctx, &applicationCfg, options...)")
-    else:
-        cfg_var = lower_camel(svcs[0]) + "Cfg"
-        lines.append(f"\tapplication, err := app.NewApplication(ctx, &{cfg_var}.Application, options...)")
+    lines.append("\tapplication, err := app.NewApplication(ctx, &cfg.Application, options...)")
     lines.extend([
         "\tif err != nil {",
-        '\t\tfmt.Printf("create application failed: %v\\n", err)',
-        "\t\tos.Exit(1)",
+        '\t\treturn fmt.Errorf("create application: %w", err)',
         "\t}",
         "",
-        "\tif err := application.Run(); err != nil {",
-        '\t\tfmt.Printf("application exited: %v\\n", err)',
-        "\t}",
+        "\treturn application.Run()",
         "}",
         "",
     ])
     return "\n".join(lines)
 
 
-def render_svc_wiring(project: Path, svc: str) -> list[str]:
-    cfg_alias = alias(svc, "config")
+def render_svc_wiring(project: Path, svc: str, cfg_expr: str) -> list[str]:
     cfg_var = lower_camel(svc) + "Cfg"
     http_var = lower_camel(svc) + "HTTPServer"
     grpc_var = lower_camel(svc) + "GRPCServer"
     repo_var = lower_camel(svc) + "AppRepo"
     repo_alias = alias(svc, "app_repository")
     lines = [
-        f"\t{cfg_var}, err := {cfg_alias}.Load(\"./config/{svc}/config.yaml\")",
-        "\tif err != nil {",
-        f'\t\tfmt.Printf("load {svc} config failed: %v\\n", err)',
-        "\t\tos.Exit(1)",
-        "\t}",
+        f"\t{cfg_var} := {cfg_expr}",
         "",
         f"\t{http_var}, err := httpserver.NewServer(&{cfg_var}.HTTP)",
         "\tif err != nil {",
-        f'\t\tfmt.Printf("create {svc} http server failed: %v\\n", err)',
-        "\t\tos.Exit(1)",
+        f'\t\treturn fmt.Errorf("create {svc} http server: %w", err)',
         "\t}",
         "",
         f"\t{repo_var} := {repo_alias}.NewRepository()",
@@ -537,8 +585,7 @@ def render_svc_wiring(project: Path, svc: str) -> list[str]:
         "\t\treturn nil",
         "\t})",
         "\tif err != nil {",
-        f'\t\tfmt.Printf("create {svc} grpc server failed: %v\\n", err)',
-        "\t\tos.Exit(1)",
+        f'\t\treturn fmt.Errorf("create {svc} grpc server: %w", err)',
         "\t}",
         "",
     ])
@@ -547,7 +594,7 @@ def render_svc_wiring(project: Path, svc: str) -> list[str]:
     lines.extend([
         f"\tendpoints = append(endpoints, {http_var}, {grpc_var})",
         "\ttransports = append(transports,",
-        f'\t\tcore.Transport{{Protocol: "http", Address: core.NormalizeHost({cfg_var}.HTTP.Host), Port: {cfg_var}.HTTP.Port, HealthPath: "/health"}},',
+        f"\t\t{http_var}.Transport(),",
         f"\t\t{grpc_var}.Transport(),",
         "\t)",
         "",
@@ -585,8 +632,7 @@ def render_resource_wiring(project: Path, svc: str, cfg_var: str) -> list[str]:
         lines.extend([
             f"\t{var_name}, err := telemetry.NewOpenTelemetry(ctx, {cfg_var}.Name, {cfg_var}.Version, &{cfg_var}.Telemetry)",
             "\tif err != nil {",
-            f'\t\tfmt.Printf("create {svc} telemetry failed: %v\\n", err)',
-            "\t\tos.Exit(1)",
+            f'\t\treturn fmt.Errorf("create {svc} telemetry: %w", err)',
             "\t}",
             f"\tresources = append(resources, {var_name})",
         ])
@@ -1209,7 +1255,7 @@ def command_doctor(args: argparse.Namespace) -> int:
         if not (project / required).exists():
             errors.append(f"missing {required}")
     if (project / "config" / "config.go").exists() or (project / "config" / "config.yaml").exists():
-        errors.append("stale top-level config/config.go or config/config.yaml found; use config/<svc>/")
+        errors.append("stale top-level config/config.go or config/config.yaml found; use config/<process-or-svc>/")
     if (project / "internal" / "infra").exists():
         errors.append("stale internal/infra found; project-side resource wrappers now live under internal/<svc>/repository")
     if (project / "common").exists():
@@ -1221,6 +1267,8 @@ def command_doctor(args: argparse.Namespace) -> int:
         for svc in svcs:
             if not (project / "config" / svc / "config.go").exists():
                 errors.append(f"missing config/{svc}/config.go")
+            if not (project / "config" / svc / "config.yaml").exists():
+                errors.append(f"missing config/{svc}/config.yaml")
             if (project / "internal" / svc / "domain" / "repository.go").exists():
                 errors.append(f"stale internal/{svc}/domain/repository.go found; use domain/adapter.go")
             if (project / "internal" / svc / "repository" / "repository.go").exists():
@@ -1235,11 +1283,24 @@ def command_doctor(args: argparse.Namespace) -> int:
             for svc in svcs:
                 if svc != own_svc and f'"{module}/internal/{svc}/' in text:
                     errors.append(f"{rel} imports another svc internal package: {svc}")
+        if is_single_topology(project) and svcs:
+            process_name = project_name(project)
+            if process_name.casefold() in {svc.casefold() for svc in svcs}:
+                errors.append(f"single topology process config config/{process_name} conflicts with a svc config directory")
+            process_dir = process_config_dir(project)
+            if not (process_dir / "config.go").exists():
+                errors.append(f"missing config/{process_name}/config.go for single topology")
+            if not (process_dir / "config.yaml").exists():
+                errors.append(f"missing config/{process_name}/config.yaml for single topology")
     if (project / "cmd").exists():
         for main in (project / "cmd").glob("*/main.go"):
             text = main.read_text(encoding="utf-8")
             if "app.NewApplication" in text and "app.WithEndpoint(" not in text:
                 warnings.append(f"{main.relative_to(project)} creates an Application without endpoints")
+            if "app.NewApplication" in text and "modularconfig.NewRoot" not in text:
+                errors.append(f"{main.relative_to(project)} does not use config.NewRoot")
+            if "core.Transport{Protocol:" in text:
+                warnings.append(f"{main.relative_to(project)} builds transport metadata manually; prefer server.Transport()")
 
     for item in warnings:
         warn(item)

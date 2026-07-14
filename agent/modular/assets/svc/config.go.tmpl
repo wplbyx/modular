@@ -12,6 +12,11 @@ type Config struct {
 	Logging                configitem.Logging `mapstructure:"logging"`
 }
 
+// Flags 让当前 svc 配置可以继续组合到 single 拓扑的进程级配置中。
+func (Config) Flags(prefix string) []modularconfig.FlagSpec {
+	return modularconfig.GetConfigFlagSpecsWithPrefix[Config](prefix)
+}
+
 func Load(files ...string) (*Config, error) {
 	configFile := "./config/{{SVC}}/config.yaml"
 	if len(files) > 0 {

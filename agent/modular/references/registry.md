@@ -1,6 +1,6 @@
 # Registry & Discovery
 
-Service registration and discovery. Read when wiring service discovery or single-to-micro switch. Source: `packages/registry/`.
+Service registration and discovery. Read when wiring service discovery or planning a single-to-micro topology migration. Source: `packages/registry/`.
 
 ## Table of contents
 
@@ -14,7 +14,7 @@ Service registration and discovery. Read when wiring service discovery or single
 
 `core.ServiceNode` (`packages/core/node.go`): `Name`, `Version`, `ID` (auto-generated), `Transports []Transport`, `Metadata`. `core.Transport`: `Protocol`, `Address`, `Port`, `HealthPath`. One Application = one ServiceNode.
 
-`core.NewServiceNode(name, version, transports...)` builds a node and auto-generates a deterministic `ID` from name + transports. `core.NormalizeHost(host)` turns `0.0.0.0`/`::`/empty into `127.0.0.1` and strips IPv6 brackets - use it when building transports for registration. `core.GenerateID(parts...)` is exposed for custom IDs.
+`core.NewServiceNode(name, version, transports...)` builds a node and auto-generates a deterministic `ID` from name + transports. Prefer `httpServer.Transport()` / `grpcServer.Transport()` because the servers bind during construction and may resolve `Port=0`. `core.NormalizeHost(host)` is available when manually building metadata for a custom endpoint. `core.GenerateID(parts...)` is exposed for custom IDs.
 
 A node may carry multiple transports (e.g. HTTP + gRPC) - this is how a single node publishes both protocols.
 
@@ -43,5 +43,5 @@ Target format: build a target string so the resolver picks the right service. Us
 
 ## Wiring for single vs micro
 
-- **Single topology**: no Registrar. Cross-domain gRPC clients dial `127.0.0.1:<port>` directly.
-- **Micro topology**: each service registers via Consul (or relies on K8s Discovery). Cross-domain gRPC clients dial `consul:///<serviceName>` with `registry.NewGRPCResolverBuilder(consulRegistry)` registered, or a custom scheme from `NewGRPCResolverBuilderWithScheme`. Build the ServiceNode from config transports; the Registrar handles per-transport records automatically.
+- **Single topology**: no Registrar. One process config under `config/<project>` supplies all svc endpoints; cross-svc gRPC clients dial `127.0.0.1:<port>` directly.
+- **Micro topology**: each service registers via Consul (or relies on K8s Discovery). Cross-domain gRPC clients dial `consul:///<serviceName>` with `registry.NewGRPCResolverBuilder(consulRegistry)` registered, or a custom scheme from `NewGRPCResolverBuilderWithScheme`. Build the ServiceNode from server-reported transports; the Registrar handles per-transport records automatically.

@@ -95,12 +95,22 @@ class ModularCliTest(unittest.TestCase):
         app_repo = (project / "internal" / "user" / "repository" / "app" / "public_user.go").read_text(encoding="utf-8")
         domain_adapter = (project / "internal" / "user" / "domain" / "adapter.go").read_text(encoding="utf-8")
         domain_repo = (project / "internal" / "user" / "repository" / "domain" / "user.go").read_text(encoding="utf-8")
+        svc_config = (project / "config" / "user" / "config.go").read_text(encoding="utf-8")
+        process_config = (project / "config" / "demo" / "config.go").read_text(encoding="utf-8")
+        process_yaml = (project / "config" / "demo" / "config.yaml").read_text(encoding="utf-8")
 
         self.assertTrue((project / "config" / "user" / "config.go").exists())
+        self.assertTrue((project / "config" / "demo" / "config.go").exists())
+        self.assertTrue((project / "config" / "demo" / "config.yaml").exists())
         self.assertIn("rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);", proto)
+        self.assertIn("modularconfig.NewRoot[projectconfig.Config]", main)
+        self.assertIn('DefaultFile: "./config/demo/config.yaml"', main)
         self.assertIn("httpserver.NewServer", main)
         self.assertIn("rpcserver.NewServer", main)
         self.assertIn("grpc.ServiceRegistrar", main)
+        self.assertIn("userHTTPServer.Transport()", main)
+        self.assertIn("userGRPCServer.Transport()", main)
+        self.assertNotIn('core.Transport{Protocol: "http"', main)
         self.assertIn("app.WithEndpoint(endpoint)", main)
         self.assertIn("resources = append(resources, userDBResource)", main)
         self.assertIn("resources = append(resources, userRedisResource)", main)
@@ -111,6 +121,13 @@ class ModularCliTest(unittest.TestCase):
         self.assertIn("FindUser(ctx context.Context, id string) (*entity.User, error)", domain_adapter)
         self.assertIn("_ = id", domain_repo)
         self.assertTrue((project / "internal" / "user" / "repository" / "storage_resource.go").exists())
+        self.assertIn("GetConfigFlagSpecsWithPrefix[Config](prefix)", svc_config)
+        self.assertIn('userConfig.Config `mapstructure:"user"`', process_config)
+        self.assertIn("user:\n", process_yaml)
+        self.assertIn("  database:\n", process_yaml)
+        self.assertIn("  redis:\n", process_yaml)
+        self.assertIn("  storage:\n", process_yaml)
+        self.assertIn("  telemetry:\n", process_yaml)
 
     def test_repository_recommend_outputs_scaffold_commands(self) -> None:
         project = self.init_project()
@@ -165,10 +182,29 @@ class ModularCliTest(unittest.TestCase):
         main = (project / "cmd" / "billing" / "main.go").read_text(encoding="utf-8")
         platform_proto = (project / "proto" / "billing" / "platform.proto").read_text(encoding="utf-8")
 
+        self.assertIn("modularconfig.NewRoot[projectconfig.Config]", main)
+        self.assertIn('DefaultFile: "./config/billing/config.yaml"', main)
         self.assertIn("billingAdminServer", main)
         self.assertIn("billingPlatformServer", main)
+        self.assertIn("billingHTTPServer.Transport()", main)
         self.assertEqual(main.count("billingAppRepo := billingAppRepository.NewRepository()"), 1)
         self.assertIn("rpc SyncInvoice(SyncInvoiceRequest) returns (SyncInvoiceResponse);", platform_proto)
+
+    def test_single_topology_rejects_svc_matching_project_name(self) -> None:
+        project = self.init_project()
+
+        completed = self.run_cli(
+            "service",
+            "demo",
+            "--gen",
+            "skip",
+            "--project-dir",
+            str(project),
+            expect_ok=False,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("conflicts with process config directory", completed.stderr)
 
     def test_doctor_rejects_stale_old_layout(self) -> None:
         project = self.init_project()

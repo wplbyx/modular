@@ -42,9 +42,19 @@ Shutdown is guarded by an Application-level `sync.Once`, shared by `Run` and man
 
 ## Assembly in cmd/main.go
 
-The orchestrator builds and injects in this shape (option order does not affect execution - resources are always FIFO up / LIFO down, endpoints always last):
+Generated entrypoints first create a Cobra root command with `config.NewRoot`, attach the signal context with `SetContext`, then build and inject inside the `Run` callback. Option order does not affect execution - resources are always FIFO up / LIFO down, endpoints always last:
 
-    application, err := app.NewApplication(ctx, cfg,
+    command := config.NewRoot[projectconfig.Config](config.Options[projectconfig.Config]{
+        DefaultFile: "./config/user/config.yaml",
+        EnvPrefix:   "USER",
+        Run:         run,
+    })
+    command.SetContext(signalCtx)
+    err := command.Execute()
+
+Inside `run(ctx, cfg)`:
+
+    application, err := app.NewApplication(ctx, &cfg.Application,
         app.WithResource(db),
         app.WithResource(cache),
         app.WithEndpoint(httpServer),
@@ -61,6 +71,8 @@ A real cmd builds transports (which are already `core.Endpoint`), resources, the
 - gRPC: `rpcserver.NewServer(cfg, api.RegisterGRPC, opts...)` - the register callback wires `pb.RegisterXxxServer`.
 - SSE: `sse.NewServer(bufSize)` is an Endpoint; mount its `Connect()` handler on the HTTP server's routes.
 - Pub/sub: wrap a `pubsub.MessageHandler` from `api/<surface>/event.go` with `pubsub.NewSubscriberEndpoint(name, subscriber, topic, handler, opts...)`.
+
+Build the ServiceNode with `httpServer.Transport()` and `grpcServer.Transport()`. Each server reports its actual pre-bound port and normalized address together with protocol-specific metadata such as the HTTP protocol and health path; do not reconstruct transport metadata from config fields.
 
 ## Shutdown
 

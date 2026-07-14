@@ -1,6 +1,6 @@
 ---
 name: modular
-description: Scaffold, wire, audit, and recommend structure for Go applications built on `github.com/wplbyx/modular` (Go 1.26+). Use this skill when the user wants to initialize a modular project, add a svc/business module, add an admin/management/platform/openapi surface, add pb methods, attach DB/Redis/Storage/Telemetry resources, regenerate proto output, run modular convention checks, recommend app-layer vs domain-layer adapters, scaffold repository implementations, or switch between single-process and service topology. Enforce the README svc layout, proto-first boundaries, config-per-svc packages, HTTP+gRPC endpoint wiring, and core.Resource/core.Endpoint lifecycle rules.
+description: Scaffold, wire, audit, and recommend structure for Go applications built on `github.com/wplbyx/modular` (Go 1.26+). Use this skill when the user wants to initialize a modular project, add a svc/business module or interface surface, add pb methods, attach DB/Redis/Storage/Telemetry resources, configure Cobra/Viper local or remote sources, regenerate proto output, run convention checks, recommend app-layer vs domain-layer adapters, scaffold repositories, or migrate single-process and service topology. Enforce the README svc layout, process-level config aggregation, `config.NewRoot`, server `Transport()` metadata, proto-first boundaries, and core.Resource/core.Endpoint lifecycle rules.
 ---
 
 # modular
@@ -21,6 +21,9 @@ This skill scaffolds downstream projects that import `github.com/wplbyx/modular/
     <project>/main.go          # single topology: one process aggregating svc modules
     <svc>/main.go              # service topology: one process per svc
   config/
+    <project>/                  # single topology only: generated process aggregate
+      config.go
+      config.yaml
     <svc>/
       config.go
       config.yaml
@@ -76,7 +79,7 @@ Read [references/commands.md](references/commands.md) before calling the CLI.
 - **`adapter recommend`**: Decide whether each interface belongs in `app/<surface>/adapter.go` or `domain/adapter.go`; explain why before scaffolding.
 - **`repository recommend`**: After adapter placement is clear, draft exact QueryRepository / CommandRepository signatures and the scaffold command.
 - **`crud-service`**: For simple CRUD, prefer app adapter + `repository app`. Only introduce domain ports when business rules justify it.
-- **`switch [single|service]`**: Agent-driven cmd rewrite only. Do not change `proto/`, `common/`, or `internal/`.
+- **`topology migration`**: Agent-driven `cmd` and process-config rewrite. There is no `switch` CLI command; do not change `proto/`, `common/`, or `internal/`.
 
 ## Hard Rules
 
@@ -88,7 +91,10 @@ Read [references/commands.md](references/commands.md) before calling the CLI.
 - Repository code is infrastructure. Persistence tags belong in `repository/model`, not `domain/entity`.
 - Resource lifecycle uses `Setup(ctx)` / `Close(ctx)`; endpoint lifecycle uses blocking `Startup(ctx)` / `Shutdown(ctx)`.
 - Generated cmd wiring registers both HTTP and gRPC endpoints by default.
+- Generated cmd entrypoints use `config.NewRoot`, preserve signal cancellation through `Command.SetContext`, and expose `--config` / `--remote` plus module flags.
+- Build `ServiceNode` transports with `httpServer.Transport()` / `grpcServer.Transport()`, not copied host/port literals.
 - Single topology has one `cmd/<project>/main.go` aggregating many svc modules; service topology has one `cmd/<svc>/main.go` per svc.
+- Single topology uses generated `config/<project>/config.go|yaml`; service topology uses `config/<svc>` directly.
 
 ## References
 
@@ -113,5 +119,5 @@ Complex domain persistence?     -> repository recommend -> repository domain <sv
 Need infra?                     -> resource <kind> [--svc <svc>]
 Need convention audit?          -> doctor
 Proto changed?                  -> gen
-Switch topology?                -> rewrite cmd only; read layering + registry
+Migrate topology?               -> rewrite cmd + process config only; read layering + registry
 ```

@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "In a new Go project called billing-demo, use modular to initialize a single-process app, add a billing svc with public CreateInvoice and ListInvoices methods, and leave it ready for buf generation.",
-      "expected_output": "Uses the modular skill, runs or proposes init/service/method commands, creates config/billing + proto/billing + internal/billing, and does not hand-edit common generated files.",
+      "expected_output": "Uses the modular skill, runs or proposes init/service/method commands, creates config/billing + config/billing-demo process aggregation + proto/billing + internal/billing, generates a config.NewRoot entrypoint, and does not hand-edit common generated files.",
       "files": []
     },
     {
@@ -22,13 +22,25 @@
     {
       "id": 4,
       "prompt": "Attach Postgres via Bun, Redis, disk storage, and OpenTelemetry to the user svc. Use Application lifecycle resources where the library provides them.",
-      "expected_output": "Maps Bun/Redis/Telemetry to built-in Resource types, generates only the storage wrapper under internal/user/repository, updates config/user and cmd wiring.",
+      "expected_output": "Maps Bun/Redis/Telemetry to built-in Resource types, generates only the storage wrapper under internal/user/repository, updates config/user and the single-process aggregate, and keeps cmd on config.NewRoot with server.Transport metadata.",
       "files": []
     },
     {
       "id": 5,
       "prompt": "Run a convention audit on this modular project and tell me if it has old config/config.go, hand-written common files, or cross-svc internal imports.",
       "expected_output": "Uses doctor or equivalent read-only checks, reports convention errors and warnings without mutating project files.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "Our single-topology modular app has user and billing services. Make the generated command support a local config file, an etcd remote config, and a CLI override for the user HTTP port.",
+      "expected_output": "Uses the generated config/<project> aggregate and config.NewRoot, explains --config and --remote, uses a nested --user.http.port override, preserves local-file-over-remote precedence, and does not add a separate command package.",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "Migrate this modular project from single-process topology to one process per svc without changing the proto contracts or business packages.",
+      "expected_output": "Treats topology migration as an agent workflow rather than invoking a nonexistent switch command, rewrites cmd and process config ownership only, and leaves proto/common/internal business code unchanged.",
       "files": []
     }
   ]
