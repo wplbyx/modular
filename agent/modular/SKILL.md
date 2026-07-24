@@ -1,6 +1,6 @@
 ---
 name: modular
-description: Scaffold, wire, audit, and recommend structure for Go applications built on `github.com/wplbyx/modular` (Go 1.26+). Use this skill when the user wants to initialize a modular project, add a svc/business module or interface surface, add pb methods, attach DB/Redis/Storage/Telemetry resources, configure Cobra/Viper local or remote sources, regenerate proto output, run convention checks, recommend app-layer vs domain-layer adapters, scaffold repositories, or migrate single-process and service topology. Enforce the README svc layout, process-level config aggregation, `config.NewRoot`, server `Transport()` metadata, proto-first boundaries, and core.Resource/core.Endpoint lifecycle rules.
+description: Scaffold, wire, audit, and recommend structure for Go applications built on `github.com/wplbyx/modular` (Go 1.26+). Use this skill when the user wants to initialize a modular project, add a svc/business module or interface surface, add pb methods, attach DB/Redis/Storage/Telemetry resources, configure Cobra/Viper sources, define localized client errors, generate or check locale YAML, wire error handlers, regenerate proto output, run convention checks, scaffold repositories, or migrate single-process and service topology. Enforce the README svc layout, process-level config aggregation, `config.NewRoot`, server `Transport()` metadata, proto-first boundaries, and Resource/Endpoint lifecycle rules.
 ---
 
 # modular
@@ -79,6 +79,7 @@ Read [references/commands.md](references/commands.md) before calling the CLI.
 - **`adapter recommend`**: Decide whether each interface belongs in `app/<surface>/adapter.go` or `domain/adapter.go`; explain why before scaffolding.
 - **`repository recommend`**: After adapter placement is clear, draft exact QueryRepository / CommandRepository signatures and the scaffold command.
 - **`crud-service`**: For simple CRUD, prefer app adapter + `repository app`. Only introduce domain ports when business rules justify it.
+- **`errors/localization`**: Read [references/errors.md](references/errors.md), define stable package-level messages, generate/check locale YAML, and wire one process-level Handler into HTTP and gRPC.
 - **`topology migration`**: Agent-driven `cmd` and process-config rewrite. There is no `switch` CLI command; do not change `proto/`, `common/`, or `internal/`.
 
 ## Hard Rules
@@ -92,7 +93,9 @@ Read [references/commands.md](references/commands.md) before calling the CLI.
 - Resource lifecycle uses `Setup(ctx)` / `Close(ctx)`; endpoint lifecycle uses blocking `Startup(ctx)` / `Shutdown(ctx)`.
 - Generated repositories receive typed `core.Provider[T]` dependencies. Never use infrastructure package globals.
 - Generated cmd wiring registers both HTTP and gRPC endpoints by default.
-- When localized framework errors are enabled, business modules declare reusable messages with `errs.Define(reason, errs.Template(pattern, errs.Name(...)))`; `%v` consumes names in order and `%%` emits a literal percent sign. Generate locale YAML with `err_template_gen`, load one immutable `errs.Catalog` in cmd, create one `errs.Handler` with the process zap logger, and inject it into both HTTP and gRPC servers. Business modules never load locale files themselves.
+- Stable client-facing errors are package-level `errs.Define(reason, errs.Template(pattern, errs.Name(...)))` values. `%v` consumes names in order; `%%` emits a literal percent sign. Business packages bind values but never load locale files.
+- Generate locale YAML with `err_template_gen`; in CI run the same command with `--check`. The cmd layer loads one immutable Catalog, creates one Handler with the initialized process logger, and injects it into both HTTP and gRPC servers.
+- Application lifecycle, Resource Setup/Close, and aggregated shutdown failures remain ordinary wrapped Go errors. Do not turn internal orchestration failures into client protocol errors merely for uniformity.
 - Generated cmd entrypoints use `config.NewRoot`, preserve signal cancellation through `Command.SetContext`, and expose `--config` / `--remote` plus module flags.
 - Build `ServiceNode` transports with `httpServer.Transport()` / `grpcServer.Transport()`, not copied host/port literals.
 - Single topology has one `cmd/<project>/main.go` aggregating many svc modules; service topology has one `cmd/<svc>/main.go` per svc.
@@ -120,6 +123,7 @@ Add pb method?                  -> method <svc> <surface> <MethodName>; then map
 Simple persistence?             -> repository recommend -> repository app <svc> <surface>
 Complex domain persistence?     -> repository recommend -> repository domain <svc>
 Need infra?                     -> resource <kind> [--driver ...] [--dialect ...] [--svc <svc>]
+Need localized client errors?   -> read errors; Define + err_template_gen + Catalog/Handler wiring
 Need convention audit?          -> doctor
 Proto changed?                  -> gen
 Migrate topology?               -> rewrite cmd + process config only; read layering + registry

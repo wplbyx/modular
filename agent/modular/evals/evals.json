@@ -42,6 +42,18 @@
       "prompt": "Migrate this modular project from single-process topology to one process per svc without changing the proto contracts or business packages.",
       "expected_output": "Treats topology migration as an agent workflow rather than invoking a nonexistent switch command, rewrites cmd and process config ownership only, and leaves proto/common/internal business code unchanged.",
       "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "Our modular user svc needs a localized USER_NOT_FOUND error with a user_id variable. Generate zh-CN and en-US templates, wire the same handler into HTTP and gRPC, and give us the CI check command. Database details must only go to logs.",
+      "expected_output": "Defines one package-level errs.Message with errs.Define and errs.Template using a named user_id slot, keeps the cause/diagnostic fields out of client data, uses err_template_gen for both locales and --check, initializes logging before one process-level Catalog/Handler, and injects that Handler into both HTTP and gRPC servers.",
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "Product rewrote our localized MEMBER_NOT_FOUND copy and moved {{.org}} before {{.user_id}}. Update the generated locale set without losing their wording, and explain what happens if a slot is renamed or an old reason remains in YAML.",
+      "expected_output": "Preserves valid product text and comments because slot order is flexible, runs err_template_gen with the complete language set, rejects renamed/missing/duplicate slots and stale reasons without partial writes, and uses --check for read-only CI validation.",
+      "files": []
     }
   ]
 }

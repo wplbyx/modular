@@ -52,6 +52,22 @@ python scripts/gen_proto.py --project-dir <project>
 - Service topology uses `config/<svc>/config.go|yaml` directly.
 - Generated ServiceNode metadata comes from each server's `Transport()` method.
 
+## Error Locale Generator
+
+`err_template_gen` is a standalone Go tool, not a `modular.py` subcommand. Install it with:
+
+```bash
+go install github.com/wplbyx/modular/packages/generate/cmd/err_template_gen@latest
+```
+
+Generate or merge locale files with explicit package scope, output directory, and the complete managed language set:
+
+```bash
+err_template_gen --root . --packages ./internal/user/... --out ./config/user/locales --languages zh-CN,en-US
+```
+
+Run the identical command with `--check` in CI. For single topology, scan all included svc packages and write one process-level catalog under `config/<project>/locales`; for service topology, use `config/<svc>/locales`. Read [errors.md](errors.md) before defining messages or wiring the Catalog and Handler.
+
 ## Resource Mapping
 
 - Bun/GORM/Mongo/Redis/Storage/Telemetry use library Resource types.
@@ -64,3 +80,4 @@ python scripts/gen_proto.py --project-dir <project>
 - `doctor` catches top-level `config/config.go|yaml`, missing process/svc configs, old repository layouts, `internal/infra`, hand-written `common/*.go`, cross-svc `internal` imports, and cmd entrypoints that bypass `config.NewRoot`.
 - Repository scaffold commands overwrite only when `--force` is passed for existing files.
 - There is no `switch` subcommand. Topology migration is an agent workflow that rewrites cmd and process-level config only.
+- There is no `errors` subcommand. Error definition, locale generation, and Handler wiring are an agent workflow using `err_template_gen`.

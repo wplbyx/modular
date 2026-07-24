@@ -12,24 +12,25 @@ import (
 func HTTPRoutes(svc common.{{SERVICE_PASCAL}}Server) func(*gin.Engine) {
 	return func(router *gin.Engine) {
 		// group := router.Group("/api/{{SURFACE}}/{{SVC}}")
-		// group.GET("/example", exampleHandler(svc))
+		// group.GET("/example", httpserver.Wrap(exampleHandler(svc)))
 		_ = svc
 	}
 }
 
-// func exampleHandler(svc common.{{SERVICE_PASCAL}}Server) gin.HandlerFunc {
-// 	return func(c *gin.Context) {
+// var invalidRequest = errs.Define("INVALID_REQUEST", errs.Template("invalid request"))
+//
+// func exampleHandler(svc common.{{SERVICE_PASCAL}}Server) httpserver.ErrorHandlerFunc {
+// 	return func(c *gin.Context) error {
 // 		var req common.ExampleRequest
 // 		if err := c.ShouldBindJSON(&req); err != nil {
-// 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-// 			return
+// 			return errs.BadRequest(invalidRequest, errs.WithCause(err))
 // 		}
 // 		resp, err := svc.Example(c.Request.Context(), &req)
 // 		if err != nil {
-// 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-// 			return
+// 			return err
 // 		}
 // 		c.JSON(http.StatusOK, resp)
+// 		return nil
 // 	}
 // }
 

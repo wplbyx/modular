@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -99,6 +101,7 @@ class ModularCliTest(unittest.TestCase):
         svc_config = (project / "config" / "user" / "config.go").read_text(encoding="utf-8")
         process_config = (project / "config" / "demo" / "config.go").read_text(encoding="utf-8")
         process_yaml = (project / "config" / "demo" / "config.yaml").read_text(encoding="utf-8")
+        api_http = (project / "internal" / "user" / "api" / "public" / "http.go").read_text(encoding="utf-8")
 
         self.assertTrue((project / "config" / "user" / "config.go").exists())
         self.assertTrue((project / "config" / "demo" / "config.go").exists())
@@ -134,6 +137,9 @@ class ModularCliTest(unittest.TestCase):
         self.assertIn("  redis:\n", process_yaml)
         self.assertIn("  storage:\n", process_yaml)
         self.assertIn("  telemetry:\n", process_yaml)
+        self.assertIn("httpserver.Wrap(exampleHandler(svc))", api_http)
+        self.assertIn("return errs.BadRequest(invalidRequest, errs.WithCause(err))", api_http)
+        self.assertNotIn('gin.H{"error": err.Error()}', api_http)
 
     def test_gorm_dialect_and_mongo_use_library_resources(self) -> None:
         project = self.init_project()
@@ -259,6 +265,27 @@ class ModularCliTest(unittest.TestCase):
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("domain/repository.go", completed.stderr)
+
+
+class ModularSkillContentTest(unittest.TestCase):
+    def test_skill_markdown_references_exist(self) -> None:
+        skill = REPO_ROOT / "agent" / "modular" / "SKILL.md"
+        text = skill.read_text(encoding="utf-8")
+        references = re.findall(r"\((references/[^)]+\.md)\)", text)
+
+        self.assertIn("references/errors.md", references)
+        for reference in references:
+            self.assertTrue((skill.parent / reference).is_file(), reference)
+
+    def test_error_localization_evals_are_valid(self) -> None:
+        filename = REPO_ROOT / "agent" / "modular" / "evals" / "evals.json"
+        payload = json.loads(filename.read_text(encoding="utf-8"))
+        evals = {item["id"]: item for item in payload["evals"]}
+
+        self.assertEqual(payload["skill_name"], "modular")
+        self.assertIn("USER_NOT_FOUND", evals[8]["prompt"])
+        self.assertIn("err_template_gen", evals[8]["expected_output"])
+        self.assertIn("slot order is flexible", evals[9]["expected_output"])
 
 
 if __name__ == "__main__":

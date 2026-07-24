@@ -1,23 +1,45 @@
 # Errors and localization
 
-Business packages own stable error reasons and their variable-slot contract. Define each message as a package-level value:
+Use `packages/errs` for stable errors that cross a request boundary. Keep application lifecycle, Resource Setup/Close, and shutdown aggregation as ordinary wrapped Go errors with `%w` and `errors.Join`.
+
+## Define the contract
+
+Business packages own stable reasons and variable-slot contracts. Declare messages as package-level values so `err_template_gen` can discover them statically:
 
 ```go
+const userID errs.Name = "user_id"
+
 var UserNotFound = errs.Define(
 	"USER_NOT_FOUND",
-	errs.Template("user %v not found", errs.Name("user_id")),
+	errs.Template("user %v not found", userID),
 )
 
 return errs.NotFound(
-	UserNotFound.With(errs.Name("user_id"), id),
+	UserNotFound.With(userID, id),
 	errs.WithCause(cause),
 	errs.WithField("user_id", id),
 )
 ```
 
-Only `%v` consumes a slot; `%%` emits a literal percent sign. Reasons use uppercase underscore form and names use lowercase snake_case. Do not construct definitions dynamically: `err_template_gen` statically reads constant reasons, patterns, and `errs.Name` values.
+Rules:
 
-Generate one editable YAML file per BCP 47 locale:
+- Reasons match `[A-Z][A-Z0-9_]*`; names match `[a-z][a-z0-9_]*` and are unique within one definition.
+- Only `%v` consumes a Name. `%%` emits a literal percent sign. Other fmt verbs are invalid.
+- The number of `%v` verbs must equal the number of Names. Invalid declarations panic during package initialization and are reported earlier by the generator.
+- Reasons, patterns, and Names must be string constants. Keep `errs.Template` directly inside `errs.Define`; dynamic factories are not discoverable.
+- Template values are client-visible. Put secrets, SQL, internal identifiers, and operational context in `WithCause` or `WithField`, not in `Message.With`.
+
+Choose the HTTP constructor that describes the public outcome: `BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `Conflict`, `TooManyRequests`, `InternalServer`, `ServiceUnavailable`, or `GatewayTimeout`.
+
+## Generate locale YAML
+
+Install the standalone generator once:
+
+```bash
+go install github.com/wplbyx/modular/packages/generate/cmd/err_template_gen@latest
+```
+
+For service topology, keep the catalog with that process configuration and scan only its business packages:
 
 ```bash
 err_template_gen \
@@ -27,6 +49,76 @@ err_template_gen \
   --languages zh-CN,en-US
 ```
 
-Product authors may change text and reorder `{{.name}}` slots. They must not add, remove, rename, or duplicate slots. Run the same command with `--check` in CI. Existing copy and comments are preserved; new reasons are appended; stale reasons and contract mismatches fail without writing files.
+For single topology, generate one process catalog containing every included svc reason:
 
-The cmd package loads `errs.Catalog`, constructs one `errs.Handler` with the process zap logger, and injects it with both `httpserver.WithErrorHandler` and `rpcserver.WithErrorHandler`. Missing runtime values render as `UNKNOWN` only in their positions and are logged. Causes, fields, chains, stacks, request IDs, and trace IDs never enter client responses.
+```bash
+err_template_gen \
+  --root . \
+  --packages ./internal/... \
+  --out ./config/my-project/locales \
+  --languages zh-CN,en-US
+```
+
+The output stays flat and product-editable:
+
+```yaml
+# slots: user_id
+USER_NOT_FOUND: "用户 {{.user_id}} 不存在"
+```
+
+Product authors may change all text and reorder slots. They must not add, remove, rename, or duplicate `{{.name}}` slots. List every managed locale in `--languages`; an unlisted YAML locale in the output directory is treated as unmanaged drift.
+
+Normal generation preserves valid product copy and comments, then appends new reasons. Conflicting source definitions, invalid slots, stale YAML reasons, or malformed templates fail validation before any locale file is written. Removing a source reason therefore requires removing its YAML entries deliberately.
+
+Use the same arguments in CI with `--check`:
+
+```bash
+err_template_gen \
+  --root . \
+  --packages ./internal/... \
+  --out ./config/my-project/locales \
+  --languages zh-CN,en-US \
+  --check
+```
+
+## Wire one Handler per process
+
+Initialize logging before constructing the Handler. `log.GetLogger()` is a no-op logger until `NewLoggerManager` succeeds.
+
+```go
+loggerManager, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
+if err != nil {
+	return fmt.Errorf("create logger: %w", err)
+}
+defer loggerManager.Close()
+
+catalog, err := errs.LoadCatalog(
+	os.DirFS("."),
+	"config/my-project/locales",
+	"zh-CN",
+)
+if err != nil {
+	return fmt.Errorf("load error catalog: %w", err)
+}
+errorHandler, err := errs.NewHandler(catalog, log.GetLogger())
+if err != nil {
+	return fmt.Errorf("create error handler: %w", err)
+}
+
+httpServer, err := httpserver.NewServer(
+	&cfg.HTTP,
+	httpserver.WithLogger(log.GetLogger()),
+	httpserver.WithErrorHandler(errorHandler),
+)
+grpcServer, err := rpcserver.NewServer(
+	&cfg.GRPC,
+	register,
+	rpcserver.WithErrorHandler(errorHandler),
+)
+```
+
+Use the locale directory for the current process topology. A single process with multiple svc modules still has one Catalog and one Handler; do not load locale files from business packages.
+
+HTTP adapters return errors through `httpserver.Wrap` or `c.Error`. HTTP reads `Accept-Language`; gRPC reads `accept-language` metadata. The framework selects the locale and returns only `code`, `reason`, and localized `message`.
+
+If a required runtime value is missing, only that slot renders as `UNKNOWN`; undeclared values are ignored. Both conditions are logged as template diagnostics. Causes, fields, error chains, stacks, request IDs, trace IDs, and span IDs go to the logger and never enter client responses.
