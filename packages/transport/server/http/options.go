@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/health"
 	mw "github.com/wplbyx/modular/packages/transport/server/http/middleware"
 )
@@ -32,6 +33,13 @@ func ginRecovery(l zapLogger) gin.HandlerFunc { return mw.GinRecovery(l) }
 func WithLogger(logger *zap.Logger) ServerOption {
 	return func(s *Server) {
 		s.logger = logger
+	}
+}
+
+// WithErrorHandler 注入统一错误处理器，启用多语言响应、诊断日志和 panic 恢复。
+func WithErrorHandler(handler *errs.Handler) ServerOption {
+	return func(s *Server) {
+		s.errorHandler = handler
 	}
 }
 

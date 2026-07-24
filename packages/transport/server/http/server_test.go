@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,13 +10,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wplbyx/modular/packages/config/configitem"
+	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/health"
+	"go.uber.org/zap"
 )
 
 func withStop(t *testing.T, srv *Server) {
@@ -154,6 +158,91 @@ func TestRegisterRoute(t *testing.T) {
 	w := doRequest(t, srv, http.MethodGet, "/ping")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "pong", w.Body.String())
+}
+
+func TestErrorHandlerLocalizesAndHidesInternalError(t *testing.T) {
+	srv, err := NewServer(
+		&configitem.HTTP{Host: "127.0.0.1", Port: 0},
+		WithErrorHandler(testHTTPErrorHandler(t)),
+	)
+	require.NoError(t, err)
+	withStop(t, srv)
+
+	userNotFound := errs.Define("USER_NOT_FOUND", errs.Template("user %v not found", errs.Name("user_id")))
+	srv.RegisterRoute(func(engine *gin.Engine) {
+		engine.GET("/users/:id", Wrap(func(ctx *gin.Context) error {
+			return errs.NotFound(
+				userNotFound.With("user_id", ctx.Param("id")),
+				errs.WithCause(errors.New("database password=secret")),
+			)
+		}))
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	request.Header.Set("Accept-Language", "en-US;q=0.5, zh-CN;q=0.9")
+	srv.engine.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusNotFound, recorder.Code)
+	assert.Equal(t, "zh-CN", recorder.Header().Get("Content-Language"))
+	assert.NotContains(t, recorder.Body.String(), "secret")
+	var body struct {
+		Code    int    `json:"code"`
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	assert.Equal(t, http.StatusNotFound, body.Code)
+	assert.Equal(t, "USER_NOT_FOUND", body.Reason)
+	assert.Equal(t, "用户 42 不存在", body.Message)
+}
+
+func TestErrorHandlerRecoversPanicWithoutLeakingIt(t *testing.T) {
+	srv, err := NewServer(
+		&configitem.HTTP{Host: "127.0.0.1", Port: 0},
+		WithErrorHandler(testHTTPErrorHandler(t)),
+	)
+	require.NoError(t, err)
+	withStop(t, srv)
+	srv.RegisterRoute(func(engine *gin.Engine) {
+		engine.GET("/panic", func(*gin.Context) { panic("token=secret") })
+	})
+
+	recorder := doRequest(t, srv, http.MethodGet, "/panic")
+	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
+	assert.NotContains(t, recorder.Body.String(), "secret")
+	assert.Contains(t, recorder.Body.String(), "INTERNAL_ERROR")
+}
+
+func TestErrorHandlerDoesNotOverwriteCommittedResponse(t *testing.T) {
+	srv, err := NewServer(
+		&configitem.HTTP{Host: "127.0.0.1", Port: 0},
+		WithErrorHandler(testHTTPErrorHandler(t)),
+	)
+	require.NoError(t, err)
+	withStop(t, srv)
+	srv.RegisterRoute(func(engine *gin.Engine) {
+		engine.GET("/committed", Wrap(func(ctx *gin.Context) error {
+			ctx.String(http.StatusAccepted, "accepted")
+			return errs.BadRequest(errs.Define("TOO_LATE", errs.Template("too late")))
+		}))
+	})
+
+	recorder := doRequest(t, srv, http.MethodGet, "/committed")
+	assert.Equal(t, http.StatusAccepted, recorder.Code)
+	assert.Equal(t, "accepted", recorder.Body.String())
+}
+
+func testHTTPErrorHandler(t *testing.T) *errs.Handler {
+	t.Helper()
+	catalog, err := errs.LoadCatalog(fstest.MapFS{
+		"locales/zh-CN.yaml": {Data: []byte("UNKNOWN: '请求失败'\nINTERNAL_ERROR: '服务暂时不可用'\nUSER_NOT_FOUND: '用户 {{.user_id}} 不存在'\n")},
+		"locales/en-US.yaml": {Data: []byte("UNKNOWN: 'Request failed'\nINTERNAL_ERROR: 'Service unavailable'\nUSER_NOT_FOUND: 'User {{.user_id}} was not found'\n")},
+	}, "locales", "zh-CN")
+	require.NoError(t, err)
+	handler, err := errs.NewHandler(catalog, zap.NewNop())
+	require.NoError(t, err)
+	return handler
 }
 
 func eventually(fn func() bool) bool {

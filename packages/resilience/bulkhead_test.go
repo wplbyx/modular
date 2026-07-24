@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wplbyx/modular/packages/errs"
 )
 
 func TestBulkheadExecuteRecoversPanicAndResetsRunning(t *testing.T) {
@@ -19,7 +21,7 @@ func TestBulkheadExecuteRecoversPanicAndResetsRunning(t *testing.T) {
 	err := bh.Execute(context.Background(), func() error {
 		panic("boom")
 	})
-	if err == nil || !strings.Contains(err.Error(), "panic in bulkhead 'panic-test': boom") {
+	if err == nil || !strings.Contains(err.Error(), "panic: boom") || errs.Code(err) != 500 || errs.Reason(err) != "BULKHEAD_PANIC" {
 		t.Fatalf("Execute() error = %v, want panic error", err)
 	}
 	if got := bh.Running(); got != 0 {

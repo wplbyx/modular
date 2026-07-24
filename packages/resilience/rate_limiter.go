@@ -10,11 +10,12 @@ import (
 )
 
 var (
+	rateLimitMessage   = errs.Define("RATE_LIMIT_EXCEEDED", errs.Template("too many requests"))
+	rateConfigMessage  = errs.Define("RATE_LIMIT_CONFIG_INVALID", errs.Template("service is temporarily unavailable"))
+	rateContextMessage = errs.Define("RATE_LIMIT_CONTEXT_CANCELED", errs.Template("request canceled"))
+
 	// ErrRateLimitExceeded 超过限流阈值错误
-	ErrRateLimitExceeded = errs.New(
-		errs.WithCode(540),
-		errs.WithMsgf("rate limit exceeded"),
-	)
+	ErrRateLimitExceeded = errs.TooManyRequests(rateLimitMessage)
 )
 
 // RateLimiterConfig 限流器配置
@@ -108,10 +109,10 @@ func (rl *rateLimiter) Take(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		// 包装上下文取消错误，添加限流器上下文
-		return errs.New(
-			errs.WithCode(499),
-			errs.WithMsgf("context canceled while waiting for rate limiter '%s'", rl.config.Name),
+		return errs.ClientClosed(
+			rateContextMessage.With("name", rl.config.Name),
 			errs.WithCause(ctx.Err()),
+			errs.WithField("rate_limiter", rl.config.Name),
 		)
 	default:
 	}
@@ -120,10 +121,10 @@ func (rl *rateLimiter) Take(ctx context.Context) error {
 	// 由于令牌每秒生成rl.config.Rate个，所以需要等待的时间大约是 (1 - available) / rate
 	rate := rl.config.Rate
 	if rate <= 0 {
-		return errs.New(
-			errs.WithCode(540),
-			errs.WithMsgf("invalid rate configuration for rate limiter '%s'", rl.config.Name),
+		return errs.InternalServer(
+			rateConfigMessage.With("name", rl.config.Name),
 			errs.WithCause(ErrRateLimitExceeded),
+			errs.WithField("rate_limiter", rl.config.Name),
 		)
 	}
 
@@ -143,17 +144,17 @@ func (rl *rateLimiter) Take(ctx context.Context) error {
 			return nil
 		}
 		// 包装限流错误，添加详细上下文
-		return errs.New(
-			errs.WithCode(540),
-			errs.WithMsgf("rate limiter '%s' exceeded after waiting", rl.config.Name),
+		return errs.TooManyRequests(
+			rateLimitMessage.With("name", rl.config.Name),
 			errs.WithCause(ErrRateLimitExceeded),
+			errs.WithField("rate_limiter", rl.config.Name),
 		)
 	case <-ctx.Done():
 		// 包装上下文取消错误，添加限流器上下文
-		return errs.New(
-			errs.WithCode(499),
-			errs.WithMsgf("context canceled while waiting for rate limiter '%s'", rl.config.Name),
+		return errs.ClientClosed(
+			rateContextMessage.With("name", rl.config.Name),
 			errs.WithCause(ctx.Err()),
+			errs.WithField("rate_limiter", rl.config.Name),
 		)
 	}
 }

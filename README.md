@@ -43,7 +43,8 @@ Resource.Setup()  FIFO
 | `packages/config` | Viper 配置加载器与 Cobra 命令集成，支持本地文件、远程 KV、环境变量和自动模块 flags。 |
 | `packages/config/configitem` | 可组合的强类型基础设施配置：Application、HTTP、GRPC、Database、Redis、Storage、Logging、Telemetry 和消息中间件。 |
 | `packages/log` | Zap 日志封装，支持控制台、文件轮转、OpenTelemetry 输出；使用包级日志函数。 |
-| `packages/errs` | 自定义错误封装，主要用于 resilience 相关能力。 |
+| `packages/errs` | Kratos 风格统一错误、多语言 YAML Catalog、错误链/堆栈诊断与客户端/日志分流。 |
+| `packages/generate` | 可安装的代码生成工具；`err_template_gen` 从 `errs.Define` 生成并校验多语言 YAML。 |
 | `packages/util` | AES/RSA/ECC、随机字符串、URL、HTTP 请求和 context 工具。 |
 | `packages/transport/server/http` | 基于 Gin 的 HTTP endpoint，支持中间件、健康检查、TLS、h2c；构造时即监听端口。 |
 | `packages/transport/server/rpc` | gRPC endpoint，支持健康检查、拦截器和 mTLS。 |
@@ -182,6 +183,69 @@ application, err := app.NewApplication(
 ```
 
 需要基础设施时，将其包装或直接构造成 `core.Resource` 后通过 `app.WithResource(...)` 注入。`Resource.Setup` 会在所有 endpoint 启动前执行，`Resource.Close` 会在 endpoint 停止后按反向顺序执行。
+
+### 统一错误与多语言
+
+业务包集中定义与语言无关、可复用的文案对象，调用时只绑定模板参数：
+
+```go
+var UserNotFound = errs.Define(
+	"USER_NOT_FOUND",
+	errs.Template("user %v not found", errs.Name("user_id")),
+)
+
+func findUser(id string) error {
+	return errs.NotFound(
+		UserNotFound.With("user_id", id),
+		errs.WithCause(errors.New("database row not found")),
+		errs.WithField("user_id", id),
+	)
+}
+```
+
+每种语言使用一个 YAML 文件，文件名是 BCP 47 locale，例如 `locales/zh-CN.yaml`：
+
+```yaml
+UNKNOWN: "请求处理失败"
+USER_NOT_FOUND: "用户 {{.user_id}} 不存在"
+```
+
+代码模板只接受 `%v` 变量槽和 `%%` 字面量百分号。`%v` 按顺序映射到后续 `errs.Name`；产品可以修改任意文字并调整 `{{.name}}` 的顺序，但不能增删或改名。缺少运行时参数时仅将对应槽位替换为 `UNKNOWN`，其余文案保持不变，同时记录诊断日志。
+
+使用 `err_template_gen` 从业务代码批量创建或更新语言文件：
+
+```bash
+go install github.com/wplbyx/modular/packages/generate/cmd/err_template_gen@latest
+
+err_template_gen \
+  --root . \
+  --packages ./internal/user/... \
+  --out ./config/user/locales \
+  --languages zh-CN,en-US
+
+# CI 中只校验源码定义、reason 和槽位契约，不修改文件
+err_template_gen --root . --out ./config/user/locales --languages zh-CN,en-US --check
+```
+
+重复生成会保留已有产品文案和注释，只追加新 reason。非法槽位、冲突定义、源码已删除但 YAML 仍存在的 reason 都会使命令失败，且验证失败时不会写入任何语言文件。
+
+Catalog 和 Handler 在 `cmd` 层显式构造，并同时注入 HTTP 与 gRPC server：
+
+```go
+catalog, err := errs.LoadCatalog(os.DirFS("."), "locales", "zh-CN")
+if err != nil {
+	return fmt.Errorf("load error catalog: %w", err)
+}
+errorHandler, err := errs.NewHandler(catalog, log.GetLogger())
+if err != nil {
+	return fmt.Errorf("create error handler: %w", err)
+}
+
+httpSrv, err := httpserver.NewServer(&cfg.HTTP, httpserver.WithErrorHandler(errorHandler))
+grpcSrv, err := rpcserver.NewServer(&cfg.GRPC, register, rpcserver.WithErrorHandler(errorHandler))
+```
+
+HTTP handler 可通过 `httpserver.Wrap(func(*gin.Context) error)` 返回错误，也可使用 `c.Error(err)`。HTTP 从 `Accept-Language`、gRPC 从 `accept-language` metadata 选择文案。客户端只收到 `code`、`reason`、本地化 `message`；cause、内部 fields、完整错误链和堆栈只写入注入的 zap logger，并携带 request/trace/span 关联字段。
 
 ### 数据库连接
 
@@ -344,7 +408,7 @@ go generate ./packages/config/...
 
 - 仓库自身没有 `.proto`、`_pb.go`、buf/protoc 生成链路；proto-first 是下游业务项目的约定，`agent/modular` 会为下游项目生成骨架。
 - `app` 不导入 `transport`，只接收 `core.Endpoint` 和 `core.Resource`。
-- `packages/errs` 当前主要由 `packages/resilience` 使用；其他包主流写法是 `fmt.Errorf("...: %w", err)` 和 `errors.Join`。
+- 请求边缘和需要稳定业务 reason 的错误使用 `packages/errs`；生命周期初始化/关闭错误仍使用 `fmt.Errorf("...: %w", err)` 和 `errors.Join`。
 - 日志是包级全局 logger，不走 context；未初始化时 `log.GetLogger()` 返回 `zap.NewNop()`。
 - storage 当前只有 `disk` 和 `oss` 两类实现；OSS 使用 `alibabacloud-oss-go-sdk-v2`，不要引入 v1 SDK。
 - `infra/cache/redis`、`infra/database`、`transport/client` 保留包级全局能力，但应用装配时应优先把返回实例作为依赖注入。

@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/log"
 )
 
@@ -33,6 +34,7 @@ type Server struct {
 	credentials    credentials.TransportCredentials
 	unaryInts      []grpc.UnaryServerInterceptor
 	streamInts     []grpc.StreamServerInterceptor
+	errorHandler   *errs.Handler
 	mu             sync.RWMutex
 	isRunning      bool
 	listenerClosed bool
@@ -76,6 +78,10 @@ func NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Se
 	if s.credentials != nil {
 		serverOpts = append(serverOpts, grpc.Creds(s.credentials))
 	}
+	if s.errorHandler != nil {
+		s.unaryInts = append([]grpc.UnaryServerInterceptor{errorUnaryInterceptor(s.errorHandler)}, s.unaryInts...)
+		s.streamInts = append([]grpc.StreamServerInterceptor{errorStreamInterceptor(s.errorHandler)}, s.streamInts...)
+	}
 	if len(s.unaryInts) > 0 {
 		serverOpts = append(serverOpts, grpc.ChainUnaryInterceptor(s.unaryInts...))
 	}
@@ -110,6 +116,17 @@ func WithUnaryInterceptors(interceptors ...grpc.UnaryServerInterceptor) Option {
 func WithStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) Option {
 	return func(s *Server) error {
 		s.streamInts = append(s.streamInts, interceptors...)
+		return nil
+	}
+}
+
+// WithErrorHandler injects centralized localization, logging, and panic recovery.
+func WithErrorHandler(handler *errs.Handler) Option {
+	return func(s *Server) error {
+		if handler == nil {
+			return errors.New("gRPC error handler is nil")
+		}
+		s.errorHandler = handler
 		return nil
 	}
 }

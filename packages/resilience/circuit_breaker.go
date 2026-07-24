@@ -10,16 +10,13 @@ import (
 )
 
 var (
+	circuitOpenMessage  = errs.Define("CIRCUIT_OPEN", errs.Template("service is temporarily unavailable"))
+	tooManyCallsMessage = errs.Define("CIRCUIT_TOO_MANY_CALLS", errs.Template("too many requests"))
+
 	// ErrCircuitOpen 熔断器打开错误
-	ErrCircuitOpen = errs.New(
-		errs.WithCode(530),
-		errs.WithMsgf("circuit breaker is open"),
-	)
+	ErrCircuitOpen = errs.ServiceUnavailable(circuitOpenMessage)
 	// ErrTooManyCalls 半开状态下调用过多错误
-	ErrTooManyCalls = errs.New(
-		errs.WithCode(531),
-		errs.WithMsgf("too many calls in half-open state"),
-	)
+	ErrTooManyCalls = errs.TooManyRequests(tooManyCallsMessage)
 )
 
 // 熔断器配置
@@ -113,10 +110,11 @@ func (cb *circuitBreaker) Execute(ctx context.Context, fn func() error) error {
 		state := cb.State()
 		log.Infof("Circuit breaker '%s' is %s, rejecting request", cb.config.Name, state)
 		// 返回带有上下文的错误
-		return errs.New(
-			errs.WithCode(530),
-			errs.WithMsgf("circuit breaker '%s' is %s", cb.config.Name, state),
+		return errs.ServiceUnavailable(
+			circuitOpenMessage.With("name", cb.config.Name).With("state", state.String()),
 			errs.WithCause(ErrCircuitOpen),
+			errs.WithField("circuit_breaker", cb.config.Name),
+			errs.WithField("circuit_state", state.String()),
 		)
 	}
 

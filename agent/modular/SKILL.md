@@ -92,6 +92,7 @@ Read [references/commands.md](references/commands.md) before calling the CLI.
 - Resource lifecycle uses `Setup(ctx)` / `Close(ctx)`; endpoint lifecycle uses blocking `Startup(ctx)` / `Shutdown(ctx)`.
 - Generated repositories receive typed `core.Provider[T]` dependencies. Never use infrastructure package globals.
 - Generated cmd wiring registers both HTTP and gRPC endpoints by default.
+- When localized framework errors are enabled, business modules declare reusable messages with `errs.Define(reason, errs.Template(pattern, errs.Name(...)))`; `%v` consumes names in order and `%%` emits a literal percent sign. Generate locale YAML with `err_template_gen`, load one immutable `errs.Catalog` in cmd, create one `errs.Handler` with the process zap logger, and inject it into both HTTP and gRPC servers. Business modules never load locale files themselves.
 - Generated cmd entrypoints use `config.NewRoot`, preserve signal cancellation through `Command.SetContext`, and expose `--config` / `--remote` plus module flags.
 - Build `ServiceNode` transports with `httpServer.Transport()` / `grpcServer.Transport()`, not copied host/port literals.
 - Single topology has one `cmd/<project>/main.go` aggregating many svc modules; service topology has one `cmd/<svc>/main.go` per svc.
@@ -105,6 +106,7 @@ Read [references/commands.md](references/commands.md) before calling the CLI.
 - [references/lifecycle.md](references/lifecycle.md) - Resource/Endpoint lifecycle and Application assembly.
 - [references/config.md](references/config.md) - config types and `config/<svc>` loading.
 - [references/transport.md](references/transport.md) - HTTP, gRPC, SSE, pub/sub, clients.
+- [references/errors.md](references/errors.md) - error definitions, locale generation, Catalog and Handler wiring.
 - [references/registry.md](references/registry.md) - ServiceNode, registry, discovery, resolver.
 - [references/infra.md](references/infra.md) - DB/Redis/Storage/Telemetry constructors and resources.
 

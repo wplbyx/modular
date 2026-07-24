@@ -8,7 +8,11 @@ import (
 
 	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/log"
-	"go.uber.org/zap"
+)
+
+var (
+	retryContextMessage   = errs.Define("RETRY_CONTEXT_CANCELED", errs.Template("request canceled"))
+	retryExhaustedMessage = errs.Define("RETRY_EXHAUSTED", errs.Template("service is temporarily unavailable"))
 )
 
 // RetryConfig 重试配置
@@ -63,13 +67,11 @@ func (r *retryImpl) Execute(ctx context.Context, fn func() error) error {
 
 	for attempt := 0; attempt <= r.config.MaxRetries; attempt++ {
 		if err := ctx.Err(); err != nil {
-			wrappedErr := errs.New(
-				errs.WithCode(500),
-				errs.WithMsgf("context canceled during retry operation"),
+			return errs.ClientClosed(
+				retryContextMessage.With("name", r.config.Name),
 				errs.WithCause(err),
+				errs.WithField("retry", r.config.Name),
 			)
-			log.Error("retry context canceled", zap.Error(wrappedErr), zap.String("retry_name", r.config.Name))
-			return wrappedErr
 		}
 
 		lastErr = fn()
@@ -88,13 +90,11 @@ func (r *retryImpl) Execute(ctx context.Context, fn func() error) error {
 
 			select {
 			case <-ctx.Done():
-				wrappedErr := errs.New(
-					errs.WithCode(500),
-					errs.WithMsgf("context canceled during retry operation"),
+				return errs.ClientClosed(
+					retryContextMessage.With("name", r.config.Name),
 					errs.WithCause(ctx.Err()),
+					errs.WithField("retry", r.config.Name),
 				)
-				log.Error("retry context canceled", zap.Error(wrappedErr), zap.String("retry_name", r.config.Name))
-				return wrappedErr
 			case <-time.After(delay):
 			}
 
@@ -106,17 +106,12 @@ func (r *retryImpl) Execute(ctx context.Context, fn func() error) error {
 		}
 	}
 
-	finalErr := errs.New(
-		errs.WithCode(500),
-		errs.WithMsgf("all retry attempts failed: %v", lastErr),
+	return errs.ServiceUnavailable(
+		retryExhaustedMessage.With("name", r.config.Name),
 		errs.WithCause(lastErr),
+		errs.WithField("retry", r.config.Name),
+		errs.WithField("max_retries", r.config.MaxRetries),
 	)
-	log.Error("retry exhausted",
-		zap.Error(finalErr),
-		zap.String("retry_name", r.config.Name),
-		zap.Int("max_retries", r.config.MaxRetries),
-	)
-	return finalErr
 }
 
 func (r *retryImpl) isRetryableError(err error) bool {

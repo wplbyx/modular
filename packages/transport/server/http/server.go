@@ -18,6 +18,7 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/log"
 )
 
@@ -65,6 +66,7 @@ type Server struct {
 	// 由 option 写入、在 NewServer 各阶段消费的配置字段
 	mode             string
 	logger           zapLogger
+	errorHandler     *errs.Handler
 	middlewares      []gin.HandlerFunc
 	h2c              bool
 	baseContextFn    func(net.Listener) context.Context
@@ -97,7 +99,12 @@ func NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error) {
 	// 3. 创建引擎：注册 Recovery 防止 panic；若注入了 logger 则改用 zap 版本
 	srv.engine = gin.New()
 	if srv.logger != nil {
-		srv.engine.Use(ginLogger(srv.logger), ginRecovery(srv.logger))
+		srv.engine.Use(ginLogger(srv.logger))
+	}
+	if srv.errorHandler != nil {
+		srv.engine.Use(errorMiddleware(srv.errorHandler))
+	} else if srv.logger != nil {
+		srv.engine.Use(ginRecovery(srv.logger))
 	} else {
 		srv.engine.Use(gin.Recovery())
 	}

@@ -27,6 +27,7 @@ packages/
   config/         ← Viper 配置加载器 + 强类型配置结构体
   log/            ← Zap 日志封装（支持日志轮转）
   errs/           ← 统一错误封装（支持错误链、堆栈、上下文字段）
+  generate/       ← 独立生成工具（错误语言模板生成与 CI 校验）
   util/           ← 通用工具（加密、随机、URL、请求）
   transport/
     server/       ← http, rpc, sse 服务器（实现 core.Endpoint）
@@ -116,9 +117,11 @@ chore: ignore packages/infra/storage/upload test artifact
 
 - 尽管"proto 解耦"是设计哲学，仓库里**没有任何 `.proto` 文件、没有 `_pb.go`、没有 buf/protoc 工具链**。`grpc`/`protobuf` 依赖仅用于 gRPC transport server/client 与 registry resolver，并非本地代码生成。不要去找或期待已生成的服务代码。
 
-### 错误处理 —— `errs` 采用范围很窄
+### 错误处理与多语言
 
-- `packages/errs` **只被 `packages/resilience` 引入**。其余所有包（transport/app/infra/registry/config）的主流写法是 `fmt.Errorf("...: %w", err)` + 用 `errors.Join` 做聚合。在 resilience 里用 `errs`；在别处对齐 `fmt.Errorf`。不要全仓强制 `errs`。
+- 请求边缘和需要稳定业务 reason 的错误使用 `packages/errs`。业务包用 `errs.Define(reason, errs.Template(pattern, errs.Name(...)))` 集中定义不可变 Message；模板只支持 `%v` 和 `%%`，参数用 `Message.With(errs.Name, value)` 绑定，日志专用上下文用 `errs.WithField`。
+- 多语言模板用 `err_template_gen` 从源码定义生成并在 CI 通过 `--check` 校验。Catalog 在 `cmd` 启动时加载按 locale 命名的 YAML，再用同一个 `errs.Handler` 显式注入 HTTP/gRPC server。客户端只返回 code/reason/message；cause、fields、错误链、模板绑定问题和堆栈只进入日志。
+- Application 生命周期、基础设施 Setup/Close 和聚合关闭错误仍使用 `fmt.Errorf("...: %w", err)` 与 `errors.Join`，不要为了统一表面形式把所有内部错误都改成协议错误。
 
 ### 日志是全局单例，不走 context
 

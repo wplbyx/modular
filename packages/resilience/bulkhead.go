@@ -11,16 +11,15 @@ import (
 )
 
 var (
+	bulkheadFullMessage    = errs.Define("BULKHEAD_FULL", errs.Template("too many requests"))
+	bulkheadClosedMessage  = errs.Define("BULKHEAD_CLOSED", errs.Template("service is temporarily unavailable"))
+	bulkheadPanicMessage   = errs.Define("BULKHEAD_PANIC", errs.Template("internal server error"))
+	bulkheadContextMessage = errs.Define("BULKHEAD_CONTEXT_CANCELED", errs.Template("request canceled"))
+
 	// ErrBulkheadFull 隔板已满错误
-	ErrBulkheadFull = errs.New(
-		errs.WithCode(520),
-		errs.WithMsgf("bulkhead is full"),
-	)
+	ErrBulkheadFull = errs.TooManyRequests(bulkheadFullMessage)
 	// ErrBulkheadClosed 隔板已关闭错误
-	ErrBulkheadClosed = errs.New(
-		errs.WithCode(521),
-		errs.WithMsgf("bulkhead is closed"),
-	)
+	ErrBulkheadClosed = errs.ServiceUnavailable(bulkheadClosedMessage)
 )
 
 // BulkheadConfig 隔板配置
@@ -101,10 +100,10 @@ func (b *bulkheadImpl) Execute(ctx context.Context, fn func() error) (err error)
 	defer func() {
 		b.release()
 		if recovered := recover(); recovered != nil {
-			err = errs.New(
-				errs.WithCode(522),
-				errs.WithMsgf("panic in bulkhead '%s': %v", b.config.Name, recovered),
+			err = errs.InternalServer(
+				bulkheadPanicMessage.With("name", b.config.Name),
 				errs.WithCause(fmt.Errorf("panic: %v", recovered)),
+				errs.WithField("bulkhead", b.config.Name),
 			)
 		}
 	}()
@@ -171,16 +170,16 @@ func (b *bulkheadImpl) acquire(ctx context.Context) error {
 		case <-timer.C:
 			log.Infof("Bulkhead '%s' queue timeout, running: %d, queue length: %d, max concurrent: %d, queue size: %d",
 				b.config.Name, b.Running(), b.Waiting(), b.config.MaxConcurrentCalls, b.config.QueueSize)
-			return errs.New(
-				errs.WithCode(520),
-				errs.WithMsgf("bulkhead '%s' queue timeout", b.config.Name),
+			return errs.TooManyRequests(
+				bulkheadFullMessage.With("name", b.config.Name),
 				errs.WithCause(ErrBulkheadFull),
+				errs.WithField("bulkhead", b.config.Name),
 			)
 		case <-ctx.Done():
-			return errs.New(
-				errs.WithCode(499),
-				errs.WithMsgf("context canceled while waiting for bulkhead '%s'", b.config.Name),
+			return errs.ClientClosed(
+				bulkheadContextMessage.With("name", b.config.Name),
 				errs.WithCause(ctx.Err()),
+				errs.WithField("bulkhead", b.config.Name),
 			)
 		}
 	}
@@ -203,10 +202,10 @@ func (b *bulkheadImpl) notifyReleased() {
 }
 
 func (b *bulkheadImpl) closedError() error {
-	return errs.New(
-		errs.WithCode(521),
-		errs.WithMsgf("bulkhead '%s' is closed", b.config.Name),
+	return errs.ServiceUnavailable(
+		bulkheadClosedMessage.With("name", b.config.Name),
 		errs.WithCause(ErrBulkheadClosed),
+		errs.WithField("bulkhead", b.config.Name),
 	)
 }
 
