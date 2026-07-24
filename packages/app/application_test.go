@@ -12,6 +12,7 @@ import (
 
 	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/core"
+	"go.uber.org/zap"
 )
 
 // --- test Resource ---
@@ -21,6 +22,93 @@ type testResource struct {
 	initErr   error
 	closeErr  error
 	initOrder *[]string
+}
+
+func TestNewApplication_RegistrarRequiresServiceNode(t *testing.T) {
+	application, err := NewApplication(
+		context.Background(),
+		&configitem.Application{Name: "test"},
+		WithRegistrar(&testRegistrar{}),
+	)
+
+	if application != nil {
+		t.Fatal("NewApplication() application is not nil")
+	}
+	if err == nil || !strings.Contains(err.Error(), "service node is required") {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+}
+
+func TestApplicationCloseBeforeRun(t *testing.T) {
+	endpoint := &testEndpoint{started: make(chan struct{})}
+	application, err := NewApplication(
+		context.Background(),
+		&configitem.Application{Name: "test"},
+		WithEndpoint(endpoint),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	if err := application.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := application.Run(); !errors.Is(err, ErrApplicationAlreadyRun) {
+		t.Fatalf("Run() error = %v, want ErrApplicationAlreadyRun", err)
+	}
+	if endpoint.stopCount != 0 {
+		t.Fatalf("Shutdown count = %d, want 0", endpoint.stopCount)
+	}
+}
+
+func TestApplicationRejectsDuplicateRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	endpoint := &testEndpoint{started: make(chan struct{})}
+	application, err := NewApplication(
+		ctx,
+		&configitem.Application{Name: "test"},
+		WithEndpoint(endpoint),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- application.Run() }()
+	select {
+	case <-endpoint.started:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint did not start")
+	}
+
+	if err := application.Run(); !errors.Is(err, ErrApplicationAlreadyRun) {
+		t.Fatalf("second Run() error = %v, want ErrApplicationAlreadyRun", err)
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("first Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first Run() did not return")
+	}
+}
+
+func TestApplicationWithLogger(t *testing.T) {
+	logger := zap.NewNop()
+	application, err := NewApplication(
+		context.Background(),
+		&configitem.Application{Name: "test"},
+		WithLogger(logger),
+	)
+	if err != nil {
+		t.Fatalf("NewApplication() error = %v", err)
+	}
+	if application.getLogger() != logger {
+		t.Fatal("Application did not retain injected logger")
+	}
 }
 
 func (r *testResource) Name() string { return r.name }

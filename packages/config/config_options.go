@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/url"
 	"os"
@@ -19,6 +21,7 @@ import (
 type configFileSource struct {
 	path           string
 	ignoreNotFound bool
+	filesystem     fs.FS
 }
 
 type remoteConfigSource struct {
@@ -80,6 +83,27 @@ func WithConfigFile(path string, ignoreNotFound bool) ConfigureLoaderOption {
 		}
 
 		c.fileSource = &configFileSource{path: path, ignoreNotFound: ignoreNotFound}
+		return nil
+	}
+}
+
+// WithConfigFS 从 fs.FS 读取配置，适用于 go:embed 和测试内存文件系统。
+func WithConfigFS(filesystem fs.FS, path string) ConfigureLoaderOption {
+	return func(loader *ConfigureLoader) error {
+		if loader.fileSource != nil {
+			return errors.New("config file source already configured")
+		}
+		if filesystem == nil {
+			return errors.New("config filesystem is nil")
+		}
+		if strings.TrimSpace(path) == "" {
+			return errors.New("config file path is empty")
+		}
+		format := configFormatFromFile(path)
+		if format == "" || !isSupportedConfigFormat(format) {
+			return fmt.Errorf("unsupported config file format %q", format)
+		}
+		loader.fileSource = &configFileSource{path: path, filesystem: filesystem}
 		return nil
 	}
 }
@@ -222,6 +246,19 @@ func (c *ConfigureLoader) loadConfigFile() (bool, string, error) {
 	}
 
 	source := c.fileSource
+	if source.filesystem != nil {
+		content, err := fs.ReadFile(source.filesystem, source.path)
+		if err != nil {
+			return false, "", fmt.Errorf("read config file %q from fs.FS: %w", source.path, err)
+		}
+		format := configFormatFromFile(source.path)
+		c.v.SetConfigType(format)
+		if err := c.v.ReadConfig(bytes.NewReader(content)); err != nil {
+			return false, "", fmt.Errorf("parse config file %q from fs.FS: %w", source.path, err)
+		}
+		return true, format, nil
+	}
+
 	c.v.SetConfigFile(source.path)
 	if err := c.v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError

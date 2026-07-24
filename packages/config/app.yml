@@ -20,19 +20,11 @@ logging:
     Insecure: true
 
 database:
-  Dsn: "postgres"
-  Urls:
-    - "postgres://user:password@db1.example.com:5432/mydb?sslmode=require"
-  Host: "db1.example.com"
-  Port: 5432
-  Database: "mydb"
-  Username: "user"
-  Password: "password"
+  DSN: "postgres://user:password@db1.example.com:5432/mydb?sslmode=require"
   MaxOpenConn: 50
   MaxIdleConn: 10
   ConnMaxLifetime: "1h"
   ConnMaxIdleTime: "30m"
-  EnableTLS: true
 
 redis:
   Host: "127.0.0.1"

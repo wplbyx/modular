@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/kelseyhightower/envconfig"
 
@@ -93,10 +94,10 @@ func TestStorageConfig_OSSBaseDir(t *testing.T) {
 	}
 }
 
-func TestDatabaseConfigAllowsClickhouseForGORM(t *testing.T) {
-	cfg := &configitem.Database{Dsn: "clickhouse"}
+func TestDatabaseConfigRequiresExplicitDSN(t *testing.T) {
+	cfg := &configitem.Database{DSN: "postgres://localhost/app"}
 	if err := modularconfig.ValidateNode(cfg); err != nil {
-		t.Fatalf("ValidateNode(clickhouse database) error = %v", err)
+		t.Fatalf("ValidateNode(database) error = %v", err)
 	}
 }
 
@@ -170,5 +171,30 @@ func TestWithConfigFileDoesNotIgnoreMalformedFile(t *testing.T) {
 	var cfg struct{}
 	if err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFile(configFile, true)); err == nil {
 		t.Fatalf("InitConfigure() error = nil, want malformed config error")
+	}
+}
+
+func TestWithConfigFSLoadsEmbeddedConfig(t *testing.T) {
+	filesystem := fstest.MapFS{
+		"config/app.yaml": &fstest.MapFile{Data: []byte("name: embedded\n")},
+	}
+	var cfg struct {
+		Name string `mapstructure:"name"`
+	}
+
+	err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFS(filesystem, "config/app.yaml"))
+	if err != nil {
+		t.Fatalf("InitConfigure() error = %v", err)
+	}
+	if cfg.Name != "embedded" {
+		t.Fatalf("Name = %q, want embedded", cfg.Name)
+	}
+}
+
+func TestWithConfigFSRejectsMissingFile(t *testing.T) {
+	var cfg struct{}
+	err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFS(fstest.MapFS{}, "missing.yaml"))
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("InitConfigure() error = %v, want os.ErrNotExist", err)
 	}
 }

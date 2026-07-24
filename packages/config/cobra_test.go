@@ -155,7 +155,7 @@ http:
   Host: 127.0.0.1
   Port: 18080
 database:
-  Dsn: postgres
+  DSN: postgres://localhost/app
 redis:
   Host: remote-redis
   Port: 6379
@@ -189,7 +189,7 @@ http:
   Host: remote-host
   Port: 17070
 database:
-  Dsn: mysql
+  DSN: app:app@tcp(localhost:3306)/app
 redis:
   Host: remote-redis
   Port: 6379
@@ -320,7 +320,7 @@ redis:
   Host: 127.0.0.1
   Port: 6379
 database:
-  Dsn: postgres
+  DSN: postgres://localhost/app
 `)
 	if err := os.WriteFile(file, body, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)

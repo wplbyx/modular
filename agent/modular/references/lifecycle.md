@@ -20,6 +20,8 @@ Both live in `packages/core/adapter.go`.
 - `Setup(ctx context.Context) error` - non-blocking; returns when ready.
 - `Close(ctx context.Context) error` - non-blocking; tears down.
 
+`core.ManagedResource[T]` is the preferred adapter for infrastructure that exposes a value. It implements Resource, `core.Provider[T]`, and the structural health Checker interface. Use `core.NewFuncResource` for migrations, warmups, and other setup/close functions without adding lifecycle phases.
+
 `Endpoint` (transport: HTTP, gRPC, SSE, pub/sub subscriber):
 
 - `Name() string` - log label only.
@@ -39,6 +41,8 @@ From `packages/app/application.go`:
 5. On exit: `Endpoint.Shutdown` (parallel) then `Unregister(node)` then `Resource.Close` (LIFO, reverse registration order).
 
 Shutdown is guarded by an Application-level `sync.Once`, shared by `Run` and manual `Close(ctx)`. It runs entirely within one `shutdownTimeout` budget when triggered by `Run` (default 10s; configurable via `configitem.Application.ShutdownTimeout`).
+
+Application is single-use and transitions through new/running/stopping/stopped. Duplicate Run calls fail. Close before Run moves directly to stopped without invoking any dependency. A configured Registrar requires a ServiceNode at construction time.
 
 ## Assembly in cmd/main.go
 

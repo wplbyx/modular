@@ -29,7 +29,7 @@ python scripts/gen_proto.py --project-dir <project>
   adds another surface to an existing svc.
 - `method <svc> <surface> <MethodName> [--gen auto|skip|required] [--project-dir DIR]`
   updates proto and creates an app method file.
-- `resource <db|redis|storage|telemetry> [--driver bun|gorm|mongo] [--svc SVC] [--project-dir DIR]`
+- `resource <db|redis|storage|telemetry> [--driver bun|gorm|mongo] [--dialect postgres|mysql|sqlite|clickhouse] [--svc SVC] [--project-dir DIR]`
   updates `config/<svc>`, records resource metadata, and rewrites cmd.
 - `repository recommend <svc> [surface] --aggregate X --feature "..." --query ... --command ... [--complexity auto|simple|domain] [--json] [--project-dir DIR]`
   recommends app-vs-domain placement, expands name-only ports into Go signatures, and prints the next scaffold command.
@@ -54,8 +54,9 @@ python scripts/gen_proto.py --project-dir <project>
 
 ## Resource Mapping
 
-- Bun/GORM/Redis/Telemetry use library Resource types.
-- Mongo and Storage generate project-side wrappers under `internal/<svc>/repository`.
+- Bun/GORM/Mongo/Redis/Storage/Telemetry use library Resource types.
+- GORM requires a dialect subpackage selected by `--dialect`; SQLite is pure Go.
+- Repository roots receive the generated resources as typed `core.Provider[T]` constructor arguments.
 - If multiple svc modules exist, pass `--svc`; otherwise the only svc is selected automatically.
 
 ## Safety

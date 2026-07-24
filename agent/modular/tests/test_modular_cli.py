@@ -95,6 +95,7 @@ class ModularCliTest(unittest.TestCase):
         app_repo = (project / "internal" / "user" / "repository" / "app" / "public_user.go").read_text(encoding="utf-8")
         domain_adapter = (project / "internal" / "user" / "domain" / "adapter.go").read_text(encoding="utf-8")
         domain_repo = (project / "internal" / "user" / "repository" / "domain" / "user.go").read_text(encoding="utf-8")
+        repository_root = (project / "internal" / "user" / "repository" / "app" / "repository.go").read_text(encoding="utf-8")
         svc_config = (project / "config" / "user" / "config.go").read_text(encoding="utf-8")
         process_config = (project / "config" / "demo" / "config.go").read_text(encoding="utf-8")
         process_yaml = (project / "config" / "demo" / "config.yaml").read_text(encoding="utf-8")
@@ -116,11 +117,16 @@ class ModularCliTest(unittest.TestCase):
         self.assertIn("resources = append(resources, userRedisResource)", main)
         self.assertIn("resources = append(resources, userStorageResource)", main)
         self.assertIn("resources = append(resources, userTelemetryResource)", main)
+        self.assertIn("userAppRepository.NewRepository(userDBResource, userRedisResource, userStorageResource)", main)
+        self.assertIn("core.Provider[*bun.DB]", repository_root)
+        self.assertIn("core.Provider[redis.UniversalClient]", repository_root)
+        self.assertIn("core.Provider[storage.Storage]", repository_root)
         self.assertIn("FindUser(ctx context.Context, id string) (UserDTO, error)", app_adapter)
         self.assertIn("surfaceapp.UserDTO", app_repo)
         self.assertIn("FindUser(ctx context.Context, id string) (*entity.User, error)", domain_adapter)
         self.assertIn("_ = id", domain_repo)
-        self.assertTrue((project / "internal" / "user" / "repository" / "storage_resource.go").exists())
+        self.assertFalse((project / "internal" / "user" / "repository" / "storage_resource.go").exists())
+        self.assertIn("storageresource.New(&userCfg.Storage)", main)
         self.assertIn("GetConfigFlagSpecsWithPrefix[Config](prefix)", svc_config)
         self.assertIn('userConfig.Config `mapstructure:"user"`', process_config)
         self.assertIn("user:\n", process_yaml)
@@ -128,6 +134,43 @@ class ModularCliTest(unittest.TestCase):
         self.assertIn("  redis:\n", process_yaml)
         self.assertIn("  storage:\n", process_yaml)
         self.assertIn("  telemetry:\n", process_yaml)
+
+    def test_gorm_dialect_and_mongo_use_library_resources(self) -> None:
+        project = self.init_project()
+        self.run_cli("service", "user", "--gen", "skip", "--project-dir", str(project))
+        self.run_cli(
+            "resource",
+            "db",
+            "--driver",
+            "gorm",
+            "--dialect",
+            "sqlite",
+            "--project-dir",
+            str(project),
+        )
+
+        main = (project / "cmd" / "demo" / "main.go").read_text(encoding="utf-8")
+        repository_root = (project / "internal" / "user" / "repository" / "app" / "repository.go").read_text(encoding="utf-8")
+        resources = (project / "config" / "user" / "resources.json").read_text(encoding="utf-8")
+        config_yaml = (project / "config" / "user" / "config.yaml").read_text(encoding="utf-8")
+
+        self.assertIn('gormresource "github.com/wplbyx/modular/packages/infra/database/gorm/sqlite"', main)
+        self.assertIn("gormresource.NewResource(&userCfg.Database)", main)
+        self.assertIn("core.Provider[*gorm.DB]", repository_root)
+        self.assertIn('"db_dialect": "sqlite"', resources)
+        self.assertIn('DSN: "app.db"', config_yaml)
+
+        mongo_project = self.root / "mongo-demo"
+        self.run_cli("init", "mongodemo", "single", "--out", str(mongo_project), "--modular-path", str(REPO_ROOT).replace("\\", "/"))
+        mongo_project = mongo_project / "mongodemo"
+        self.run_cli("service", "catalog", "--gen", "skip", "--project-dir", str(mongo_project))
+        self.run_cli("resource", "db", "--driver", "mongo", "--project-dir", str(mongo_project))
+        mongo_main = (mongo_project / "cmd" / "mongodemo" / "main.go").read_text(encoding="utf-8")
+        mongo_config = (mongo_project / "config" / "catalog" / "config.go").read_text(encoding="utf-8")
+
+        self.assertIn("mongoresource.NewResource(&catalogCfg.Mongo)", mongo_main)
+        self.assertIn("Mongo configitem.Mongo", mongo_config)
+        self.assertFalse((mongo_project / "internal" / "catalog" / "repository" / "mongo_resource.go").exists())
 
     def test_repository_recommend_outputs_scaffold_commands(self) -> None:
         project = self.init_project()

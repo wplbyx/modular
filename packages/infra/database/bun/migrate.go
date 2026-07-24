@@ -35,11 +35,6 @@ func NewMigrationTool(db *bunlib.DB, migrationsFS embed.FS) *MigrationTool {
 	}
 }
 
-// NewBunMigration creates a migration tool using the package-level Bun connection.
-func NewBunMigration(migrationsFS embed.FS) *MigrationTool {
-	return NewMigrationTool(GetDB(), migrationsFS)
-}
-
 // WithOutputDir changes where the create command writes SQL migration files.
 func (t *MigrationTool) WithOutputDir(dir string) *MigrationTool {
 	if dir != "" {
@@ -56,7 +51,7 @@ func (t *MigrationTool) RegisterModels(models ...interface{}) {
 // Run runs the migration CLI.
 func (t *MigrationTool) Run() error {
 	if t.db == nil {
-		return fmt.Errorf("database connection is not initialized, call NewBunConnection first or use NewMigrationTool")
+		return fmt.Errorf("database connection is not initialized; pass it to NewMigrationTool")
 	}
 
 	app := &cli.App{

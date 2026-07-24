@@ -3,11 +3,13 @@ package http
 import (
 	"context"
 	"net"
+	"net/http"
 
 	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/wplbyx/modular/packages/health"
 	mw "github.com/wplbyx/modular/packages/transport/server/http/middleware"
 )
 
@@ -62,6 +64,15 @@ func WithHealth(path string, handler ...gin.HandlerFunc) ServerOption {
 		if len(handler) > 0 {
 			s.healthHandler = handler[0]
 		}
+	}
+}
+
+// WithReadiness 启用可组合的就绪检查。path 为空时使用 /ready。
+func WithReadiness(path string, checkers ...health.Checker) ServerOption {
+	return func(server *Server) {
+		server.readinessEnabled = true
+		server.readinessPath = path
+		server.readinessHandler = http.Handler(health.Handler(checkers...))
 	}
 }
 

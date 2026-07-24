@@ -72,5 +72,6 @@ Name-only defaults:
 - Keep persistence tags out of `domain/entity`.
 - Put app implementations in `repository/app`.
 - Put domain implementations in `repository/domain`.
+- Accept generated typed `core.Provider[T]` dependencies in repository constructors; never read package-level DB/Redis/client globals.
 - Generate `repository/dto` and `repository/model` only when the chosen design actually needs them.
 - Cross-svc dependencies go through generated pb clients, not another svc's `internal`.

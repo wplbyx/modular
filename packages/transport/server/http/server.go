@@ -31,8 +31,13 @@ const (
 	defaultIdleTimeout       = 120 * time.Second
 	defaultShutdownTimeout   = 5 * time.Second
 
-	// DefaultHealthPath 是默认的健康检查路径。
+	// NoWriteTimeout 显式关闭 http.Server.WriteTimeout，适用于流式响应。
+	NoWriteTimeout time.Duration = -1
+
+	// DefaultHealthPath 是默认的存活检查路径。
 	DefaultHealthPath = "/health"
+	// DefaultReadinessPath 是默认的就绪检查路径。
+	DefaultReadinessPath = "/ready"
 )
 
 // RegisterRouteFunc 路由注册函数类型
@@ -58,14 +63,17 @@ type Server struct {
 	listenerClosed bool
 
 	// 由 option 写入、在 NewServer 各阶段消费的配置字段
-	mode           string
-	logger         zapLogger
-	middlewares    []gin.HandlerFunc
-	h2c            bool
-	baseContextFn  func(net.Listener) context.Context
-	healthPath     string
-	healthHandler  gin.HandlerFunc
-	healthDisabled bool
+	mode             string
+	logger           zapLogger
+	middlewares      []gin.HandlerFunc
+	h2c              bool
+	baseContextFn    func(net.Listener) context.Context
+	healthPath       string
+	healthHandler    gin.HandlerFunc
+	healthDisabled   bool
+	readinessPath    string
+	readinessHandler http.Handler
+	readinessEnabled bool
 }
 
 // NewServer 创建并预监听一个 HTTP 服务。
@@ -136,7 +144,7 @@ func NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error) {
 		Handler:           handler,
 		ReadHeaderTimeout: orDuration(cfg.ReadHeaderTimeout, defaultReadHeaderTimeout),
 		ReadTimeout:       orDuration(cfg.ReadTimeout, defaultReadTimeout),
-		WriteTimeout:      orDuration(cfg.WriteTimeout, defaultWriteTimeout),
+		WriteTimeout:      writeTimeout(cfg.WriteTimeout),
 		IdleTimeout:       orDuration(cfg.IdleTimeout, defaultIdleTimeout),
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
@@ -248,7 +256,12 @@ func (s *Server) Transport() core.Transport {
 	}
 
 	healthPath := s.healthPath
-	if healthPath == "" && !s.healthDisabled {
+	if s.readinessEnabled {
+		healthPath = s.readinessPath
+		if healthPath == "" {
+			healthPath = DefaultReadinessPath
+		}
+	} else if healthPath == "" && !s.healthDisabled {
 		healthPath = DefaultHealthPath
 	}
 
@@ -286,4 +299,11 @@ func orDuration(d, def time.Duration) time.Duration {
 		return d
 	}
 	return def
+}
+
+func writeTimeout(timeout time.Duration) time.Duration {
+	if timeout == NoWriteTimeout {
+		return 0
+	}
+	return orDuration(timeout, defaultWriteTimeout)
 }

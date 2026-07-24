@@ -5,69 +5,52 @@ import (
 	"errors"
 
 	bunlib "github.com/uptrace/bun"
-	"github.com/wplbyx/modular/packages/config/configitem"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/core"
 )
 
-var _ core.Resource = (*Resource)(nil)
+// Resource 是由 core.ManagedResource 管理的 Bun 连接。
+type Resource = core.ManagedResource[*bunlib.DB]
 
-// Resource 将 Bun 数据库连接纳入 Application 生命周期。
-type Resource struct {
-	cfg     *configitem.Database
-	db      *bunlib.DB
-	connect func(*configitem.Database) (*bunlib.DB, error)
+type resourceConfig struct {
+	connect func(context.Context, *configitem.Database) (*bunlib.DB, error)
 }
 
-type ResourceOption func(*Resource)
+// ResourceOption 配置 Bun Resource。
+type ResourceOption func(*resourceConfig)
 
-// WithConnector 覆盖 Bun 建连函数，主要用于测试或自定义连接。
-func WithConnector(fn func(*configitem.Database) (*bunlib.DB, error)) ResourceOption {
-	return func(r *Resource) {
+// WithConnector 覆盖 Bun 建连函数，主要用于测试或定制连接。
+func WithConnector(fn func(context.Context, *configitem.Database) (*bunlib.DB, error)) ResourceOption {
+	return func(cfg *resourceConfig) {
 		if fn != nil {
-			r.connect = fn
+			cfg.connect = fn
 		}
 	}
 }
 
 // NewResource 创建 Bun 生命周期资源。
-func NewResource(cfg *configitem.Database, opts ...ResourceOption) *Resource {
-	r := &Resource{cfg: cfg, connect: NewBunConnection}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(r)
+func NewResource(cfg *configitem.Database, options ...ResourceOption) *Resource {
+	resourceCfg := resourceConfig{connect: NewBunConnection}
+	for _, option := range options {
+		if option != nil {
+			option(&resourceCfg)
 		}
 	}
-	return r
+
+	return core.NewManagedResource(
+		"bun",
+		func(ctx context.Context) (*bunlib.DB, error) {
+			if cfg == nil {
+				return nil, errors.New("database config is nil")
+			}
+			return resourceCfg.connect(ctx, cfg)
+		},
+		func(_ context.Context, db *bunlib.DB) error {
+			return db.Close()
+		},
+		core.WithResourceCheck(func(ctx context.Context, db *bunlib.DB) error {
+			return db.PingContext(ctx)
+		}),
+	)
 }
-
-func (r *Resource) Name() string { return "bun" }
-
-func (r *Resource) Setup(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if r.cfg == nil {
-		return errors.New("database config is nil")
-	}
-	db, err := r.connect(r.cfg)
-	if err != nil {
-		return err
-	}
-	r.db = db
-	return nil
-}
-
-func (r *Resource) Close(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if r.db == nil {
-		return nil
-	}
-	err := r.db.Close()
-	r.db = nil
-	return err
-}
-
-func (r *Resource) DB() *bunlib.DB { return r.db }

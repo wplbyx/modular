@@ -313,7 +313,7 @@ def scaffold_surface(project: Path, svc: str, surface: str, *, create_svc: bool)
 
     if create_svc:
         write_file(project / "internal" / svc / "domain" / "adapter.go", render_template("svc/domain_adapter.go.tmpl", tokens))
-        write_file(project / "internal" / svc / "repository" / "app" / "repository.go", render_template("svc/app_repository.go.tmpl", tokens))
+        write_file(project / "internal" / svc / "repository" / "app" / "repository.go", render_repository_base(project, svc, "app"))
     write_file(project / "internal" / svc / "repository" / "app" / f"{surface}_example.go", render_template("svc/app_repository_example.go.tmpl", tokens))
 
 
@@ -464,15 +464,18 @@ def render_main(project: Path, svcs: list[str], *, aggregate: bool) -> str:
         imports.append(f'{alias(svc, "app_repository")} "{module}/internal/{svc}/repository/app"')
         resources = read_resources(project, svc)
         if resources.get("db") == "bun":
-            imports.append('"github.com/wplbyx/modular/packages/infra/database/bun"')
+            imports.append('bunresource "github.com/wplbyx/modular/packages/infra/database/bun"')
         if resources.get("db") == "gorm":
-            imports.append('"github.com/wplbyx/modular/packages/infra/database/gorm"')
+            dialect = resources.get("db_dialect", "postgres")
+            imports.append(f'gormresource "github.com/wplbyx/modular/packages/infra/database/gorm/{dialect}"')
+        if resources.get("db") == "mongo":
+            imports.append('mongoresource "github.com/wplbyx/modular/packages/infra/database/mongo"')
         if resources.get("redis"):
             imports.append('"github.com/wplbyx/modular/packages/infra/cache/redis"')
+        if resources.get("storage"):
+            imports.append('storageresource "github.com/wplbyx/modular/packages/infra/storage/resource"')
         if resources.get("telemetry"):
             imports.append('"github.com/wplbyx/modular/packages/telemetry"')
-        if resources.get("db") == "mongo" or resources.get("storage"):
-            imports.append(f'{alias(svc, "repository")} "{module}/internal/{svc}/repository"')
         for surface in discover_surfaces(project, svc):
             imports.append(f'{alias(svc, surface, "api")} "{module}/internal/{svc}/api/{surface}"')
             imports.append(f'{alias(svc, surface, "app")} "{module}/internal/{svc}/app/{surface}"')
@@ -557,8 +560,11 @@ def render_svc_wiring(project: Path, svc: str, cfg_expr: str) -> list[str]:
         f'\t\treturn fmt.Errorf("create {svc} http server: %w", err)',
         "\t}",
         "",
-        f"\t{repo_var} := {repo_alias}.NewRepository()",
     ]
+
+    lines.extend(render_resource_wiring(project, svc, cfg_var))
+    constructor_args = ", ".join(repository_provider_vars(project, svc))
+    lines.append(f"\t{repo_var} := {repo_alias}.NewRepository({constructor_args})")
 
     for surface in discover_surfaces(project, svc):
         server_var = lower_camel(svc + "_" + surface + "_server")
@@ -590,7 +596,6 @@ def render_svc_wiring(project: Path, svc: str, cfg_expr: str) -> list[str]:
         "",
     ])
 
-    lines.extend(render_resource_wiring(project, svc, cfg_var))
     lines.extend([
         f"\tendpoints = append(endpoints, {http_var}, {grpc_var})",
         "\ttransports = append(transports,",
@@ -607,16 +612,15 @@ def render_resource_wiring(project: Path, svc: str, cfg_var: str) -> list[str]:
     lines: list[str] = []
     if resources.get("db") == "bun":
         var_name = lower_camel(svc) + "DBResource"
-        lines.append(f"\t{var_name} := bun.NewResource(&{cfg_var}.Database)")
+        lines.append(f"\t{var_name} := bunresource.NewResource(&{cfg_var}.Database)")
         lines.append(f"\tresources = append(resources, {var_name})")
     if resources.get("db") == "gorm":
         var_name = lower_camel(svc) + "DBResource"
-        lines.append(f"\t{var_name} := gorm.NewResource(&{cfg_var}.Database)")
+        lines.append(f"\t{var_name} := gormresource.NewResource(&{cfg_var}.Database)")
         lines.append(f"\tresources = append(resources, {var_name})")
     if resources.get("db") == "mongo":
-        var_name = lower_camel(svc) + "MongoResource"
-        repo_alias = alias(svc, "repository")
-        lines.append(f"\t{var_name} := {repo_alias}.NewMongoResource(&{cfg_var}.Database)")
+        var_name = lower_camel(svc) + "DBResource"
+        lines.append(f"\t{var_name} := mongoresource.NewResource(&{cfg_var}.Mongo)")
         lines.append(f"\tresources = append(resources, {var_name})")
     if resources.get("redis"):
         var_name = lower_camel(svc) + "RedisResource"
@@ -624,8 +628,7 @@ def render_resource_wiring(project: Path, svc: str, cfg_var: str) -> list[str]:
         lines.append(f"\tresources = append(resources, {var_name})")
     if resources.get("storage"):
         var_name = lower_camel(svc) + "StorageResource"
-        repo_alias = alias(svc, "repository")
-        lines.append(f"\t{var_name} := {repo_alias}.NewStorageResource(&{cfg_var}.Storage)")
+        lines.append(f"\t{var_name} := storageresource.New(&{cfg_var}.Storage)")
         lines.append(f"\tresources = append(resources, {var_name})")
     if resources.get("telemetry"):
         var_name = lower_camel(svc) + "TelemetryResource"
@@ -639,6 +642,71 @@ def render_resource_wiring(project: Path, svc: str, cfg_var: str) -> list[str]:
     if lines:
         lines.append("")
     return lines
+
+
+def repository_provider_specs(project: Path, svc: str) -> list[tuple[str, str, str, str]]:
+    """Return (field, parameter, provider type, type import) in constructor order."""
+    resources = read_resources(project, svc)
+    specs: list[tuple[str, str, str, str]] = []
+    driver = resources.get("db")
+    if driver == "bun":
+        specs.append(("database", "databaseProvider", "core.Provider[*bun.DB]", 'bun "github.com/uptrace/bun"'))
+    elif driver == "gorm":
+        specs.append(("database", "databaseProvider", "core.Provider[*gorm.DB]", '"gorm.io/gorm"'))
+    elif driver == "mongo":
+        specs.append(("database", "databaseProvider", "core.Provider[*mongo.Client]", '"go.mongodb.org/mongo-driver/v2/mongo"'))
+    if resources.get("redis"):
+        specs.append(("redis", "redisProvider", "core.Provider[redis.UniversalClient]", '"github.com/redis/go-redis/v9"'))
+    if resources.get("storage"):
+        specs.append(("storage", "storageProvider", "core.Provider[storage.Storage]", '"github.com/wplbyx/modular/packages/infra/storage"'))
+    return specs
+
+
+def repository_provider_vars(project: Path, svc: str) -> list[str]:
+    resources = read_resources(project, svc)
+    prefix = lower_camel(svc)
+    variables: list[str] = []
+    if resources.get("db"):
+        variables.append(prefix + "DBResource")
+    if resources.get("redis"):
+        variables.append(prefix + "RedisResource")
+    if resources.get("storage"):
+        variables.append(prefix + "StorageResource")
+    return variables
+
+
+def render_repository_base(project: Path, svc: str, package_name: str) -> str:
+    specs = repository_provider_specs(project, svc)
+    lines = [
+        f"// internal/{svc}/repository/{package_name}/repository.go - generated dependency root.",
+        f"package {package_name}",
+        "",
+    ]
+    if specs:
+        third_party_imports = [spec[3] for spec in specs if "github.com/wplbyx/modular/" not in spec[3]]
+        modular_imports = ['"github.com/wplbyx/modular/packages/core"']
+        modular_imports.extend(spec[3] for spec in specs if "github.com/wplbyx/modular/" in spec[3])
+        lines.extend(["import ("])
+        lines.extend("\t" + item for item in third_party_imports)
+        if third_party_imports:
+            lines.append("")
+        lines.extend("\t" + item for item in modular_imports)
+        lines.extend([")", ""])
+    lines.append("type Repository struct {")
+    for field, _, provider_type, _ in specs:
+        lines.append(f"\t{field} {provider_type}")
+    lines.extend(["}", ""])
+    parameters = ", ".join(f"{parameter} {provider_type}" for _, parameter, provider_type, _ in specs)
+    lines.append(f"func NewRepository({parameters}) *Repository {{")
+    if specs:
+        lines.append("\treturn &Repository{")
+        for field, parameter, _, _ in specs:
+            lines.append(f"\t\t{field}: {parameter},")
+        lines.append("\t}")
+    else:
+        lines.append("\treturn &Repository{}")
+    lines.extend(["}", ""])
+    return "\n".join(lines)
 
 
 def alias(*parts: str) -> str:
@@ -662,23 +730,46 @@ def unique_preserve(items: list[str]) -> list[str]:
     return result
 
 
-DATABASE_YAML = """\
+DATABASE_POSTGRES_YAML = """\
 database:
-  Dsn: postgres
-  Host: "127.0.0.1"
-  Port: 5432
-  Database: app
-  Username: app
-  Password: app
+  DSN: "postgres://app:app@127.0.0.1:5432/app?sslmode=disable"
+  MaxOpenConn: 25
+  MaxIdleConn: 5
 """
 
-DATABASE_MONGO_YAML = """\
+DATABASE_MYSQL_YAML = """\
 database:
-  Dsn: mongodb
-  Host: "127.0.0.1"
-  Port: 27017
+  DSN: "app:app@tcp(127.0.0.1:3306)/app?charset=utf8mb4&parseTime=True&loc=Local"
+  MaxOpenConn: 25
+  MaxIdleConn: 5
+"""
+
+DATABASE_SQLITE_YAML = """\
+database:
+  DSN: "app.db"
+  MaxOpenConn: 1
+  MaxIdleConn: 1
+"""
+
+DATABASE_CLICKHOUSE_YAML = """\
+database:
+  DSN: "tcp://127.0.0.1:9000?database=app&username=default&password="
+  MaxOpenConn: 25
+  MaxIdleConn: 5
+"""
+
+MONGO_YAML = """\
+mongo:
+  URI: "mongodb://127.0.0.1:27017"
   Database: app
 """
+
+DATABASE_YAML_BY_DIALECT = {
+    "postgres": DATABASE_POSTGRES_YAML,
+    "mysql": DATABASE_MYSQL_YAML,
+    "sqlite": DATABASE_SQLITE_YAML,
+    "clickhouse": DATABASE_CLICKHOUSE_YAML,
+}
 
 REDIS_YAML = """\
 redis:
@@ -767,11 +858,20 @@ def command_resource(args: argparse.Namespace) -> int:
     if kind == "db":
         if driver not in {"bun", "gorm", "mongo"}:
             return fail("--driver for db must be bun, gorm, or mongo")
-        update_config_go(project, svc, '\tDatabase configitem.Database `mapstructure:"database"`\n')
-        update_config_yaml(project, svc, "database", DATABASE_MONGO_YAML if driver == "mongo" else DATABASE_YAML)
-        resources["db"] = driver
+        dialect = args.dialect
+        if driver == "bun" and dialect != "postgres":
+            return fail("bun supports only --dialect postgres")
         if driver == "mongo":
-            write_file(project / "internal" / svc / "repository" / "mongo_resource.go", render_template("resource/mongo_resource.go.tmpl", {"PROJECT": module}), overwrite=True)
+            update_config_go(project, svc, '\tMongo configitem.Mongo `mapstructure:"mongo"`\n')
+            update_config_yaml(project, svc, "mongo", MONGO_YAML)
+        else:
+            update_config_go(project, svc, '\tDatabase configitem.Database `mapstructure:"database"`\n')
+            update_config_yaml(project, svc, "database", DATABASE_YAML_BY_DIALECT[dialect])
+        resources["db"] = driver
+        if driver == "gorm":
+            resources["db_dialect"] = dialect
+        else:
+            resources.pop("db_dialect", None)
     elif kind == "redis":
         update_config_go(project, svc, '\tRedis configitem.Redis `mapstructure:"redis"`\n')
         update_config_yaml(project, svc, "redis", REDIS_YAML)
@@ -780,7 +880,6 @@ def command_resource(args: argparse.Namespace) -> int:
         update_config_go(project, svc, '\tStorage configitem.Storage `mapstructure:"storage"`\n')
         update_config_yaml(project, svc, "storage", STORAGE_YAML)
         resources["storage"] = True
-        write_file(project / "internal" / svc / "repository" / "storage_resource.go", render_template("resource/storage_resource.go.tmpl", {"PROJECT": module}), overwrite=True)
     elif kind == "telemetry":
         update_config_go(project, svc, '\tTelemetry configitem.Telemetry `mapstructure:"telemetry"`\n')
         update_config_yaml(project, svc, "telemetry", TELEMETRY_YAML)
@@ -788,6 +887,10 @@ def command_resource(args: argparse.Namespace) -> int:
     else:
         return fail(f"unsupported resource kind: {kind}")
     write_resources(project, svc, resources)
+    write_file(project / "internal" / svc / "repository" / "app" / "repository.go", render_repository_base(project, svc, "app"), overwrite=True)
+    domain_repository = project / "internal" / svc / "repository" / "domain" / "repository.go"
+    if domain_repository.exists():
+        write_file(domain_repository, render_repository_base(project, svc, "domain"), overwrite=True)
     rebuild_cmd(project, svc)
     gofmt_paths([project / "cmd", project / "config" / svc, project / "internal" / svc / "repository"])
     info(f"Resource '{kind}' configured for svc '{svc}'")
@@ -1070,7 +1173,7 @@ def command_repository_app(args: argparse.Namespace) -> int:
     if not queries and not commands:
         return fail("provide at least one --query/--queries or --command/--commands")
     write_file(project / "internal" / svc / "app" / surface / "adapter.go", render_app_adapter(surface, aggregate, queries, commands), overwrite=args.force)
-    write_file(project / "internal" / svc / "repository" / "app" / "repository.go", render_template("svc/app_repository.go.tmpl", base_tokens(project, svc, surface)), overwrite=False)
+    write_file(project / "internal" / svc / "repository" / "app" / "repository.go", render_repository_base(project, svc, "app"), overwrite=False)
     write_file(
         project / "internal" / svc / "repository" / "app" / f"{surface}_{snake_case(aggregate)}.go",
         render_app_repository_methods(module, svc, surface, aggregate, queries, commands),
@@ -1097,7 +1200,7 @@ def command_repository_domain(args: argparse.Namespace) -> int:
         return fail("provide at least one --query/--queries or --command/--commands")
     write_file(project / "internal" / svc / "domain" / "adapter.go", render_domain_adapter(svc, aggregate, queries, commands, module), overwrite=args.force)
     write_file(project / "internal" / svc / "domain" / "entity" / f"{snake_case(aggregate)}.go", render_entity(aggregate), overwrite=args.force)
-    write_file(project / "internal" / svc / "repository" / "domain" / "repository.go", render_domain_repository_base(), overwrite=False)
+    write_file(project / "internal" / svc / "repository" / "domain" / "repository.go", render_repository_base(project, svc, "domain"), overwrite=False)
     write_file(
         project / "internal" / svc / "repository" / "domain" / f"{snake_case(aggregate)}.go",
         render_domain_repository_methods(module, svc, aggregate, queries, commands),
@@ -1182,10 +1285,6 @@ def render_domain_adapter(svc: str, aggregate: str, queries: list[str], commands
     return "\n".join(lines)
 
 
-def render_domain_repository_base() -> str:
-    return "package domain\n\ntype Repository struct {\n\t// db/cache/client fields live here.\n}\n\nfunc NewRepository() *Repository {\n\treturn &Repository{}\n}\n"
-
-
 def render_domain_repository_methods(module: str, svc: str, aggregate: str, queries: list[str], commands: list[str]) -> str:
     lines = [
         "package domain",
@@ -1257,7 +1356,7 @@ def command_doctor(args: argparse.Namespace) -> int:
     if (project / "config" / "config.go").exists() or (project / "config" / "config.yaml").exists():
         errors.append("stale top-level config/config.go or config/config.yaml found; use config/<process-or-svc>/")
     if (project / "internal" / "infra").exists():
-        errors.append("stale internal/infra found; project-side resource wrappers now live under internal/<svc>/repository")
+        errors.append("stale internal/infra found; wire modular library resources from cmd")
     if (project / "common").exists():
         for path in (project / "common").rglob("*.go"):
             if not path.name.endswith((".pb.go", "_grpc.pb.go")):
@@ -1358,6 +1457,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("resource", help="add config and wiring for a svc infrastructure resource")
     p.add_argument("kind", choices=["db", "redis", "storage", "telemetry"])
     p.add_argument("--driver", default="bun", help="db: bun|gorm|mongo")
+    p.add_argument("--dialect", choices=["postgres", "mysql", "sqlite", "clickhouse"], default="postgres", help="gorm SQL dialect")
     p.add_argument("--svc", default=None)
     p.add_argument("--project-dir", default=".")
     p.set_defaults(func=command_resource)

@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wplbyx/modular/packages/config/configitem"
+	"github.com/wplbyx/modular/packages/health"
 )
 
 func withStop(t *testing.T, srv *Server) {
@@ -46,6 +48,14 @@ func TestNewServerDefaultsTimeouts(t *testing.T) {
 	assert.Equal(t, defaultIdleTimeout, srv.server.IdleTimeout)
 }
 
+func TestNewServerNoWriteTimeout(t *testing.T) {
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0, WriteTimeout: NoWriteTimeout})
+	require.NoError(t, err)
+	withStop(t, srv)
+
+	assert.Zero(t, srv.server.WriteTimeout)
+}
+
 func TestDefaultHealthHandler(t *testing.T) {
 	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)
@@ -63,6 +73,20 @@ func TestHealthDisabled(t *testing.T) {
 
 	w := doRequest(t, srv, http.MethodGet, DefaultHealthPath)
 	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestReadinessHandlerAndTransport(t *testing.T) {
+	srv, err := NewServer(
+		&configitem.HTTP{Host: "127.0.0.1", Port: 0},
+		WithReadiness("/readyz", testHealthChecker{name: "database", err: errors.New("down")}),
+	)
+	require.NoError(t, err)
+	withStop(t, srv)
+
+	w := doRequest(t, srv, http.MethodGet, "/readyz")
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, "/readyz", srv.Transport().HealthPath)
+	assert.Equal(t, http.StatusOK, doRequest(t, srv, http.MethodGet, DefaultHealthPath).Code)
 }
 
 func TestServerStartServeAndStop(t *testing.T) {
@@ -142,3 +166,14 @@ func eventually(fn func() bool) bool {
 	}
 	return fn()
 }
+
+type testHealthChecker struct {
+	name string
+	err  error
+}
+
+func (checker testHealthChecker) Name() string { return checker.name }
+
+func (checker testHealthChecker) Check(context.Context) error { return checker.err }
+
+var _ health.Checker = testHealthChecker{}

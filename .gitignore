@@ -31,6 +31,10 @@ go.work.sum
 .idea/
 .vscode/
 
+# Python caches
+__pycache__/
+*.py[cod]
+
 # Local disk storage test artifacts (persisted by TestDiskStorage_PersistToUploadDir)
 storage/upload/
 packages/infra/storage/upload/

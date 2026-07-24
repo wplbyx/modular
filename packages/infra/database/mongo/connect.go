@@ -4,25 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"strconv"
 	"strings"
 
-	"github.com/wplbyx/modular/packages/config/configitem"
 	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
-	"github.com/wplbyx/modular/packages/infra/database"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
 
-const defaultMongoPort = 27017
-
-// globalClient is the package-level connection, set by NewMongoConnection.
-var globalClient *mongodriver.Client
-
-// NewMongoConnection creates a MongoDB client and stores it as the global instance.
-func NewMongoConnection(cfg *configitem.Database) (*mongodriver.Client, error) {
+// NewMongoConnection 创建并验证 MongoDB 客户端。
+func NewMongoConnection(ctx context.Context, cfg *configitem.Mongo) (*mongodriver.Client, error) {
 	opts, err := newClientOptions(cfg)
 	if err != nil {
 		return nil, err
@@ -32,48 +24,38 @@ func NewMongoConnection(cfg *configitem.Database) (*mongodriver.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open mongo connection: %w", err)
 	}
-
-	if err = client.Ping(context.Background(), readpref.Primary()); err != nil {
+	if err := client.Ping(ctx, readpref.Primary()); err != nil {
 		_ = client.Disconnect(context.Background())
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-
-	globalClient = client
 	return client, nil
 }
 
-// GetClient returns the global MongoDB client, or nil if NewMongoConnection has not been called.
-func GetClient() *mongodriver.Client {
-	return globalClient
-}
-
-func newClientOptions(cfg *configitem.Database) (*options.ClientOptions, error) {
+func newClientOptions(cfg *configitem.Mongo) (*options.ClientOptions, error) {
 	if cfg == nil {
-		return nil, errors.New("database config is nil")
-	}
-	if cfg.Dsn != database.DSNMongo {
-		return nil, fmt.Errorf("unsupported database dsn: %s", cfg.Dsn)
+		return nil, errors.New("mongo config is nil")
 	}
 	if cfg.MaxPoolSize < 0 {
-		return nil, errors.New("database max pool size cannot be negative")
+		return nil, errors.New("mongo max pool size cannot be negative")
+	}
+	if cfg.URI == "" && len(cfg.Hosts) == 0 {
+		return nil, errors.New("mongo URI or hosts is required")
+	}
+	if cfg.URI != "" && len(cfg.Hosts) > 0 {
+		return nil, errors.New("mongo URI and hosts are mutually exclusive")
+	}
+	if cfg.URI != "" && !isMongoURI(cfg.URI) {
+		return nil, errors.New("mongo URI must start with mongodb:// or mongodb+srv://")
 	}
 
 	opts := options.Client()
-	uri, hosts, err := mongoEndpoint(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if uri != "" {
-		opts.ApplyURI(uri)
+	if cfg.URI != "" {
+		opts.ApplyURI(cfg.URI)
 	} else {
-		opts.SetHosts(hosts)
+		opts.SetHosts(cfg.Hosts)
 	}
-
 	if cfg.Username != "" || cfg.Password != "" {
-		auth := options.Credential{
-			Username: cfg.Username,
-			Password: cfg.Password,
-		}
+		auth := options.Credential{Username: cfg.Username, Password: cfg.Password}
 		if cfg.Database != "" {
 			auth.AuthSource = cfg.Database
 		}
@@ -85,34 +67,9 @@ func newClientOptions(cfg *configitem.Database) (*options.ClientOptions, error) 
 	if cfg.MaxPoolSize > 0 {
 		opts.SetMaxPoolSize(uint64(cfg.MaxPoolSize))
 	}
-
 	return opts, nil
 }
 
-func mongoEndpoint(cfg *configitem.Database) (string, []string, error) {
-	if len(cfg.Urls) > 0 {
-		if len(cfg.Urls) == 1 && isMongoURI(cfg.Urls[0]) {
-			return cfg.Urls[0], nil, nil
-		}
-		for _, u := range cfg.Urls {
-			if isMongoURI(u) {
-				return "", nil, errors.New("mongodb uri must be the only database url")
-			}
-		}
-		return "", cfg.Urls, nil
-	}
-
-	if cfg.Host == "" {
-		return "", nil, errors.New("database host or urls is required")
-	}
-
-	port := cfg.Port
-	if port == 0 {
-		port = defaultMongoPort
-	}
-	return "", []string{net.JoinHostPort(cfg.Host, strconv.Itoa(port))}, nil
-}
-
-func isMongoURI(s string) bool {
-	return strings.HasPrefix(s, "mongodb://") || strings.HasPrefix(s, "mongodb+srv://")
+func isMongoURI(value string) bool {
+	return strings.HasPrefix(value, "mongodb://") || strings.HasPrefix(value, "mongodb+srv://")
 }

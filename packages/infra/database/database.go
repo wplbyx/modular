@@ -1,12 +1,11 @@
 package database
 
-// DSN constants identify supported database dialects.
+// Dialect constants identify supported SQL database dialects at composition time.
 const (
-	DSNSqlite     = "sqlite"
-	DSNMySQL      = "mysql"
-	DSNPostgres   = "postgres"
-	DSNClickhouse = "clickhouse"
-	DSNMongo      = "mongodb"
+	DialectSQLite     = "sqlite"
+	DialectMySQL      = "mysql"
+	DialectPostgres   = "postgres"
+	DialectClickHouse = "clickhouse"
 )
 
 // IndexDefinition represents a database index for migration tooling.

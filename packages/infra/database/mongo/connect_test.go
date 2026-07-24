@@ -4,15 +4,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/wplbyx/modular/packages/config/configitem"
 
-	"github.com/wplbyx/modular/packages/infra/database"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
 
 func TestNewClientOptions_UsesConfiguredHosts(t *testing.T) {
-	cfg := &configitem.Database{
-		Dsn:         database.DSNMongo,
-		Urls:        []string{"mongo-1:27017", "mongo-2:27017"},
+	cfg := &configitem.Mongo{
+		Hosts:       []string{"mongo-1:27017", "mongo-2:27017"},
 		Database:    "app",
 		Username:    "user",
 		Password:    "pass",
@@ -22,7 +20,7 @@ func TestNewClientOptions_UsesConfiguredHosts(t *testing.T) {
 
 	opts, err := newClientOptions(cfg)
 	require.NoError(t, err)
-	require.Equal(t, []string{"mongo-1:27017", "mongo-2:27017"}, opts.Hosts)
+	require.Equal(t, cfg.Hosts, opts.Hosts)
 	require.NotNil(t, opts.Auth)
 	require.Equal(t, "user", opts.Auth.Username)
 	require.Equal(t, "pass", opts.Auth.Password)
@@ -33,50 +31,26 @@ func TestNewClientOptions_UsesConfiguredHosts(t *testing.T) {
 	require.Equal(t, uint64(50), *opts.MaxPoolSize)
 }
 
-func TestNewClientOptions_UsesHostPortFallback(t *testing.T) {
-	cfg := &configitem.Database{
-		Dsn:  database.DSNMongo,
-		Host: "127.0.0.1",
-		Port: 27018,
-	}
-
-	opts, err := newClientOptions(cfg)
+func TestNewClientOptions_AcceptsMongoURI(t *testing.T) {
+	uri := "mongodb://mongo-1:27017,mongo-2:27017/?replicaSet=rs0"
+	opts, err := newClientOptions(&configitem.Mongo{URI: uri})
 	require.NoError(t, err)
-	require.Equal(t, []string{"127.0.0.1:27018"}, opts.Hosts)
-}
-
-func TestNewClientOptions_DefaultsMongoPort(t *testing.T) {
-	cfg := &configitem.Database{
-		Dsn:  database.DSNMongo,
-		Host: "localhost",
-	}
-
-	opts, err := newClientOptions(cfg)
-	require.NoError(t, err)
-	require.Equal(t, []string{"localhost:27017"}, opts.Hosts)
-}
-
-func TestNewClientOptions_AcceptsSingleMongoURI(t *testing.T) {
-	cfg := &configitem.Database{
-		Dsn:  database.DSNMongo,
-		Urls: []string{"mongodb://mongo-1:27017,mongo-2:27017/?replicaSet=rs0"},
-	}
-
-	opts, err := newClientOptions(cfg)
-	require.NoError(t, err)
-	require.Equal(t, "mongodb://mongo-1:27017,mongo-2:27017/?replicaSet=rs0", opts.GetURI())
+	require.Equal(t, uri, opts.GetURI())
 }
 
 func TestNewClientOptions_RejectsInvalidConfig(t *testing.T) {
 	_, err := newClientOptions(nil)
-	require.EqualError(t, err, "database config is nil")
+	require.EqualError(t, err, "mongo config is nil")
 
-	_, err = newClientOptions(&configitem.Database{Dsn: database.DSNPostgres})
-	require.EqualError(t, err, "unsupported database dsn: postgres")
+	_, err = newClientOptions(&configitem.Mongo{})
+	require.EqualError(t, err, "mongo URI or hosts is required")
 
-	_, err = newClientOptions(&configitem.Database{Dsn: database.DSNMongo})
-	require.EqualError(t, err, "database host or urls is required")
+	_, err = newClientOptions(&configitem.Mongo{URI: "localhost", MaxPoolSize: 1})
+	require.EqualError(t, err, "mongo URI must start with mongodb:// or mongodb+srv://")
 
-	_, err = newClientOptions(&configitem.Database{Dsn: database.DSNMongo, Host: "localhost", MaxPoolSize: -1})
-	require.EqualError(t, err, "database max pool size cannot be negative")
+	_, err = newClientOptions(&configitem.Mongo{Hosts: []string{"localhost:27017"}, MaxPoolSize: -1})
+	require.EqualError(t, err, "mongo max pool size cannot be negative")
+
+	_, err = newClientOptions(&configitem.Mongo{URI: "mongodb://localhost", Hosts: []string{"localhost:27017"}})
+	require.EqualError(t, err, "mongo URI and hosts are mutually exclusive")
 }

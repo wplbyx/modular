@@ -16,7 +16,8 @@ All infrastructure config items live in `packages/config/configitem` and use typ
 - `configitem.Application`: `Name` (required), `Mode` (required, oneof dev|test|prod), `Version` (required), `ShutdownTimeout`.
 - `configitem.HTTP`: `Host` (required), `Port` (required, 1000-65535), `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
 - `configitem.GRPC`: `Host` (required), `Port` (required, 1000-65535), `Timeout`, `ShutdownTimeout`, `EnableTLS`, `TLSKeyFile`, `TLSCertFile`.
-- `configitem.Database`: `Dsn` (required, oneof sqlite|mysql|postgres|clickhouse|mongodb), `Urls`, `Host`, `Port`, `Path` (sqlite), `Database`, `Username`, `Password`, `MaxOpenConn`, `MaxIdleConn`, `MaxPoolSize` (MongoDB), `ReplicaSet` (MongoDB), `ConnMaxLifetime`, `ConnMaxIdleTime`, `EnableTLS`.
+- `configitem.Database`: explicit SQL `DSN` (required), `MaxOpenConn`, `MaxIdleConn`, `ConnMaxLifetime`, `ConnMaxIdleTime`. The cmd chooses the SQL dialect adapter.
+- `configitem.Mongo`: `URI` or `Hosts`, `Database`, `Username`, `Password`, `MaxPoolSize`, `ReplicaSet`.
 - `configitem.Redis`: `Urls`, `Host`, `Port`, `Username`, `Password`, `Database`, `PoolSize`, `MinIdleConn`, `DialTimeout`, `ReadTimeout`, `WriteTimeout`, `MaxRetries`, `MinRetryBackoff`, `MaxRetryBackoff`.
 - `configitem.Storage`: `Type` (required, oneof disk|oss), `PublicBaseURL`, `Disk *DiskStorageConfig`, `OSS *OSSStorageConfig`.
 - `configitem.Telemetry`: `Logger`, `Metric`, `Tracer`.
@@ -28,6 +29,7 @@ All infrastructure config items live in `packages/config/configitem` and use typ
 `config.InitConfigure(target, options...)` unmarshals into the target via Viper, with a `time.Duration` decode hook, then runs `validator` on the struct. Options:
 
 - `config.WithConfigFile(path, ignoreNotFound)` - read one exact file path (e.g. `"./config/user/config.yaml"`). It does not search directories or infer an extension. When `ignoreNotFound` is true, only a missing file is ignored; malformed files, permission failures, and other errors are still returned.
+- `config.WithConfigFS(fsys, path)` - read one exact file from an `fs.FS`, including `go:embed`; embedded sources cannot be watched.
 - `config.WithEnvPrefix(prefix, replaces...)` - bind env vars matching `<PREFIX>_KEY`, lowercased with `_` -> `.`.
 - `config.WithRemoteProvider(provider, endpoint, path)` - configure a Viper remote provider directly. The content format is inferred from the key extension and defaults to YAML.
 - `config.WithRemoteURL(url)` - configure etcd or Consul through a single URL. `etcd://10.0.0.1:2379/config/myapp` maps to the modern `etcd3` provider; `consul://10.0.0.1:8500/config/myapp` maps to Consul. Add `?format=json` when the remote value is not YAML and the key has no extension.

@@ -6,55 +6,44 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	bunlib "github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
-	"github.com/wplbyx/modular/packages/config/configitem"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/core"
 )
 
-func TestResourceImplementsCoreResource(t *testing.T) {
-	var _ core.Resource = (*Resource)(nil)
-}
-
 func TestResourceSetupAndClose(t *testing.T) {
 	db := bunlib.NewDB(sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN("postgres://user:pass@localhost:5432/db?sslmode=disable"))), pgdialect.New())
-	res := NewResource(&configitem.Database{}, WithConnector(func(*configitem.Database) (*bunlib.DB, error) {
+	resource := NewResource(&configitem.Database{}, WithConnector(func(context.Context, *configitem.Database) (*bunlib.DB, error) {
 		return db, nil
 	}))
 
-	if err := res.Setup(context.Background()); err != nil {
-		t.Fatalf("Setup() error = %v", err)
-	}
-	if res.DB() != db {
-		t.Fatal("DB() did not return setup database")
-	}
-	if err := res.Close(context.Background()); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	if res.DB() != nil {
-		t.Fatal("DB() after Close() is not nil")
-	}
+	var _ core.Resource = resource
+	var _ core.Provider[*bunlib.DB] = resource
+	require.NoError(t, resource.Setup(context.Background()))
+	value, err := resource.Value()
+	require.NoError(t, err)
+	require.Same(t, db, value)
+	require.NoError(t, resource.Close(context.Background()))
+	_, err = resource.Value()
+	require.ErrorIs(t, err, core.ErrResourceNotReady)
 }
 
 func TestResourceSetupFailureDoesNotSetDB(t *testing.T) {
 	setupErr := errors.New("setup boom")
-	res := NewResource(&configitem.Database{}, WithConnector(func(*configitem.Database) (*bunlib.DB, error) {
+	resource := NewResource(&configitem.Database{}, WithConnector(func(context.Context, *configitem.Database) (*bunlib.DB, error) {
 		return nil, setupErr
 	}))
 
-	if err := res.Setup(context.Background()); !errors.Is(err, setupErr) {
-		t.Fatalf("Setup() error = %v, want setupErr", err)
-	}
-	if res.DB() != nil {
-		t.Fatal("DB() set after failed Setup")
-	}
+	require.ErrorIs(t, resource.Setup(context.Background()), setupErr)
+	_, err := resource.Value()
+	require.ErrorIs(t, err, core.ErrResourceNotReady)
 }
 
 func TestResourceSetupRejectsNilConfig(t *testing.T) {
-	res := NewResource(nil)
-	if err := res.Setup(context.Background()); err == nil {
-		t.Fatal("Setup() error = nil")
-	}
+	resource := NewResource(nil)
+	require.EqualError(t, resource.Setup(context.Background()), "database config is nil")
 }

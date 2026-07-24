@@ -109,6 +109,7 @@ chore: ignore packages/infra/storage/upload test artifact
 - `core.Endpoint.Startup(ctx)` **必须阻塞**直到服务停止；`Application.Run` 把*任何*返回（nil 或 error）都当作退出信号。`Shutdown` 才是解除 `Startup` 阻塞的手段。见 `packages/core/adapter.go`。
 - `Application.Run` 内部顺序：`Resource.Setup`（FIFO）→ `registrar.Register(node)` → 全部 `Endpoint.Startup` **并行**（errgroup）→ 退出时：`Endpoint.Shutdown`（并行）→ `Unregister` → `Resource.Close`（LIFO）。Shutdown 由 `sync.Once` 保护，只执行一次，整体在单一 `shutdownTimeout` 预算内完成（默认 10s）。
 - **零 endpoint 的 `Application` 会打印 warning 并立即返回**（`application.go`），不要期望它会阻塞。
+- `Application` 是一次性的 `new -> running -> stopping -> stopped` 状态机；重复 `Run` 返回错误，Run 前 `Close` 不触发任何依赖生命周期。配置 Registrar 时必须同时配置 ServiceNode。
 - `app` 只**向下**导入（core + config + log + registry），**不导入 `transport`**——endpoint 永远以 `core.Endpoint` 接口注入。务必保持这条边界：不要让 app 反向依赖 transport/server。
 
 ### Protobuf 只是设计目标，仓库里并不存在
@@ -125,21 +126,23 @@ chore: ignore packages/infra/storage/upload test artifact
 
 ### Option 模式并非通用
 
-- 真正的函数式选项（`NewXxx(cfg, opts...)` + `WithXxx`）：`app`、`transport/server/http`、`transport/pubsub/{kafka,mqtt}`、`errs`。
-- **仅 Config 结构体、没有 `WithXxx`**（与文档约定有出入）：`transport/client/http`、`infra/cache/redis`、`infra/database/{bun,gorm}`、`infra/storage/{disk,alioss}`。resilience 用 `Config` 结构体 + 在构造函数里手动对零值回退到 `Default*Config`。
+- 真正的函数式选项（`NewXxx(cfg, opts...)` + `WithXxx`）：`app`、`transport/server/http`、`transport/pubsub/{kafka,mqtt}`、`errs`，以及基础设施 Resource 的测试/扩展 seam。
+- `transport/client/http` 与具体 storage 后端使用 Config 直接构造；resilience 使用 Config 结构体并在构造函数里处理默认值。
+- 带值的基础设施资源统一基于 `core.ManagedResource[T]`，同时实现 `core.Resource`、`core.Provider[T]` 和结构化 readiness Checker；repository 保存 Provider，不要在 `Application.Run` 前调用 `Value()`。
 - **`transport/server/rpc` 的 `Option` 返回 `error`**（`type Option func(*Server) error`）——全仓唯一带 error 返回的 Option 类型。应用时要处理该错误；新代码**不要**沿用这个形状。
 - `adapter.go`-接口置顶的约定只被 `core`、`registry`、`resilience`、`patterns/caching` 遵守——当作偏好而非硬规则。
 
-### Storage —— 先读重构文档
+### Storage
 
-- 改 `packages/infra/storage` 或 storage 配置结构体前，先读 `docs/superpowers/specs/2026-06-30-storage-merge-design.md` 和 `docs/superpowers/plans/2026-06-30-storage-merge.md`。
+- 改 `packages/infra/storage` 或 storage 配置结构体前，先读 `docs/superpowers/specs/2026-07-24-v0.2-architecture.md` 和 `docs/migrations/v0.2.md`。
 - 只有两个后端：`disk` 和 `oss`（s3/minio/ftp 已删除）。OSS **只能用 v2 SDK**（`alibabacloud-oss-go-sdk-v2`），禁止 v1。
-- `NewStorage` 分发工厂**当前被注释掉**（`storage.go`）——调用方必须直接构造 `disk.NewDiskStorage` / `alioss.NewOSSStorage`。`ErrUnsupportedStorageType` 已导出。
+- 生命周期组合使用 `packages/infra/storage/resource.New`；该子包负责选择 disk/OSS，避免根 storage 包导入子后端形成循环。`ErrUnsupportedStorageType` 已导出。
 - HTTP server 在**构造时即监听端口**（"构造即监听"），所以 `Port=0` 也能拿到真实端口。
 
-### 全局单例（注意）
+### 基础设施依赖注入
 
-- `infra/cache/redis`、`infra/database/{bun,gorm}`、`transport/client/{http,rpc}` 都保留了包级全局（`Init/GetX`）。这与 storage 文档里"不要全局单例"的要求**自相矛盾**。接入 `Application` 时，优先把返回的实例当依赖注入，而不是依赖全局。
+- DB、Mongo、Redis、Storage 和 HTTP client 不提供包级全局实例。cmd 构造 ManagedResource 并同时注入 Application 与 repository；repository 接收具体的 `core.Provider[T]`。
+- GORM 方言位于 `gorm/{postgres,mysql,clickhouse,sqlite}` 子包，SQLite 是纯 Go 驱动。SQL 使用显式 `configitem.Database.DSN`，Mongo 使用独立的 `configitem.Mongo`。
 
 ### 代码生成 / 构建工具
 

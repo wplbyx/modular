@@ -64,7 +64,7 @@ python agent/modular/scripts/modular.py <command> ...
 - `service <svc> [--surface public] [--methods CreateX,ListX]` creates `config/<svc>`, proto/common target paths, api/app/domain/repository scaffolds, and HTTP+gRPC cmd wiring.
 - `surface <svc> <surface> [--methods ...]` adds a surface under the existing svc and rewrites cmd wiring.
 - `method <svc> <surface> <MethodName>` updates the surface proto and creates `app/<surface>/<method>.go`.
-- `resource <db|redis|storage|telemetry> [--driver bun|gorm|mongo] [--svc <svc>]` adds per-svc config/resource metadata and rewrites cmd wiring.
+- `resource <db|redis|storage|telemetry> [--driver bun|gorm|mongo] [--dialect postgres|mysql|sqlite|clickhouse] [--svc <svc>]` adds per-svc config/resource metadata and rewrites cmd wiring.
 - `repository recommend <svc> [surface] --aggregate X --feature "..." --query ... --command ...` recommends app vs domain placement and prints the scaffold command.
 - `repository app <svc> <surface> --aggregate X --query ... --command ...` writes app ports and `repository/app` methods.
 - `repository domain <svc> --aggregate X --query ... --command ...` writes domain ports and `repository/domain` methods.
@@ -90,6 +90,7 @@ Read [references/commands.md](references/commands.md) before calling the CLI.
 - App-layer adapters are for simple flows; domain adapters are for complex domain behavior.
 - Repository code is infrastructure. Persistence tags belong in `repository/model`, not `domain/entity`.
 - Resource lifecycle uses `Setup(ctx)` / `Close(ctx)`; endpoint lifecycle uses blocking `Startup(ctx)` / `Shutdown(ctx)`.
+- Generated repositories receive typed `core.Provider[T]` dependencies. Never use infrastructure package globals.
 - Generated cmd wiring registers both HTTP and gRPC endpoints by default.
 - Generated cmd entrypoints use `config.NewRoot`, preserve signal cancellation through `Command.SetContext`, and expose `--config` / `--remote` plus module flags.
 - Build `ServiceNode` transports with `httpServer.Transport()` / `grpcServer.Transport()`, not copied host/port literals.
@@ -116,7 +117,7 @@ Add another interface surface?  -> surface <svc> <surface>; then gen
 Add pb method?                  -> method <svc> <surface> <MethodName>; then map HTTP/event if needed
 Simple persistence?             -> repository recommend -> repository app <svc> <surface>
 Complex domain persistence?     -> repository recommend -> repository domain <svc>
-Need infra?                     -> resource <kind> [--svc <svc>]
+Need infra?                     -> resource <kind> [--driver ...] [--dialect ...] [--svc <svc>]
 Need convention audit?          -> doctor
 Proto changed?                  -> gen
 Migrate topology?               -> rewrite cmd + process config only; read layering + registry

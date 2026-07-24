@@ -185,15 +185,23 @@ application, err := app.NewApplication(
 
 ### 数据库连接
 
-`packages/infra/database` 当前提供三类连接适配：
+`packages/infra/database` 提供显式依赖注入的托管资源：
 
-| 后端 | 连接构造函数 | Application Resource | DSN |
-| --- | --- | --- | --- |
-| Bun | `bun.NewBunConnection(cfg)` | `bun.NewResource(cfg)` | `database.DSNPostgres` |
-| GORM | `gorm.NewGormConnection(cfg)` | `gorm.NewResource(cfg)` | `database.DSNSqlite`、`DSNMySQL`、`DSNPostgres`、`DSNClickhouse` |
-| MongoDB | `mongo.NewMongoConnection(cfg)` | 当前需要项目侧 Resource 包装 | `database.DSNMongo` |
+| 后端 | Application Resource | 配置 |
+| --- | --- | --- |
+| Bun/PostgreSQL | `bun.NewResource(cfg)` | `configitem.Database{DSN: ...}` |
+| GORM | `gorm/postgres.NewResource`、`gorm/mysql.NewResource`、`gorm/clickhouse.NewResource`、`gorm/sqlite.NewResource` | `configitem.Database{DSN: ...}` |
+| MongoDB | `mongo.NewResource(cfg)` | `configitem.Mongo{URI: ...}` |
 
-这些连接构造函数都会在连接后 ping，并保留包级全局实例用于兼容。应用装配优先注入 `bun.NewResource` / `gorm.NewResource`，或接收构造函数返回的实例，不直接依赖 `GetDB()` / `GetClient()`。Redis 同样提供 `redis.NewResource(cfg)`。
+所有资源都基于 `core.ManagedResource[T]`，同时实现 `core.Resource` 和 `core.Provider[T]`。Application 负责 Setup/Close，repository 保存 Provider 并在处理请求时调用 `Value()`；不要在 `Application.Run` 前提前取值。Redis 使用 `redis.NewResource(cfg)`，Storage 使用 `storage/resource.New(cfg)`。数据库、Redis 和 HTTP client 不再提供包级全局实例。
+
+GORM 方言由 `cmd` 装配层通过子包选择。SQLite 子包使用纯 Go 驱动，可在 `CGO_ENABLED=0` 下编译和测试。
+
+### 健康检查与 HTTP client
+
+HTTP server 默认 `/health` 只表示进程存活。通过 `httpserver.WithReadiness(path, checkers...)` 注入 `health.Checker` 后，就绪接口返回 200/503，且 `Transport.HealthPath` 会指向 readiness 路径。流式响应可将 `WriteTimeout` 设为 `httpserver.NoWriteTimeout`。
+
+HTTP client 是显式构造的 `*httpclient.Client`，主接口为 `Do(*http.Request)`。重试仅适用于可重放的幂等请求；POST/PATCH 需要 `Idempotency-Key` 或自定义 `RetryPolicy`。
 
 ## 推荐项目分层
 
@@ -295,7 +303,7 @@ application, err := app.NewApplication(
 | `service <svc>` | 添加业务模块：创建 `config/<svc>`、默认 proto、`internal/<svc>` 的 api/app/domain/repository，并接入 `cmd`。 |
 | `surface <svc> <surface>` | 为业务模块添加接口面，例如 `admin`、`management`、`platform`，生成 `proto/<svc>/<surface>.proto`、`api/<surface>`、`app/<surface>`。 |
 | `method <svc> <surface> <MethodName>` | 为某个接口面添加 pb 方法骨架，生成或更新 proto rpc，并创建 `app/<surface>/<method>.go` 基础实现文件。 |
-| `resource <kind>` | 添加基础设施资源，`kind` 为 `db`、`redis`、`storage`、`telemetry`；`db` 可按项目选择 Bun、GORM 或 MongoDB。 |
+| `resource <kind>` | 添加基础设施资源；数据库支持 `--driver bun|gorm|mongo`，GORM 通过 `--dialect postgres|mysql|sqlite|clickhouse` 选择方言。 |
 | `repository recommend <svc> [surface]` | 根据需求推荐 app/domain adapter 放置，展开 repository 接口签名并输出下一步 scaffold 命令。 |
 | `repository app <svc> <surface>` | 为简单 app 用例生成 `app/<surface>/adapter.go` 和 `repository/app` 实现。 |
 | `repository domain <svc>` | 为复杂领域模型生成 `domain/adapter.go` 和 `repository/domain` 实现。 |

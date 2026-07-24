@@ -213,21 +213,6 @@ type DirectStorage interface {
 // ErrUnsupportedStorageType 表示配置的存储类型不支持。
 var ErrUnsupportedStorageType = fmt.Errorf("unsupported storage type")
 
-//// NewStorage 根据配置创建 Storage 实例。
-//func NewStorage(cfg *configitem.Storage) (Storage, error) {
-//	if cfg == nil {
-//		return nil, fmt.Errorf("storage config is nil")
-//	}
-//	switch cfg.Type {
-//	case "disk":
-//		return disk.NewDiskStorage(cfg)
-//	case "oss":
-//		return aliyunoss.NewOSSStorage(cfg)
-//	default:
-//		return nil, fmt.Errorf("%w: %s", ErrUnsupportedStorageType, cfg.Type)
-//	}
-//}
-
 // ApplyIOOptions merges variable options into a final IOConfigOption.
 func ApplyIOOptions(opts []IOConfigOptionFunc) IOConfigOption {
 	o := IOConfigOption{}

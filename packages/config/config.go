@@ -103,6 +103,10 @@ func ValidateNode(object interface{}) error {
 // Watch 监听本地配置文件的变更。当文件发生变更时，调用提供的 callback 函数。
 // 内部使用 viper 的 WatchConfig + OnConfigChange 实现文件系统级监听。
 func (l *ConfigureLoader) Watch(callback func(fsnotify.Event)) {
+	if l.fileSource != nil && l.fileSource.filesystem != nil {
+		log.Println("Embedded config source does not support file watching.")
+		return
+	}
 	l.v.OnConfigChange(callback)
 	l.v.WatchConfig()
 	log.Println("Watching for local config file changes...")

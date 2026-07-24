@@ -7,31 +7,23 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
 	"github.com/wplbyx/modular/packages/config/configitem"
 )
 
-// globalClient 是全局 Redis 客户端，供需要直接访问 Redis 的包在装配阶段使用。
-// 由 NewRedisClient 设置，通过 GetClient() 读取。
-var globalClient redis.UniversalClient
-
-// GetClient 返回全局 Redis 客户端；若 NewRedisClient 尚未调用则返回 nil。
-func GetClient() redis.UniversalClient {
-	return globalClient
-}
-
-// NewRedisClient 根据配置创建 go-redis 客户端，Ping 探活后存为全局实例并返回。
-func NewRedisClient(cfg *configitem.Redis) (redis.UniversalClient, error) {
+// NewRedisClient 根据配置创建并验证 go-redis 客户端。
+func NewRedisClient(ctx context.Context, cfg *configitem.Redis) (redis.UniversalClient, error) {
 	if cfg == nil {
 		return nil, errors.New("redis config is nil")
 	}
 
-	address := cfg.Urls
-	if len(address) == 0 {
-		address = []string{fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)}
+	addresses := cfg.Urls
+	if len(addresses) == 0 {
+		addresses = []string{fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)}
 	}
 
 	client := redis.NewUniversalClient(&redis.UniversalOptions{
-		Addrs:                 address,
+		Addrs:                 addresses,
 		Username:              cfg.Username,
 		Password:              cfg.Password,
 		DB:                    cfg.Database,
@@ -46,10 +38,9 @@ func NewRedisClient(cfg *configitem.Redis) (redis.UniversalClient, error) {
 		ContextTimeoutEnabled: true,
 	})
 
-	if err := client.Ping(context.Background()).Err(); err != nil {
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
 		return nil, err
 	}
-
-	globalClient = client
 	return client, nil
 }

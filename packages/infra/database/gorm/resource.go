@@ -4,74 +4,71 @@ import (
 	"context"
 	"errors"
 
-	"github.com/wplbyx/modular/packages/config/configitem"
 	gormlib "gorm.io/gorm"
 
+	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/core"
 )
 
-var _ core.Resource = (*Resource)(nil)
+// Resource 是由 core.ManagedResource 管理的 GORM 连接。
+type Resource = core.ManagedResource[*gormlib.DB]
 
-// Resource 将 GORM 数据库连接纳入 Application 生命周期。
-type Resource struct {
-	cfg     *configitem.Database
-	db      *gormlib.DB
-	connect func(*configitem.Database) (*gormlib.DB, error)
+type Connector func(context.Context, *configitem.Database, gormlib.Dialector) (*gormlib.DB, error)
+
+type resourceConfig struct {
+	connect Connector
 }
 
-type ResourceOption func(*Resource)
+// ResourceOption 配置 GORM Resource。
+type ResourceOption func(*resourceConfig)
 
-// WithConnector 覆盖 GORM 建连函数，主要用于测试或自定义连接。
-func WithConnector(fn func(*configitem.Database) (*gormlib.DB, error)) ResourceOption {
-	return func(r *Resource) {
-		if fn != nil {
-			r.connect = fn
+// WithConnector 覆盖 GORM 建连函数，主要用于测试。
+func WithConnector(connector Connector) ResourceOption {
+	return func(cfg *resourceConfig) {
+		if connector != nil {
+			cfg.connect = connector
 		}
 	}
 }
 
-// NewResource 创建 GORM 生命周期资源。
-func NewResource(cfg *configitem.Database, opts ...ResourceOption) *Resource {
-	r := &Resource{cfg: cfg, connect: NewGormConnection}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(r)
+// NewResource 使用已经选定的方言创建 GORM 生命周期资源。
+func NewResource(
+	name string,
+	cfg *configitem.Database,
+	dialector gormlib.Dialector,
+	options ...ResourceOption,
+) *Resource {
+	resourceCfg := resourceConfig{connect: NewGormConnection}
+	for _, option := range options {
+		if option != nil {
+			option(&resourceCfg)
 		}
 	}
-	return r
+	if name == "" {
+		name = "gorm"
+	}
+
+	return core.NewManagedResource(
+		name,
+		func(ctx context.Context) (*gormlib.DB, error) {
+			if cfg == nil {
+				return nil, errors.New("database config is nil")
+			}
+			return resourceCfg.connect(ctx, cfg, dialector)
+		},
+		func(_ context.Context, db *gormlib.DB) error {
+			sqlDB, err := db.DB()
+			if err != nil {
+				return err
+			}
+			return sqlDB.Close()
+		},
+		core.WithResourceCheck(func(ctx context.Context, db *gormlib.DB) error {
+			sqlDB, err := db.DB()
+			if err != nil {
+				return err
+			}
+			return sqlDB.PingContext(ctx)
+		}),
+	)
 }
-
-func (r *Resource) Name() string { return "gorm" }
-
-func (r *Resource) Setup(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if r.cfg == nil {
-		return errors.New("database config is nil")
-	}
-	db, err := r.connect(r.cfg)
-	if err != nil {
-		return err
-	}
-	r.db = db
-	return nil
-}
-
-func (r *Resource) Close(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if r.db == nil {
-		return nil
-	}
-	sqlDB, err := r.db.DB()
-	if err != nil {
-		return err
-	}
-	err = sqlDB.Close()
-	r.db = nil
-	return err
-}
-
-func (r *Resource) DB() *gormlib.DB { return r.db }

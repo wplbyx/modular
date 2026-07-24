@@ -1,6 +1,7 @@
 package bun
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -8,47 +9,29 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
-	"github.com/wplbyx/modular/packages/config/configitem"
 
-	"github.com/wplbyx/modular/packages/infra/database"
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
 
-// globalDB is the package-level connection, set by NewBunConnection.
-var globalDB *bun.DB
-
-// NewBunConnection creates a Bun database connection and stores it as the global instance.
-func NewBunConnection(cfg *configitem.Database) (*bun.DB, error) {
+// NewBunConnection 创建并验证一个 PostgreSQL Bun 连接。
+func NewBunConnection(ctx context.Context, cfg *configitem.Database) (*bun.DB, error) {
 	if cfg == nil {
 		return nil, errors.New("database config is nil")
 	}
-
-	var sqldb *sql.DB
-
-	switch cfg.Dsn {
-	case database.DSNPostgres:
-		dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-			cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
-		sqldb = sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
-	default:
-		return nil, fmt.Errorf("unsupported database dsn: %s", cfg.Dsn)
+	if cfg.DSN == "" {
+		return nil, errors.New("database DSN is empty")
 	}
 
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(cfg.DSN)))
 	sqldb.SetMaxOpenConns(cfg.MaxOpenConn)
 	sqldb.SetMaxIdleConns(cfg.MaxIdleConn)
 	sqldb.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 	sqldb.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 
 	db := bun.NewDB(sqldb, pgdialect.New())
-
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-
-	globalDB = db
 	return db, nil
-}
-
-// GetDB returns the global Bun connection, or nil if NewBunConnection has not been called.
-func GetDB() *bun.DB {
-	return globalDB
 }
