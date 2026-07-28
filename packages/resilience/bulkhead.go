@@ -8,6 +8,7 @@ import (
 
 	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/log"
+	"go.uber.org/zap"
 )
 
 var (
@@ -168,8 +169,13 @@ func (b *bulkheadImpl) acquire(ctx context.Context) error {
 		case <-b.done:
 			return b.closedError()
 		case <-timer.C:
-			log.Infof("Bulkhead '%s' queue timeout, running: %d, queue length: %d, max concurrent: %d, queue size: %d",
-				b.config.Name, b.Running(), b.Waiting(), b.config.MaxConcurrentCalls, b.config.QueueSize)
+			log.Info(ctx, "bulkhead queue timeout",
+				zap.String("bulkhead", b.config.Name),
+				zap.Int("running", b.Running()),
+				zap.Int("waiting", b.Waiting()),
+				zap.Int("max_concurrent", b.config.MaxConcurrentCalls),
+				zap.Int("queue_size", b.config.QueueSize),
+			)
 			return errs.TooManyRequests(
 				bulkheadFullMessage.With("name", b.config.Name),
 				errs.WithCause(ErrBulkheadFull),

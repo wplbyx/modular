@@ -34,7 +34,7 @@ func RecordError(ctx context.Context, err error, msg string, attrs ...attribute.
 	}
 	fields = append(fields, attributeFields(attrs)...)
 
-	log.GetLogger().Error(msg, fields...)
+	log.Error(ctx, msg, fields...)
 }
 
 func attributeFields(attrs []attribute.KeyValue) []zap.Field {

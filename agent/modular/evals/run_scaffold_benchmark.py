@@ -170,6 +170,21 @@ def build_project(project: Path, commands: list[str], errors: list[str], *, vers
 def common_facts(project: Path) -> dict[str, bool | int | str]:
     go_mod = (project / "go.mod").read_text(encoding="utf-8")
     files = project_files(project)
+    frameworks = list((project / "cmd").glob("*/framework.gen.go")) if (project / "cmd").is_dir() else []
+    framework_text = "\n".join(path.read_text(encoding="utf-8") for path in frameworks)
+    bootstrap_fragments = [
+        "newLoggerManager(ctx, &cfg.Logging)",
+        "modularlog.SetDefault(loggerManager.Logger())",
+        "newTransportPolicy(cfg.Name, loggerManager.Logger())",
+        "app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)",
+    ]
+    positions = [framework_text.find(fragment) for fragment in bootstrap_fragments]
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in project.rglob("*.go")
+        if ".modular/tool" not in path.as_posix()
+    )
+    custom_ring_names = {"ring", "ringbuffer", "ringmpsc"}
     return {
         "completed": True,
         "file_count": len(files),
@@ -179,6 +194,11 @@ def common_facts(project: Path) -> dict[str, bool | int | str]:
         "has_local_tool": (project / ".modular/tool/modular.py").is_file(),
         "has_domain_shell": any(path.as_posix().startswith("internal/user/domain/") for path in files),
         "has_repository_shell": any(path.as_posix().startswith("internal/user/repository/") for path in files),
+        "bootstrap_order": -1 not in positions and positions == sorted(positions),
+        "has_cmd_policy": any(path.as_posix().startswith("cmd/") and path.name == "policy.go" for path in files),
+        "uses_removed_logger_api": any(symbol in source_text for symbol in ("log.GetLogger(", "log.Infof(", "log.Warnf(", "log.Errorf(")),
+        "custom_ring_package": any(part.lower() in custom_ring_names for path in files for part in path.parts),
+        "manual_cleanup_count": placeholder_count(project),
     }
 
 
@@ -200,6 +220,11 @@ def failed_facts() -> dict[str, bool | int | str]:
         "preview_no_write": False,
         "business_preserved": False,
         "topology_service": False,
+        "has_logging_config": False,
+        "shared_transport_policy": False,
+        "context_logger": False,
+        "library_queue_ownership": False,
+        "strict_doctor": False,
         "build_passed": False,
     }
 
@@ -338,6 +363,99 @@ def run_old_migration(root: Path, baseline: Path, commands: list[str], errors: l
     return RunResult(facts, commands, errors, project)
 
 
+def run_new_operational(root: Path, commands: list[str], errors: list[str]) -> RunResult:
+    project = new_project(root, "operationsdemo", commands, errors)
+    cli = project / ".modular/tool/modular.py"
+    base = [sys.executable, str(cli)]
+    for protocol in ["http", "grpc"]:
+        run(
+            base + ["service", "add", "orders", "--transport", protocol, "--project-dir", str(project)],
+            cwd=root,
+            commands=commands,
+            errors=errors,
+            env=testing_env(),
+        )
+    for resource in ["telemetry", "eventbus"]:
+        run(
+            base + ["resource", "add", resource, "--svc", "orders", "--project-dir", str(project)],
+            cwd=root,
+            commands=commands,
+            errors=errors,
+            env=testing_env(),
+        )
+    doctor = run(
+        base + ["doctor", "--strict", "--project-dir", str(project)],
+        cwd=root,
+        commands=commands,
+        errors=errors,
+        env=testing_env(),
+    )
+    sync = run(
+        base + ["sync", "--project-dir", str(project)],
+        cwd=root,
+        commands=commands,
+        errors=errors,
+        env=testing_env(),
+    )
+    facts = common_facts(project)
+    framework = (project / "cmd/operationsdemo/framework.gen.go").read_text(encoding="utf-8")
+    policy = (project / "cmd/operationsdemo/policy.go").read_text(encoding="utf-8")
+    process_config = (project / "config/operationsdemo/config.gen.go").read_text(encoding="utf-8")
+    facts.update(
+        {
+            "has_logging_config": "Logging" in process_config and "configitem.Logging" in process_config,
+            "shared_transport_policy": (
+                "modulartransport.NewPolicy" in policy
+                and "httpserver.WithPolicy(policy)" in framework
+                and "rpcserver.WithPolicy(policy)" in framework
+            ),
+            "context_logger": (
+                "loggerManager.Logger()" in framework
+                and "app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)" in framework
+                and not bool(facts["uses_removed_logger_api"])
+            ),
+            "library_queue_ownership": "eventbus.New" in framework and not bool(facts["custom_ring_package"]),
+            "strict_doctor": doctor.returncode == 0,
+            "sync_idempotent": "no changes" in sync.stdout,
+            "build_passed": build_project(project, commands, errors, version="v0.2.0"),
+        }
+    )
+    return RunResult(facts, commands, errors, project)
+
+
+def run_old_operational(root: Path, baseline: Path, commands: list[str], errors: list[str]) -> RunResult:
+    project = old_project(root, baseline, "operationsdemo", commands, errors)
+    cli = baseline / "scripts/modular.py"
+    run(
+        [sys.executable, str(cli), "service", "orders", "--gen", "skip", "--project-dir", str(project)],
+        cwd=root,
+        commands=commands,
+        errors=errors,
+    )
+    run(
+        [sys.executable, str(cli), "resource", "telemetry", "--svc", "orders", "--project-dir", str(project)],
+        cwd=root,
+        commands=commands,
+        errors=errors,
+    )
+    facts = common_facts(project)
+    main = (project / "cmd/operationsdemo/main.go").read_text(encoding="utf-8")
+    process_config = (project / "config/operationsdemo/config.gen.go")
+    config_text = process_config.read_text(encoding="utf-8") if process_config.is_file() else ""
+    facts.update(
+        {
+            "has_logging_config": "configitem.Logging" in config_text,
+            "shared_transport_policy": "WithPolicy(policy)" in main,
+            "context_logger": "app.NewApplication(ctx, &cfg.Application," in main and not bool(facts["uses_removed_logger_api"]),
+            "library_queue_ownership": "eventbus.New" in main and not bool(facts["custom_ring_package"]),
+            "strict_doctor": False,
+            "sync_idempotent": False,
+            "build_passed": build_project(project, commands, errors, version=None),
+        }
+    )
+    return RunResult(facts, commands, errors, project)
+
+
 SCENARIOS = [
     Scenario(
         1,
@@ -381,6 +499,21 @@ SCENARIOS = [
         run_new_migration,
         run_old_migration,
     ),
+    Scenario(
+        6,
+        "operational-bootstrap-and-transport-policy",
+        "Initialize HTTP and gRPC orders transports with Telemetry and EventBus under cmd-owned policy.",
+        [
+            "Process config declares Logging and bootstrap order is config, logger, policy, resources/endpoints, Application.",
+            "A scaffold-once cmd policy configures one shared HTTP and gRPC transport policy.",
+            "Application and policy receive the explicit context-required logger without removed formatting APIs.",
+            "Queue ownership stays in modular EventBus/log implementations and no custom ring package is generated.",
+            "No domain or repository shell is created and repeated sync is idempotent.",
+            "Strict doctor and the generated framework build pass.",
+        ],
+        run_new_operational,
+        run_old_operational,
+    ),
 ]
 
 
@@ -402,13 +535,22 @@ def verdicts(scenario: Scenario, facts: dict[str, bool | int | str]) -> list[dic
             completed and bool(facts["sync_idempotent"]),
             completed and bool(facts["build_passed"]),
         ]
-    else:
+    elif scenario.eval_id == 4:
         checks = [
             completed and bool(facts["migration_available"]),
             completed and bool(facts["preview_no_write"]),
             completed and bool(facts["business_preserved"]),
             completed and bool(facts["topology_service"]),
             completed and bool(facts["build_passed"]),
+        ]
+    else:
+        checks = [
+            completed and bool(facts["has_logging_config"]) and bool(facts["bootstrap_order"]),
+            completed and bool(facts["has_cmd_policy"]) and bool(facts["shared_transport_policy"]),
+            completed and bool(facts["context_logger"]),
+            completed and bool(facts["library_queue_ownership"]) and not bool(facts["custom_ring_package"]),
+            completed and not bool(facts["has_domain_shell"]) and not bool(facts["has_repository_shell"]) and bool(facts["sync_idempotent"]),
+            completed and bool(facts["strict_doctor"]) and bool(facts["build_passed"]),
         ]
     return [
         {
@@ -501,6 +643,9 @@ def main() -> int:
                 result = RunResult(failed_facts(), commands, errors, candidates[0] if candidates else run_dir)
             duration = time.perf_counter() - started
             write_run(run_dir, scenario, result, duration)
+            generated = run_dir / "out"
+            if generated.is_dir():
+                shutil.rmtree(generated)
     return 0
 
 

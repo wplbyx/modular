@@ -8,6 +8,7 @@ import (
 
 	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/log"
+	"go.uber.org/zap"
 )
 
 var (
@@ -85,8 +86,12 @@ func (r *retryImpl) Execute(ctx context.Context, fn func() error) error {
 		}
 
 		if attempt < r.config.MaxRetries {
-			log.Infof("Retry '%s' attempt %d/%d for error: %v",
-				r.config.Name, attempt+1, r.config.MaxRetries, lastErr)
+			log.Info(ctx, "retrying operation",
+				zap.String("retry", r.config.Name),
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", r.config.MaxRetries),
+				zap.Error(lastErr),
+			)
 
 			select {
 			case <-ctx.Done():

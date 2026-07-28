@@ -55,6 +55,7 @@ targets:
 ```bash
 python .modular/tool/modular.py service add user --transport http --transport grpc
 python .modular/tool/modular.py resource add db --svc user --driver bun
+python .modular/tool/modular.py resource add eventbus --svc user
 python .modular/tool/modular.py sync
 python .modular/tool/modular.py verify --phase framework
 ```
@@ -62,6 +63,11 @@ python .modular/tool/modular.py verify --phase framework
 The framework phase creates config, cmd, endpoint/resource wiring and a
 business registration seam. It does not create proto methods, domain models,
 repository implementations, or Example placeholders.
+
+Each process also gets scaffold-once `cmd/<process>/policy.go`. Generated
+framework wiring always loads config first, creates the context-required logger
+second, then constructs one process Transport policy before Resources and
+Endpoints.
 
 All mutating commands accept `--dry-run` and `--diff`. `--diff` never writes.
 `service remove`, `transport remove`, `resource remove`, `prune`, and
@@ -95,6 +101,10 @@ Every project carries these targets: `scaffold-service`, `scaffold-resource`,
 version, and minimal provenance. Managed files are updated only when their
 hash is unchanged. Scaffold-once files are never overwritten. `prune` only
 deletes unchanged managed files and requires `--apply`.
+
+The manifest is replay state, not an architecture document: it answers which
+feature produced a file and whether the tool may replace/delete it. Domain
+boundaries and business decisions remain in code and project design records.
 
 All writes are staged and rolled back if a post-write verification fails.
 `doctor --strict` checks structure, ownership, profile rules, generated common

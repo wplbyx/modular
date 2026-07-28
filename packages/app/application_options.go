@@ -1,8 +1,6 @@
 package app
 
 import (
-	"go.uber.org/zap"
-
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/registry"
 )
@@ -39,13 +37,5 @@ func WithEndpoint(endpoint core.Endpoint) Option {
 		if endpoint != nil {
 			a.endpoints = append(a.endpoints, endpoint)
 		}
-	}
-}
-
-// WithLogger 注入 Application 使用的日志实例。
-// 未设置时继续使用 log 包的全局日志门面。
-func WithLogger(logger *zap.Logger) Option {
-	return func(application *Application) {
-		application.logger = logger
 	}
 }

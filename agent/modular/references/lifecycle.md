@@ -58,7 +58,7 @@ Generated entrypoints first create a Cobra root command with `config.NewRoot`, a
 
 Inside `run(ctx, cfg)`:
 
-    application, err := app.NewApplication(ctx, &cfg.Application,
+    application, err := app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(),
         app.WithResource(db),
         app.WithResource(cache),
         app.WithEndpoint(httpServer),
@@ -67,12 +67,16 @@ Inside `run(ctx, cfg)`:
     )
     application.Run()
 
-The four `With...` options: `WithResource(core.Resource)`, `WithEndpoint(core.Endpoint)`, `WithServiceNode(*core.ServiceNode)`, `WithRegistrar(registry.Registrar)`.
+Before this call, `config.NewRoot` must have loaded config and cmd must create
+`LoggerManager` second. Application does not own the logger; cmd closes it only
+after `Application.Run` returns. The four `With...` options are
+`WithResource(core.Resource)`, `WithEndpoint(core.Endpoint)`,
+`WithServiceNode(*core.ServiceNode)`, and `WithRegistrar(registry.Registrar)`.
 
 A real cmd builds transports (which are already `core.Endpoint`), resources, the pb service impl, then registers:
 
-- HTTP: `httpserver.NewServer(cfg)` returns an Endpoint; `server.RegisterRoute(api.HTTPRoutes(...))` to attach domain routes.
-- gRPC: `rpcserver.NewServer(cfg, api.RegisterGRPC, opts...)` - the register callback wires `pb.RegisterXxxServer`.
+- HTTP: `httpserver.NewServer(cfg, httpserver.WithPolicy(policy))` returns an Endpoint; `server.RegisterRoute(api.HTTPRoutes(...))` attaches routes.
+- gRPC: `rpcserver.NewServer(cfg, api.RegisterGRPC, rpcserver.WithPolicy(policy))` wires generated service registration.
 - SSE: `sse.NewServer(bufSize)` is an Endpoint; mount its `Connect()` handler on the HTTP server's routes.
 - Pub/sub: wrap a `pubsub.MessageHandler` from `api/<surface>/event.go` with `pubsub.NewSubscriberEndpoint(name, subscriber, topic, handler, opts...)`.
 

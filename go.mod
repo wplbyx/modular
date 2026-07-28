@@ -5,13 +5,14 @@ go 1.26.0
 require (
 	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.5.1
 	github.com/apache/rocketmq-clients/golang/v5 v5.1.4
+	github.com/cyub/ringbuffer v0.0.0-20221202135829-35445cc89929
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gin-contrib/cors v1.7.7
 	github.com/gin-contrib/requestid v1.0.6
-	github.com/gin-contrib/zap v1.1.7
 	github.com/gin-gonic/gin v1.12.0
 	github.com/glebarez/sqlite v1.11.0
+	github.com/go-kratos/aegis v0.2.0
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/google/uuid v1.6.0
@@ -33,6 +34,8 @@ require (
 	go.mongodb.org/mongo-driver/v2 v2.6.0
 	go.opentelemetry.io/contrib/bridges/otelzap v0.19.0
 	go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.69.0
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.61.0
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.20.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0
@@ -100,6 +103,7 @@ require (
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
@@ -139,6 +143,7 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/lufia/plan9stats v0.0.0-20230110061619-bbe2e5e100de // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
@@ -157,6 +162,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/power-devops/perfstat v0.0.0-20221212215047-62379fc7944b // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
@@ -165,12 +171,16 @@ require (
 	github.com/sagikazarmark/crypt v0.31.0 // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
+	github.com/shirou/gopsutil/v3 v3.23.12 // indirect
+	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/tklauser/go-sysconf v0.3.12 // indirect
+	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/tmthrgd/go-hex v0.0.0-20190904060850-447a3041c3bc // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
@@ -183,14 +193,13 @@ require (
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
+	github.com/yusufpapurcu/wmi v1.2.3 // indirect
 	go.etcd.io/etcd/api/v3 v3.6.4 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.4 // indirect
 	go.etcd.io/etcd/client/v2 v2.305.22 // indirect
 	go.etcd.io/etcd/client/v3 v3.6.4 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.61.0 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect

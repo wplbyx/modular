@@ -25,7 +25,9 @@ packages/
   core/           ← 零依赖核心抽象：Endpoint, Resource, ServiceNode, Transport
   app/            ← Application 生命周期编排器 + Option 注入
   config/         ← Viper 配置加载器 + 强类型配置结构体
-  log/            ← Zap 日志封装（支持日志轮转）
+  log/            ← Context 强制 Zap 日志 + cyub RingMPSC 异步分发
+  metadata/       ← 不可变上下文元数据与安全传播策略
+  eventbus/       ← 进程内有序 RingMPSC EventBus Resource
   errs/           ← 统一错误封装（支持错误链、堆栈、上下文字段）
   generate/       ← 独立生成工具（错误语言模板生成与 CI 校验）
   util/           ← 通用工具（加密、随机、URL、请求）
@@ -38,7 +40,7 @@ packages/
     database/     ← bun, gorm 数据库适配器
     cache/        ← Redis 客户端 + 布隆过滤器
     storage/      ← disk, aliyunoss 对象存储
-  resilience/     ← 断路器、重试、隔板、限流（Middleware Chain 模式）
+  resilience/     ← 断路器、重试、隔板、限流与 Aegis BBR/SRE Transport 保护
   pool/           ← 协程池（标准 + ants）
   patterns/       ← 缓存模式（Cache-Aside/Write-Through/Write-Behind）、并发模式
   command/        ← CLI 命令框架
@@ -48,7 +50,7 @@ packages/
 ### 依赖层次（从底到顶）
 
 1. **core** — 零依赖，定义 Endpoint/Resource/ServiceNode 接口
-2. **config, errs, log, util** — 基础工具层，依赖标准库 + 少量第三方
+2. **config, errs, log, metadata, util** — 基础工具层，依赖标准库 + 少量第三方
 3. **transport, registry, infra, resilience, pool, patterns, auth, command, telemetry** — 功能层，依赖 core + 基础工具
 4. **app** — 编排层，依赖 core + config + registry + log
 
@@ -123,9 +125,13 @@ chore: ignore packages/infra/storage/upload test artifact
 - 多语言模板用 `err_template_gen` 从源码定义生成并在 CI 通过 `--check` 校验。Catalog 在 `cmd` 启动时加载按 locale 命名的 YAML，再用同一个 `errs.Handler` 显式注入 HTTP/gRPC server。客户端只返回 code/reason/message；cause、fields、错误链、模板绑定问题和堆栈只进入日志。
 - Application 生命周期、基础设施 Setup/Close 和聚合关闭错误仍使用 `fmt.Errorf("...: %w", err)` 与 `errors.Join`，不要为了统一表面形式把所有内部错误都改成协议错误。
 
-### 日志是全局单例，不走 context
+### 配置、日志与 Transport Policy
 
-- 直接调包级函数 `log.Infof(...)` / `log.Error(...)`；`GetLogger()` 返回 zap logger（未初始化时返回 `zap.NewNop()`）。**没有 logger-in-context 模式**。`NewLoggerManager` 若一个输出 core 都没加会报错；通过 `WithOutputConsole()` / `WithOutputFiles(ctx)` / `WithOutputTelemetry(...)` 添加。每日文件轮转需要传 context（lumberjack 的 watcher goroutine 绑定 ctx）。
+- `cmd` 的启动顺序固定为：`config.NewRoot` 加载配置第一，`NewLoggerManager` 创建 Logger 第二，`log.SetDefault` 后创建 `transport.Policy`，最后才构造 Resource/Endpoint/Application。`app.NewApplication(ctx, cfg, logger, ...)` 要求非 nil `log.Logger`；Application 不关闭该 logger。
+- 所有日志接口强制接收 `context.Context`：使用 `log.Info(ctx, ...)`、`log.Error(ctx, ...)` 或显式注入的 `log.Logger`。没有 `GetLogger`、`Infof`、Sugar、Fatal、Panic 或 raw zap getter；`log.Default()` 未安装时为 no-op。
+- 异步 Logger 和 `eventbus.Bus` 的队列数据必须直接存放在 `github.com/cyub/ringbuffer.MpscRingBuffer`。禁止新建、复制、fork 或包装自研 RingMPSC 算法；附加 channel 只能用于 wakeup/space signal。Logger 通过 `WithOutputConsole` / `WithOutputFiles(ctx)` 建立 bootstrap sink；Telemetry Resource Setup 后可动态挂载 OTLP sink。
+- `transport.NewPolicy` 默认提供 Recovery -> Metadata/RequestID -> OTel -> AccessLog -> Aegis BBR/SRE protection。通过 `cmd/<process>/policy.go`（scaffold-once）做替换或关闭；HTTP/gRPC 服务器和客户端应接收同一个 process Policy。
+- `packages/metadata` 的 global/local scope 控制边界传播。仅全局且安全的键会穿透；authorization/cookie 必须显式 allowlist。业务日志和 handler 从 Context 获取 request/trace 关联字段。
 
 ### Option 模式并非通用
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
@@ -104,7 +105,7 @@ func (c *StreamClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("redis stream client ping: %w", err)
 	}
 	c.connected = true
-	log.Info("[Redis Stream] connected")
+	log.Info(ctx, "Redis Stream connected")
 	return nil
 }
 
@@ -133,9 +134,9 @@ func (c *StreamClient) IsConnected() bool {
 // pubsub.PublishOption are carried as stream fields; QoS/Retained are ignored.
 // When MaxLen > 0 the stream is trimmed approximately to that length.
 func (c *StreamClient) Publish(ctx context.Context, topic string, payload []byte, opts ...pubsub.PublishOption) error {
-	publishOpts := &pubsub.PublishOptions{}
-	for _, opt := range opts {
-		opt(publishOpts)
+	publishOpts, err := pubsub.ResolvePublishOptions(ctx, pubsub.PublishOptions{}, opts...)
+	if err != nil {
+		return fmt.Errorf("inject Redis Stream metadata: %w", err)
 	}
 
 	args := &goredis.XAddArgs{
@@ -161,6 +162,7 @@ func (c *StreamClient) Publish(ctx context.Context, topic string, payload []byte
 // A per-call WithQueueName overrides the configured group. The consumer name is
 // shared across all workers of this client.
 func (c *StreamClient) Subscribe(ctx context.Context, topic string, handler pubsub.MessageHandler, opts ...pubsub.SubscribeOption) error {
+	handler = pubsub.WithMessageMetadata(handler)
 	subscribeOpts := &pubsub.SubscribeOptions{}
 	for _, opt := range opts {
 		opt(subscribeOpts)
@@ -189,8 +191,12 @@ func (c *StreamClient) Subscribe(ctx context.Context, topic string, handler pubs
 		go c.consumeLoop(subCtx, i, topic, group, handler)
 	}
 
-	log.Infof("[Redis Stream] subscribed to %s (group=%s, consumer=%s, workers=%d)",
-		topic, group, c.opts.Consumer, workers)
+	log.Info(ctx, "Redis Stream subscribed",
+		zap.String("stream", topic),
+		zap.String("group", group),
+		zap.String("consumer", c.opts.Consumer),
+		zap.Int("workers", workers),
+	)
 	return nil
 }
 
@@ -212,7 +218,7 @@ func (c *StreamClient) ensureGroup(ctx context.Context, stream, group string) er
 
 func (c *StreamClient) consumeLoop(ctx context.Context, workerID int, stream, group string, handler pubsub.MessageHandler) {
 	defer c.wg.Done()
-	log.Infof("[Redis Stream] worker %d started for stream %s", workerID, stream)
+	log.Info(ctx, "Redis Stream worker started", zap.Int("worker_id", workerID), zap.String("stream", stream))
 
 	args := &goredis.XReadGroupArgs{
 		Group:    group,
@@ -225,7 +231,7 @@ func (c *StreamClient) consumeLoop(ctx context.Context, workerID int, stream, gr
 	for {
 		select {
 		case <-ctx.Done():
-			log.Infof("[Redis Stream] worker %d for stream %s stopping", workerID, stream)
+			log.Info(ctx, "Redis Stream worker stopping", zap.Int("worker_id", workerID), zap.String("stream", stream))
 			return
 		default:
 		}
@@ -239,7 +245,7 @@ func (c *StreamClient) consumeLoop(ctx context.Context, workerID int, stream, gr
 			if errors.Is(err, goredis.Nil) {
 				continue
 			}
-			log.Errorf("[Redis Stream] worker %d XREADGROUP failed: %v", workerID, err)
+			log.Error(ctx, "Redis Stream XREADGROUP failed", zap.Int("worker_id", workerID), zap.Error(err))
 			if !sleepWithContext(ctx, 10*time.Millisecond) {
 				return
 			}
@@ -267,20 +273,30 @@ func (c *StreamClient) handleMessage(ctx context.Context, workerID int, stream, 
 			return
 		}
 		if attempt < c.opts.MaxRetries {
-			log.Warnf("[Redis Stream] worker %d handler error for stream %s id %s, retry %d/%d: %v",
-				workerID, stream, m.ID, attempt+1, c.opts.MaxRetries, handlerErr)
+			log.Warn(ctx, "Redis Stream handler failed; retrying",
+				zap.Int("worker_id", workerID),
+				zap.String("stream", stream),
+				zap.String("message_id", m.ID),
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", c.opts.MaxRetries),
+				zap.Error(handlerErr),
+			)
 			if !sleepWithContext(ctx, c.opts.RetryBackoff) {
 				return
 			}
 		}
 	}
 
-	log.Warnf("[Redis Stream] worker %d exhausted retries for stream %s id %s: %v",
-		workerID, stream, m.ID, handlerErr)
+	log.Warn(ctx, "Redis Stream handler exhausted retries",
+		zap.Int("worker_id", workerID),
+		zap.String("stream", stream),
+		zap.String("message_id", m.ID),
+		zap.Error(handlerErr),
+	)
 
 	if c.opts.DLQStream != "" {
 		if err := c.sendToDLQ(ctx, stream, m, handlerErr); err != nil {
-			log.Errorf("[Redis Stream] worker %d failed to send id %s to DLQ: %v", workerID, m.ID, err)
+			log.Error(ctx, "Redis Stream DLQ publish failed", zap.Int("worker_id", workerID), zap.String("message_id", m.ID), zap.Error(err))
 			// Do not ack: leave the entry pending so it can be reclaimed.
 			return
 		}
@@ -291,7 +307,7 @@ func (c *StreamClient) handleMessage(ctx context.Context, workerID int, stream, 
 func (c *StreamClient) ack(ctx context.Context, workerID int, stream, group, id string) {
 	// TODO: 如果ack失败呢？
 	if err := c.client.XAck(ctx, stream, group, id).Err(); err != nil {
-		log.Errorf("[Redis Stream] worker %d failed to XACK stream %s id %s: %v", workerID, stream, id, err)
+		log.Error(ctx, "Redis Stream XACK failed", zap.Int("worker_id", workerID), zap.String("stream", stream), zap.String("message_id", id), zap.Error(err))
 	}
 }
 
@@ -314,7 +330,7 @@ func (c *StreamClient) sendToDLQ(ctx context.Context, stream string, m goredis.X
 // Unsubscribe is a no-op for streams: the consumer group persists on the
 // server. Stopping the consume loops happens via Close/Disconnect.
 func (c *StreamClient) Unsubscribe(ctx context.Context, topic string) error {
-	log.Infof("[Redis Stream] unsubscribe requested for %s (no-op; use Close to stop consuming)", topic)
+	log.Info(ctx, "Redis Stream unsubscribe requested; use Close to stop consuming", zap.String("stream", topic))
 	return nil
 }
 

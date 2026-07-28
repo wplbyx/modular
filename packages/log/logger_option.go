@@ -2,6 +2,8 @@ package log
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,4 +96,24 @@ func WithOutputTelemetry(name string, lp *log.LoggerProvider) LoggerManagerOptio
 		core := otelzap.NewCore(name, otelzap.WithLoggerProvider(lp))
 		manager.cores = append(manager.cores, core)
 	}
+}
+
+// AttachTelemetry adds a dynamic OpenTelemetry sink after a telemetry Resource
+// has completed Setup. The returned function detaches only this attachment.
+func (manager *LoggerManager) AttachTelemetry(name string, lp *log.LoggerProvider) (func(), error) {
+	if manager == nil || manager.sinks == nil {
+		return nil, errors.New("logger manager is not initialized")
+	}
+	if lp == nil {
+		return nil, errors.New("OpenTelemetry logger provider is nil")
+	}
+	if manager.state.Load() != stateOpen {
+		return nil, errors.New("logger manager is closing")
+	}
+	if name == "" {
+		name = "modular"
+	}
+	key := fmt.Sprintf("telemetry-%d", manager.sinkID.Add(1))
+	core := otelzap.NewCore(name, otelzap.WithLoggerProvider(lp))
+	return manager.sinks.Add(key, core), nil
 }

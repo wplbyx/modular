@@ -14,15 +14,20 @@ Servers and clients. Read when adding endpoints or event handlers. Source: `pack
 
 All three servers implement `core.Endpoint`.
 
-HTTP (`packages/transport/server/http`): `httpserver.NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error)`. Construct-then-listen: it binds the port inside `NewServer`, so `Port=0` yields a real assigned port via `server.Addr()` or `server.Transport()`. `/health` remains a minimal liveness endpoint. Add readiness with `WithReadiness(path, checkers...)`; it returns 200/503 and becomes `Transport.HealthPath`. Use `httpserver.NoWriteTimeout` for streaming responses. Inject an `*errs.Handler` with `WithErrorHandler` to enable localized JSON errors and centralized panic/diagnostic handling. Business handlers may use `httpserver.Wrap(func(*gin.Context) error)` or `c.Error(err)`. `Startup` blocks in Serve; `Shutdown` releases the pre-bound listener even if Startup was never called.
+HTTP (`packages/transport/server/http`): `httpserver.NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error)`. Construct-then-listen: it binds the port inside `NewServer`, so `Port=0` yields a real assigned port via `server.Addr()` or `server.Transport()`. Inject the process policy with `WithPolicy(policy)`. `/health` remains a minimal liveness endpoint. Add readiness with `WithReadiness(path, checkers...)`; it returns 200/503 and becomes `Transport.HealthPath`. Use `httpserver.NoWriteTimeout` for streaming responses. Inject an `*errs.Handler` with `WithErrorHandler` to enable localized JSON errors and centralized panic/diagnostic handling. Business handlers may use `httpserver.Wrap(func(*gin.Context) error)` or `c.Error(err)`. `Startup` blocks in Serve; `Shutdown` releases the pre-bound listener even if Startup was never called.
 
-gRPC (`packages/transport/server/rpc`): `rpcserver.NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Server, error)`. Construct-then-listen now matches HTTP: it binds in `NewServer`, so `Port=0` is visible before service registration via `server.Addr()` / `server.Transport()`. `RegisterFunc` is `func(grpc.ServiceRegistrar) error` - the cmd passes a closure that calls `pb.RegisterXxxServer(s, impl)`. Note `Option` here is `func(*Server) error` (returns error - the only such Option type in the library; handle its error). Options: `WithUnaryInterceptors(...)`, `WithStreamInterceptors(...)`, `WithMTLS(cert, key, clientCA)`, and `WithErrorHandler(...)`. The error handler installs outer unary/stream interceptors, reads `accept-language` metadata, returns localized gRPC status plus `ErrorInfo.reason`, logs full diagnostics, and recovers panics. Health check is auto-registered (`grpc_health_v1`). `Startup` calls `grpcServer.Serve(listener)` (blocks); `Shutdown` does GracefulStop with `configitem.GRPC.ShutdownTimeout` then force-stops on timeout and releases the listener.
+gRPC (`packages/transport/server/rpc`): `rpcserver.NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Server, error)`. Construct-then-listen now matches HTTP: it binds in `NewServer`, so `Port=0` is visible before service registration via `server.Addr()` / `server.Transport()`. `RegisterFunc` is `func(grpc.ServiceRegistrar) error`; combine multiple callbacks with `rpcserver.ChainRegister`. Note `Option` here is `func(*Server) error` (returns error - the only such Option type in the library; handle its error). Options include `WithPolicy`, `WithUnaryInterceptors`, `WithStreamInterceptors`, `WithMTLS`, and `WithErrorHandler`. `otelgrpc` stats instrumentation is installed when policy tracing is enabled. Health check is auto-registered (`grpc_health_v1`).
 
 ## Pub/Sub subscriber endpoint
 
 `packages/transport/pubsub/endpoint.go`: `NewSubscriberEndpoint(name string, sub pubsub.Subscriber, topic string, handler pubsub.MessageHandler, opts ...SubscriberOption) *SubscriberEndpoint`. Returns a `core.Endpoint`. `Startup` auto-detects optional `Connector` / `Disconnector` implementations on the subscriber, subscribes, then blocks on an internal context until `Shutdown` cancels it and closes the subscriber. Override auto-detected hooks with `WithConnect(fn)` / `WithDisconnect(fn)`. Use `WithSubscribeOptions(...SubscribeOption)` to forward QoS, queue name, and similar subscription options into `Subscriber.Subscribe`. Shutdown errors are aggregated with `errors.Join`.
 
 Handlers: `pubsub.MessageHandler func(ctx, Message) error`. `pubsub.EventHandler func(ctx, Event) error`. Convert with `pubsub.AsMessageHandler(h)`. `pubsub.EventFromMessage(msg)` builds a `BaseEvent` from a `Message`.
+
+Header-capable publishers call `ResolvePublishOptions` to inject globally scoped
+Metadata and trace context; subscribers restore them before the handler. Kafka,
+Redis Stream, and RocketMQ support this. MQTT v3 and Redis Pub/Sub channels do
+not expose a header carrier and therefore start a new local request context.
 
 Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `internal/<svc>/api/<surface>/event.go`, return a `MessageHandler`; the cmd wraps it with `NewSubscriberEndpoint`.
 
@@ -34,10 +39,21 @@ Kafka needs no connect/disconnect. MQTT/Redis clients that implement `Connect(ct
 
 ## Clients
 
-HTTP (`packages/transport/client/http`): `httpclient.NewClient(cfg)` returns a concrete `*Client`; inject it explicitly. `Do(*http.Request)` is the primary interface and follows net/http response-body ownership. Convenience methods include Get, Post, multipart, and atomic Download. Retries require a replayable request and apply by default only to idempotent methods plus 408/425/429/5xx or temporary network failures. POST/PATCH also require `Idempotency-Key`, unless `RetryPolicy` explicitly authorizes them. Retry-After, exponential backoff, context cancellation, and intermediate response-body closure are handled internally.
+HTTP (`packages/transport/client/http`): `httpclient.NewClient(cfg)` returns a concrete `*Client`; inject it explicitly. `Config.Policy` controls Metadata, OTel client spans, access logging, and adaptive protection. `Do(*http.Request)` is the primary interface and follows net/http response-body ownership. Retries require a replayable request and apply by default only to idempotent methods plus 408/425/429/5xx or temporary network failures. Each attempt re-enters propagation and protection.
 
-gRPC (`packages/transport/client/rpc`): `rpcclient.GetClientConnection(ctx, opts ...ClientConfigOption) (*grpc.ClientConn, error)` waits until the connection reaches Ready or the context/timeout fails, closing the connection on failure. `rpcclient.UseClient(callback, opts...)` uses `context.Background()`; `rpcclient.UseClientContext(ctx, callback, opts...)` lets callers control the parent context. Both reject nil callbacks and auto-close the connection. Options configure endpoint, timeout, credentials, interceptors, balancer, tracing, metrics. For service discovery, dial a resolver target produced by the registry (see registry.md).
+gRPC (`packages/transport/client/rpc`): `rpcclient.GetClientConnection(ctx, opts ...ClientConfigOption) (*grpc.ClientConn, error)` waits until the connection reaches Ready or the context/timeout fails, closing the connection on failure. Use `rpcclient.WithPolicy(policy)` so client Metadata, access logs, protection, and `otelgrpc` stats share process policy. `WithEnableTracing` and `WithClientMetrics` now install real stats instrumentation.
 
 ## Middleware
 
-Gin middleware in `packages/transport/server/http/middleware/`: `cors`, `limiter`, `logger`, `request_id`, `telemetry` (wraps `telemetry.GinMiddleware`), `trace`. Attach via `httpserver.WithMiddleware(...)`. The HTTP server's constructor already adds Recovery and (if a zap logger is set via `WithLogger`) a zap gin logger.
+`transport.NewPolicy` enables the common chain by default:
+
+```text
+Recovery/Error -> Metadata/RequestID -> OpenTelemetry -> AccessLog
+-> Aegis BBR/SRE Protection -> user middleware -> handler
+```
+
+The scaffold-once `cmd/<process>/policy.go` owns replacements and opt-outs.
+`WithMiddleware` adds business-specific Gin middleware after the common chain;
+custom gRPC interceptors are likewise appended after the common interceptors.
+All log calls require the request Context. Sensitive Metadata is denied unless
+the policy propagator explicitly allowlists it.

@@ -5,12 +5,12 @@ import (
 	"net"
 	"net/http"
 
-	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/health"
+	modularlog "github.com/wplbyx/modular/packages/log"
+	modulartransport "github.com/wplbyx/modular/packages/transport"
 	mw "github.com/wplbyx/modular/packages/transport/server/http/middleware"
 )
 
@@ -19,20 +19,25 @@ import (
 // 因此 option 之间的应用顺序不影响正确性。
 type ServerOption func(*Server)
 
-// zapLogger 是日志中间件期望的 logger 接口（与 ginzap.ZapLogger 等价），
-// *zap.Logger 天然满足该接口。
-type zapLogger = ginzap.ZapLogger
-
 // ginLogger / ginRecovery 将 logger 适配为 gin 中间件，
 // 集中在此处以避免 server.go 直接依赖具体日志实现。
-func ginLogger(l zapLogger) gin.HandlerFunc   { return mw.GinLogger(l) }
-func ginRecovery(l zapLogger) gin.HandlerFunc { return mw.GinRecovery(l) }
+func ginLogger(l modularlog.Logger) gin.HandlerFunc   { return mw.GinLogger(l) }
+func ginRecovery(l modularlog.Logger) gin.HandlerFunc { return mw.GinRecovery(l) }
 
 // WithLogger 注入 zap logger，启用结构化访问日志与 panic recovery 日志。
 // 未调用时，默认仅注册 gin.Recovery()（无访问日志）。
-func WithLogger(logger *zap.Logger) ServerOption {
+func WithLogger(logger modularlog.Logger) ServerOption {
 	return func(s *Server) {
 		s.logger = logger
+	}
+}
+
+// WithPolicy injects the process-owned transport middleware policy.
+// Passing nil explicitly keeps only metadata extraction and error recovery.
+func WithPolicy(policy *modulartransport.Policy) ServerOption {
+	return func(s *Server) {
+		s.policy = policy
+		s.policySet = true
 	}
 }
 

@@ -21,7 +21,9 @@ All infrastructure config items live in `packages/config/configitem` and use typ
 - `configitem.Redis`: `Urls`, `Host`, `Port`, `Username`, `Password`, `Database`, `PoolSize`, `MinIdleConn`, `DialTimeout`, `ReadTimeout`, `WriteTimeout`, `MaxRetries`, `MinRetryBackoff`, `MaxRetryBackoff`.
 - `configitem.Storage`: `Type` (required, oneof disk|oss), `PublicBaseURL`, `Disk *DiskStorageConfig`, `OSS *OSSStorageConfig`.
 - `configitem.Telemetry`: `Logger`, `Metric`, `Tracer`.
-- `configitem.Logging`: `Level`, `Output`, `File`, `OTel`.
+- `configitem.EventBus`: process-local component `Name` and RingMPSC queue `Capacity`.
+- `configitem.Logging`: `Level`, `Output`, `Async` (enabled, capacity, bounded
+  error enqueue timeout, flush timeout), `File`, `OTel`.
 - Broker config items are also available for `Kafka`, `MQTT`, `RabbitMQ`, and `RocketMQ`. Only include modules the svc actually uses.
 
 ## Loading
@@ -69,14 +71,14 @@ generated `cmd/` entrypoints use `config.NewRoot` rather than anonymous structs.
     // config.gen.go
     type Generated struct {
         configitem.Application `mapstructure:"application,squash"`
-        HTTP      configitem.HTTP      `mapstructure:"http"`
-        Database  configitem.Database  `mapstructure:"database"`
+        Logging  configitem.Logging   `mapstructure:"logging"`
+        HTTP     configitem.HTTP      `mapstructure:"http"`
+        Database configitem.Database  `mapstructure:"database"`
     }
 
     // config.go
     type Config struct {
         Generated `mapstructure:",squash"`
-        Logging   configitem.Logging   `mapstructure:"logging"`
     }
 
     func (Config) Flags(prefix string) []modularconfig.FlagSpec {
@@ -89,8 +91,8 @@ An optional `Load` helper may be retained for tests or non-Cobra embedding, but 
 
 ## Process Config
 
-- Service topology: `cmd/<svc>` runs `NewRoot[config/<svc>.Config]` with `config/<svc>/config.yaml`.
-- Single topology: the skill generates `config/<project>/Config` containing the process `Application` plus one nested field per svc. Its YAML is generated from the `config/<svc>/config.yaml` fragments.
+- Service topology: `cmd/<svc>` runs `NewRoot[config/<svc>.Config]` with `config/<svc>/config.yaml`; that process config always contains Logging.
+- Single topology: the skill generates `config/<project>/Config` containing process Application, process Logging, plus one nested field per svc. Its YAML is generated from the `config/<svc>/config.yaml` fragments.
 - Treat `config/<project>/config.gen.go|yaml` as generated output. Edit svc extensions, then rerun a scaffold/resource command to rebuild the process aggregate.
 - Remote configuration for a single process uses the same nested shape (`user.http`, `billing.redis`, etc.).
 - A single-topology svc may not have the same name as the project because both would own `config/<project>`.

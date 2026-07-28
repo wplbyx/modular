@@ -6,13 +6,14 @@ import (
 	"fmt"
 
 	"github.com/wplbyx/modular/packages/config/configitem"
+	modularlog "github.com/wplbyx/modular/packages/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/log"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -27,22 +28,38 @@ type OpenTelemetry struct {
 	res     *resource.Resource
 	Tp      *trace.TracerProvider
 	Mp      *metric.MeterProvider
-	Lp      *log.LoggerProvider
+	Lp      *sdklog.LoggerProvider
+	logger  *modularlog.LoggerManager
+	detach  func()
 }
 
-func NewOpenTelemetry(ctx context.Context, name, version string, telemetry *configitem.Telemetry) (*OpenTelemetry, error) {
+// Option configures an OpenTelemetry resource before its lifecycle starts.
+type Option func(*OpenTelemetry)
+
+// WithLoggerManager attaches the OTLP log sink only after telemetry setup.
+func WithLoggerManager(manager *modularlog.LoggerManager) Option {
+	return func(telemetry *OpenTelemetry) { telemetry.logger = manager }
+}
+
+func NewOpenTelemetry(ctx context.Context, name, version string, telemetry *configitem.Telemetry, options ...Option) (*OpenTelemetry, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &OpenTelemetry{
+	result := &OpenTelemetry{
 		name:    name,
 		version: version,
 		cfg:     telemetry,
 		res:     resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(name), semconv.ServiceVersion(version)),
-	}, nil
+	}
+	for _, option := range options {
+		if option != nil {
+			option(result)
+		}
+	}
+	return result, nil
 }
 
 // Name 实现 app.Resource 接口
@@ -68,6 +85,14 @@ func (o *OpenTelemetry) Setup(ctx context.Context) error {
 		_ = o.Close(ctx)
 		return err
 	}
+	if o.Lp != nil && o.logger != nil {
+		detach, err := o.logger.AttachTelemetry(o.name, o.Lp)
+		if err != nil {
+			_ = o.Close(ctx)
+			return fmt.Errorf("attach OpenTelemetry log sink: %w", err)
+		}
+		o.detach = detach
+	}
 	o.setup = true
 	return nil
 }
@@ -79,6 +104,13 @@ func (o *OpenTelemetry) Close(ctx context.Context) error {
 	}
 
 	var joined error
+	if o.detach != nil {
+		if o.logger != nil {
+			joined = errors.Join(joined, o.logger.Sync(ctx))
+		}
+		o.detach()
+		o.detach = nil
+	}
 	if o.Lp != nil {
 		joined = errors.Join(joined, o.Lp.Shutdown(ctx))
 		o.Lp = nil
@@ -154,9 +186,9 @@ func (o *OpenTelemetry) newLoggerProvider(ctx context.Context, telemetry *config
 		return fmt.Errorf("failed to create OTLP logger exporter: %w", err)
 	}
 
-	o.Lp = log.NewLoggerProvider(
-		log.WithProcessor(log.NewBatchProcessor(exporter)),
-		log.WithResource(res),
+	o.Lp = sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
+		sdklog.WithResource(res),
 	)
 
 	global.SetLoggerProvider(o.Lp)

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/metadata"
 )
 
 // Connector is an optional capability that a subscriber-backed endpoint may
@@ -43,11 +44,12 @@ type Disconnector interface {
 //	ep = pubsub.NewSubscriberEndpoint("kafka-events", consumer, "events", myHandler)
 //	app.WithEndpoint(ep)
 type SubscriberEndpoint struct {
-	name    string
-	sub     Subscriber
-	topic   string
-	handler MessageHandler
-	opts    []SubscribeOption
+	name       string
+	sub        Subscriber
+	topic      string
+	handler    MessageHandler
+	opts       []SubscribeOption
+	propagator *metadata.Propagator
 
 	onStart func(ctx context.Context) error
 	onStop  func(ctx context.Context) error
@@ -76,13 +78,20 @@ func WithSubscribeOptions(opts ...SubscribeOption) SubscriberOption {
 	return func(e *SubscriberEndpoint) { e.opts = append(e.opts, opts...) }
 }
 
+// WithMetadataPropagator overrides message metadata extraction. Passing nil
+// disables extraction for transports without a header carrier.
+func WithMetadataPropagator(propagator *metadata.Propagator) SubscriberOption {
+	return func(endpoint *SubscriberEndpoint) { endpoint.propagator = propagator }
+}
+
 // NewSubscriberEndpoint creates a core.Endpoint that manages a subscription.
 func NewSubscriberEndpoint(name string, sub Subscriber, topic string, handler MessageHandler, opts ...SubscriberOption) *SubscriberEndpoint {
 	e := &SubscriberEndpoint{
-		name:    name,
-		sub:     sub,
-		topic:   topic,
-		handler: handler,
+		name:       name,
+		sub:        sub,
+		topic:      topic,
+		handler:    handler,
+		propagator: defaultMetadataPropagator,
 	}
 	if connector, ok := sub.(Connector); ok {
 		e.onStart = connector.Connect
@@ -123,7 +132,11 @@ func (e *SubscriberEndpoint) Startup(ctx context.Context) error {
 		}
 	}
 
-	if err := e.sub.Subscribe(subCtx, e.topic, e.handler, e.opts...); err != nil {
+	handler := e.handler
+	if e.propagator != nil {
+		handler = withMessageMetadata(e.propagator, handler)
+	}
+	if err := e.sub.Subscribe(subCtx, e.topic, handler, e.opts...); err != nil {
 		cancel()
 		return fmt.Errorf("subscribe %s: %w", e.topic, err)
 	}

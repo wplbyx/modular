@@ -20,7 +20,9 @@ import (
 
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/errs"
-	"github.com/wplbyx/modular/packages/log"
+	modulartransport "github.com/wplbyx/modular/packages/transport"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.uber.org/zap"
 )
 
 var _ core.Endpoint = (*Server)(nil)
@@ -35,6 +37,7 @@ type Server struct {
 	unaryInts      []grpc.UnaryServerInterceptor
 	streamInts     []grpc.StreamServerInterceptor
 	errorHandler   *errs.Handler
+	policy         *modulartransport.Policy
 	mu             sync.RWMutex
 	isRunning      bool
 	listenerClosed bool
@@ -45,6 +48,21 @@ type Option func(*Server) error
 
 // RegisterFunc is the service registration function type
 type RegisterFunc func(grpc.ServiceRegistrar) error
+
+// ChainRegister combines service registrations in declaration order.
+func ChainRegister(registers ...RegisterFunc) RegisterFunc {
+	return func(registrar grpc.ServiceRegistrar) error {
+		for _, register := range registers {
+			if register == nil {
+				continue
+			}
+			if err := register(registrar); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
 
 // NewServer creates a new gRPC server instance
 func NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Server, error) {
@@ -72,15 +90,38 @@ func NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Se
 			return nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
+	if s.policy == nil {
+		s.policy = modulartransport.NewPolicy("grpc-server")
+	}
 
 	serverOpts := []grpc.ServerOption{}
 
 	if s.credentials != nil {
 		serverOpts = append(serverOpts, grpc.Creds(s.credentials))
 	}
+	baseUnary := []grpc.UnaryServerInterceptor{}
+	baseStream := []grpc.StreamServerInterceptor{}
 	if s.errorHandler != nil {
-		s.unaryInts = append([]grpc.UnaryServerInterceptor{errorUnaryInterceptor(s.errorHandler)}, s.unaryInts...)
-		s.streamInts = append([]grpc.StreamServerInterceptor{errorStreamInterceptor(s.errorHandler)}, s.streamInts...)
+		baseUnary = append(baseUnary, errorUnaryInterceptor(s.errorHandler))
+		baseStream = append(baseStream, errorStreamInterceptor(s.errorHandler))
+	} else {
+		baseUnary = append(baseUnary, recoveryUnaryInterceptor(s.policy))
+		baseStream = append(baseStream, recoveryStreamInterceptor(s.policy))
+	}
+	baseUnary = append(baseUnary, metadataUnaryInterceptor(s.policy))
+	baseStream = append(baseStream, metadataStreamInterceptor(s.policy))
+	if s.policy.AccessLogEnabled() {
+		baseUnary = append(baseUnary, accessUnaryInterceptor(s.policy))
+		baseStream = append(baseStream, accessStreamInterceptor(s.policy))
+	}
+	if s.policy.Protection() != nil {
+		baseUnary = append(baseUnary, protectionUnaryInterceptor(s.policy))
+		baseStream = append(baseStream, protectionStreamInterceptor(s.policy))
+	}
+	s.unaryInts = append(baseUnary, s.unaryInts...)
+	s.streamInts = append(baseStream, s.streamInts...)
+	if s.policy.TracingEnabled() {
+		serverOpts = append(serverOpts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
 	if len(s.unaryInts) > 0 {
 		serverOpts = append(serverOpts, grpc.ChainUnaryInterceptor(s.unaryInts...))
@@ -127,6 +168,17 @@ func WithErrorHandler(handler *errs.Handler) Option {
 			return errors.New("gRPC error handler is nil")
 		}
 		s.errorHandler = handler
+		return nil
+	}
+}
+
+// WithPolicy injects the process-owned gRPC middleware policy.
+func WithPolicy(policy *modulartransport.Policy) Option {
+	return func(s *Server) error {
+		if policy == nil {
+			return errors.New("gRPC transport policy is nil")
+		}
+		s.policy = policy
 		return nil
 	}
 }
@@ -180,7 +232,7 @@ func (s *Server) Startup(ctx context.Context) error {
 	s.isRunning = true
 	s.mu.Unlock()
 
-	log.Infof("gRPC server listening on %s", listener.Addr())
+	s.policy.Logger().Info(ctx, "gRPC server listening", zap.Stringer("address", listener.Addr()))
 
 	err := s.grpcServer.Serve(listener)
 
@@ -203,7 +255,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return s.closeListener()
 	}
 
-	log.Infof("Gracefully stopping gRPC server...")
+	s.policy.Logger().Info(ctx, "gRPC server stopping")
 
 	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
@@ -223,10 +275,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		log.Warnf("gRPC server shutdown timeout, forcing stop: %v", ctx.Err())
+		s.policy.Logger().Warn(ctx, "gRPC server shutdown timeout; forcing stop", zap.Error(ctx.Err()))
 		s.grpcServer.Stop()
 	case <-shutdownComplete:
-		log.Infof("gRPC server gracefully stopped")
+		s.policy.Logger().Info(ctx, "gRPC server stopped")
 	}
 
 	return s.closeListener()

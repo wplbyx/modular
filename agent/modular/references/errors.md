@@ -83,14 +83,19 @@ err_template_gen \
 
 ## Wire one Handler per process
 
-Initialize logging before constructing the Handler. `log.GetLogger()` is a no-op logger until `NewLoggerManager` succeeds.
+Configuration is loaded first; initialize logging second and pass its explicit
+`log.Logger` to the Handler and process policy.
 
 ```go
 loggerManager, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
 if err != nil {
 	return fmt.Errorf("create logger: %w", err)
 }
-defer loggerManager.Close()
+restoreLogger := log.SetDefault(loggerManager.Logger())
+defer restoreLogger()
+defer loggerManager.Close(context.WithoutCancel(ctx))
+
+policy := transport.NewPolicy(cfg.Name, transport.WithLogger(loggerManager.Logger()))
 
 catalog, err := errs.LoadCatalog(
 	os.DirFS("."),
@@ -100,19 +105,20 @@ catalog, err := errs.LoadCatalog(
 if err != nil {
 	return fmt.Errorf("load error catalog: %w", err)
 }
-errorHandler, err := errs.NewHandler(catalog, log.GetLogger())
+errorHandler, err := errs.NewHandler(catalog, loggerManager.Logger())
 if err != nil {
 	return fmt.Errorf("create error handler: %w", err)
 }
 
 httpServer, err := httpserver.NewServer(
 	&cfg.HTTP,
-	httpserver.WithLogger(log.GetLogger()),
+	httpserver.WithPolicy(policy),
 	httpserver.WithErrorHandler(errorHandler),
 )
 grpcServer, err := rpcserver.NewServer(
 	&cfg.GRPC,
 	register,
+	rpcserver.WithPolicy(policy),
 	rpcserver.WithErrorHandler(errorHandler),
 )
 ```

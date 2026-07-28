@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
@@ -67,6 +68,7 @@ func NewConsumer(opts ...ConsumerOption) (*Consumer, error) {
 // Note: For Kafka, the topic is typically set at consumer creation time
 // This method starts consuming messages from the configured topic
 func (c *Consumer) Subscribe(ctx context.Context, topic string, handler pubsub.MessageHandler, opts ...pubsub.SubscribeOption) error {
+	handler = pubsub.WithMessageMetadata(handler)
 	// Store handler for the topic
 	c.handlers.Store(topic, handler)
 
@@ -82,27 +84,27 @@ func (c *Consumer) Subscribe(ctx context.Context, topic string, handler pubsub.M
 		go c.consumeLoop(ctx, topic, handler, i)
 	}
 
-	log.Infof("Kafka consumer subscribed to topic: %s", topic)
+	log.Info(ctx, "Kafka consumer subscribed", zap.String("topic", topic))
 	return nil
 }
 
 // Unsubscribe unsubscribes from a topic
 func (c *Consumer) Unsubscribe(ctx context.Context, topic string) error {
 	c.handlers.Delete(topic)
-	log.Infof("Kafka consumer unsubscribed from topic: %s", topic)
+	log.Info(ctx, "Kafka consumer unsubscribed", zap.String("topic", topic))
 	return nil
 }
 
 // Close closes the consumer
 func (c *Consumer) Close() error {
-	log.Info("Kafka consumer closing...")
+	log.Info(context.Background(), "Kafka consumer closing")
 
 	if c.cancel != nil {
 		c.cancel()
 	}
 
 	if err := c.reader.Close(); err != nil {
-		log.Errorf("Kafka consumer close reader failed: %v", err)
+		log.Error(context.Background(), "Kafka consumer reader close failed", zap.Error(err))
 		return err
 	}
 
@@ -115,12 +117,12 @@ func (c *Consumer) Close() error {
 
 func (c *Consumer) consumeLoop(ctx context.Context, topic string, handler pubsub.MessageHandler, workerID int) {
 	defer c.wg.Done()
-	log.Infof("Kafka consumer worker %d started for topic %s", workerID, topic)
+	log.Info(ctx, "Kafka consumer worker started", zap.Int("worker_id", workerID), zap.String("topic", topic))
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Infof("Kafka consumer worker %d for topic %s stopping", workerID, topic)
+			log.Info(ctx, "Kafka consumer worker stopping", zap.Int("worker_id", workerID), zap.String("topic", topic))
 			return
 		default:
 			msg, err := c.reader.FetchMessage(ctx)
@@ -128,7 +130,7 @@ func (c *Consumer) consumeLoop(ctx context.Context, topic string, handler pubsub
 				if ctx.Err() != nil {
 					return
 				}
-				log.Errorf("Kafka worker %d failed to fetch message: %v", workerID, err)
+				log.Error(ctx, "Kafka consumer fetch failed", zap.Int("worker_id", workerID), zap.Error(err))
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
@@ -146,32 +148,37 @@ func (c *Consumer) handleMessage(ctx context.Context, workerID int, handler pubs
 		handlerErr = handler(ctx, message)
 		if handlerErr == nil {
 			if err := c.reader.CommitMessages(ctx, msg); err != nil {
-				log.Errorf("Kafka worker %d failed to commit offset: %v", workerID, err)
+				log.Error(ctx, "Kafka consumer offset commit failed", zap.Int("worker_id", workerID), zap.Error(err))
 			}
 			return
 		}
 
 		if attempt < c.opts.MaxRetries {
-			log.Warnf("Kafka worker %d handler error for topic %s, retry %d/%d: %v",
-				workerID, msg.Topic, attempt+1, c.opts.MaxRetries, handlerErr)
+			log.Warn(ctx, "Kafka handler failed; retrying",
+				zap.Int("worker_id", workerID),
+				zap.String("topic", msg.Topic),
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", c.opts.MaxRetries),
+				zap.Error(handlerErr),
+			)
 			if !sleepWithContext(ctx, c.opts.RetryBackoff) {
 				return
 			}
 		}
 	}
 
-	log.Warnf("Kafka worker %d exhausted retries for topic %s: %v", workerID, msg.Topic, handlerErr)
+	log.Warn(ctx, "Kafka handler exhausted retries", zap.Int("worker_id", workerID), zap.String("topic", msg.Topic), zap.Error(handlerErr))
 	if c.dlqProducer == nil || c.opts.DLQTopic == "" {
 		return
 	}
 
 	if err := c.sendToDLQ(ctx, msg, handlerErr); err != nil {
-		log.Errorf("Kafka worker %d failed to send message to DLQ: %v", workerID, err)
+		log.Error(ctx, "Kafka DLQ publish failed", zap.Int("worker_id", workerID), zap.Error(err))
 		return
 	}
 
 	if err := c.reader.CommitMessages(ctx, msg); err != nil {
-		log.Errorf("Kafka worker %d failed to commit DLQ'd message offset: %v", workerID, err)
+		log.Error(ctx, "Kafka DLQ offset commit failed", zap.Int("worker_id", workerID), zap.Error(err))
 	}
 }
 

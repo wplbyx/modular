@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	modulartransport "github.com/wplbyx/modular/packages/transport"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
@@ -27,6 +29,7 @@ type ClientConfig struct {
 	serverName    string
 	enableTracing bool
 	enableMetrics bool
+	policy        *modulartransport.Policy
 }
 
 // UseClient executes a callback with a gRPC connection
@@ -66,11 +69,24 @@ func GetClientConnection(ctx context.Context, options ...ClientConfigOption) (*g
 	grpcOpts := []grpc.DialOption{
 		grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy": "` + config.balancerName + `"}`),
 	}
-	if len(config.unaryInts) > 0 {
-		grpcOpts = append(grpcOpts, grpc.WithChainUnaryInterceptor(config.unaryInts...))
+	baseUnary := []grpc.UnaryClientInterceptor{metadataUnaryClientInterceptor(config.policy)}
+	baseStream := []grpc.StreamClientInterceptor{metadataStreamClientInterceptor(config.policy)}
+	if config.policy.AccessLogEnabled() {
+		baseUnary = append(baseUnary, accessUnaryClientInterceptor(config.policy))
+		baseStream = append(baseStream, accessStreamClientInterceptor(config.policy))
 	}
-	if len(config.streamInts) > 0 {
-		grpcOpts = append(grpcOpts, grpc.WithChainStreamInterceptor(config.streamInts...))
+	if config.policy.Protection() != nil {
+		baseUnary = append(baseUnary, protectionUnaryClientInterceptor(config.policy))
+		baseStream = append(baseStream, protectionStreamClientInterceptor(config.policy))
+	}
+	baseUnary = append(baseUnary, config.unaryInts...)
+	baseStream = append(baseStream, config.streamInts...)
+	grpcOpts = append(grpcOpts,
+		grpc.WithChainUnaryInterceptor(baseUnary...),
+		grpc.WithChainStreamInterceptor(baseStream...),
+	)
+	if config.enableTracing || config.enableMetrics {
+		grpcOpts = append(grpcOpts, grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 	}
 	grpcOpts = append(grpcOpts, config.rpcOpts...)
 
@@ -102,10 +118,12 @@ func GetClientConnection(ctx context.Context, options ...ClientConfigOption) (*g
 }
 
 func defaultClientConfig() *ClientConfig {
+	policy := modulartransport.NewPolicy("grpc-client")
 	return &ClientConfig{
 		timeout:       2000 * time.Millisecond,
 		balancerName:  "round_robin",
 		enableTracing: true,
+		policy:        policy,
 	}
 }
 
@@ -137,6 +155,18 @@ func WithEnableTracing(enable bool) ClientConfigOption {
 func WithClientMetrics(enable bool) ClientConfigOption {
 	return func(o *ClientConfig) error {
 		o.enableMetrics = enable
+		return nil
+	}
+}
+
+// WithPolicy injects the process-owned gRPC client policy.
+func WithPolicy(policy *modulartransport.Policy) ClientConfigOption {
+	return func(o *ClientConfig) error {
+		if policy == nil {
+			return errors.New("gRPC client transport policy is nil")
+		}
+		o.policy = policy
+		o.enableTracing = policy.TracingEnabled()
 		return nil
 	}
 }

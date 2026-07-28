@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
+	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
@@ -61,15 +62,15 @@ func NewClient(opts ...Option) (*MQTTClient, error) {
 
 	// Set up connection handler to restore subscriptions
 	pahoOpts.OnConnect = func(c paho.Client) {
-		log.Infof("[MQTT] Connected to broker: %s", o.BrokerURL)
+		log.Info(context.Background(), "MQTT connected", zap.String("broker", o.BrokerURL))
 		mqttClient.subscriptions.Range(func(key, value interface{}) bool {
 			topic := key.(string)
 			handler := value.(pubsub.MessageHandler)
 			go func() {
 				if token := c.Subscribe(topic, o.DefaultQos, mqttClient.adaptHandler(handler)); token.Wait() && token.Error() != nil {
-					log.Warnf("[MQTT] Failed to resubscribe %s: %v", topic, token.Error())
+					log.Warn(context.Background(), "MQTT resubscribe failed", zap.String("topic", topic), zap.Error(token.Error()))
 				} else {
-					log.Infof("[MQTT] Resubscribed to %s", topic)
+					log.Info(context.Background(), "MQTT resubscribed", zap.String("topic", topic))
 				}
 			}()
 			return true
@@ -86,7 +87,7 @@ func NewClient(opts ...Option) (*MQTTClient, error) {
 		pahoOpts.OnConnectionLost = o.ConnectionLostHandler
 	} else {
 		pahoOpts.OnConnectionLost = func(c paho.Client, err error) {
-			log.Warnf("[MQTT] Connection lost: %v", err)
+			log.Warn(context.Background(), "MQTT connection lost", zap.Error(err))
 		}
 	}
 
@@ -200,6 +201,8 @@ func (c *MQTTClient) Subscribe(ctx context.Context, topic string, handler pubsub
 		opt(subscribeOpts)
 	}
 
+	handler = pubsub.WithMessageMetadata(handler)
+
 	// Store subscription for reconnection
 	c.subscriptions.Store(topic, handler)
 
@@ -274,8 +277,9 @@ func (c *MQTTClient) adaptHandler(handler pubsub.MessageHandler) paho.MessageHan
 				Topic:   msg.Topic(),
 				Payload: msg.Payload(),
 			}
-			if err := handler(context.Background(), message); err != nil {
-				log.Warnf("[MQTT] Handler error for topic [%s]: %v", msg.Topic(), err)
+			ctx := context.Background()
+			if err := handler(ctx, message); err != nil {
+				log.Warn(ctx, "MQTT handler failed", zap.String("topic", msg.Topic()), zap.Error(err))
 			}
 			msg.Ack()
 		}()

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 
+	modularlog "github.com/wplbyx/modular/packages/log"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
@@ -28,10 +29,10 @@ type Result struct {
 // Handler 集中文案渲染、客户端投影和内部诊断日志。
 type Handler struct {
 	catalog *Catalog
-	logger  *zap.Logger
+	logger  modularlog.Logger
 }
 
-func NewHandler(catalog *Catalog, logger *zap.Logger) (*Handler, error) {
+func NewHandler(catalog *Catalog, logger modularlog.Logger) (*Handler, error) {
 	if catalog == nil {
 		return nil, errors.New("error catalog is nil")
 	}
@@ -91,9 +92,9 @@ func (handler *Handler) Handle(ctx context.Context, err error, info RequestInfo)
 		)
 	}
 	if code >= http.StatusInternalServerError {
-		handler.logger.Error("request failed", fields...)
+		handler.logger.Error(ctx, "request failed", fields...)
 	} else {
-		handler.logger.Warn("request failed", fields...)
+		handler.logger.Warn(ctx, "request failed", fields...)
 	}
 	return Result{Error: clientErr, Locale: rendered.Locale}
 }

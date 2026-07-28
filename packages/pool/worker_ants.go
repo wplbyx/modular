@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/panjf2000/ants/v2"
+	"go.uber.org/zap"
 
 	pkglog "github.com/wplbyx/modular/packages/log"
 )
@@ -45,12 +46,12 @@ func (ap *AntsWorkerPool) Submit(ctx context.Context, task WorkerTask) error {
 		defer func() {
 			ap.wg.Done()
 			if r := recover(); r != nil {
-				pkglog.Errorf("worker pool: task recovered from panic: %v", r)
+				pkglog.Error(ctx, "worker pool task recovered from panic", zap.Any("panic", r))
 			}
 		}()
 
 		if err := task(ctx); err != nil {
-			pkglog.Errorf("worker pool: task failed: %v", err)
+			pkglog.Error(ctx, "worker pool task failed", zap.Error(err))
 		}
 	}); err != nil {
 		ap.wg.Done()

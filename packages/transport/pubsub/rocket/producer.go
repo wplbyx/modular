@@ -7,6 +7,7 @@ import (
 
 	rmq "github.com/apache/rocketmq-clients/golang/v5"
 	"github.com/apache/rocketmq-clients/golang/v5/credentials"
+	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
@@ -64,16 +65,16 @@ func NewProducer(opts ...ProducerOption) (*Producer, error) {
 		return nil, fmt.Errorf("rocketmq producer start: %w", err)
 	}
 
-	log.Infof("[RocketMQ] producer started (endpoint=%s)", o.Endpoint)
+	log.Info(context.Background(), "RocketMQ producer started", zap.String("endpoint", o.Endpoint))
 	return &Producer{rp: rp, opts: o}, nil
 }
 
 // Publish sends a message to the given topic synchronously. When topic is empty
 // the producer's default topic is used.
 func (p *Producer) Publish(ctx context.Context, topic string, payload []byte, opts ...pubsub.PublishOption) error {
-	publishOpts := &pubsub.PublishOptions{}
-	for _, opt := range opts {
-		opt(publishOpts)
+	publishOpts, err := pubsub.ResolvePublishOptions(ctx, pubsub.PublishOptions{}, opts...)
+	if err != nil {
+		return fmt.Errorf("inject RocketMQ metadata: %w", err)
 	}
 
 	if topic == "" {
@@ -108,7 +109,7 @@ func (p *Producer) Publish(ctx context.Context, topic string, payload []byte, op
 
 // Close gracefully stops the producer.
 func (p *Producer) Close() error {
-	log.Info("[RocketMQ] producer closing...")
+	log.Info(context.Background(), "RocketMQ producer closing")
 	return p.rp.GracefulStop()
 }
 

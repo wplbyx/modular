@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
@@ -61,9 +62,9 @@ func NewProducer(opts ...ProducerOption) (*Producer, error) {
 // Publish publishes a message to Kafka
 func (p *Producer) Publish(ctx context.Context, topic string, payload []byte, opts ...pubsub.PublishOption) error {
 	// Apply options
-	publishOpts := &pubsub.PublishOptions{}
-	for _, opt := range opts {
-		opt(publishOpts)
+	publishOpts, err := pubsub.ResolvePublishOptions(ctx, pubsub.PublishOptions{}, opts...)
+	if err != nil {
+		return fmt.Errorf("inject Kafka metadata: %w", err)
 	}
 
 	// Use provided topic or default
@@ -89,9 +90,9 @@ func (p *Producer) Publish(ctx context.Context, topic string, payload []byte, op
 		}
 	}
 
-	err := p.writer.WriteMessages(ctx, msg)
+	err = p.writer.WriteMessages(ctx, msg)
 	if err != nil {
-		log.Errorf("Failed to send message to Kafka (topic: %s): %v", topic, err)
+		log.Error(ctx, "Kafka publish failed", zap.String("topic", topic), zap.Error(err))
 		return fmt.Errorf("kafka producer send message failed: %w", err)
 	}
 
@@ -100,7 +101,7 @@ func (p *Producer) Publish(ctx context.Context, topic string, payload []byte, op
 
 // Close closes the producer
 func (p *Producer) Close() error {
-	log.Info("Kafka producer closing...")
+	log.Info(context.Background(), "Kafka producer closing")
 	if p.writer != nil {
 		return p.writer.Close()
 	}

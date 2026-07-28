@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	goredis "github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
@@ -73,7 +74,7 @@ func (c *ChannelClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("redis channel client ping: %w", err)
 	}
 	c.connected = true
-	log.Info("[Redis Pub/Sub] connected")
+	log.Info(ctx, "Redis Pub/Sub connected")
 	return nil
 }
 
@@ -120,6 +121,7 @@ func (c *ChannelClient) Publish(ctx context.Context, topic string, payload []byt
 // It returns immediately after the subscription is registered; the
 // SubscriberEndpoint adapter is responsible for blocking.
 func (c *ChannelClient) Subscribe(ctx context.Context, topic string, handler pubsub.MessageHandler, opts ...pubsub.SubscribeOption) error {
+	handler = pubsub.WithMessageMetadata(handler)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -165,7 +167,7 @@ func (c *ChannelClient) Subscribe(ctx context.Context, topic string, handler pub
 		}
 	}()
 
-	log.Infof("[Redis Pub/Sub] subscribed to %s", topic)
+	log.Info(ctx, "Redis Pub/Sub subscribed", zap.String("topic", topic))
 	return nil
 }
 
@@ -188,7 +190,7 @@ func (c *ChannelClient) Unsubscribe(ctx context.Context, topic string) error {
 	if err != nil {
 		return fmt.Errorf("redis pub/sub unsubscribe from %s: %w", topic, err)
 	}
-	log.Infof("[Redis Pub/Sub] unsubscribed from %s", topic)
+	log.Info(ctx, "Redis Pub/Sub unsubscribed", zap.String("topic", topic))
 	return nil
 }
 
@@ -210,7 +212,7 @@ func (c *ChannelClient) dispatch(ctx context.Context, handler pubsub.MessageHand
 			Payload: []byte(msg.Payload),
 		}
 		if err := handler(ctx, message); err != nil {
-			log.Warnf("[Redis Pub/Sub] handler error for channel [%s]: %v", msg.Channel, err)
+			log.Warn(ctx, "Redis Pub/Sub handler failed", zap.String("channel", msg.Channel), zap.Error(err))
 		}
 	}()
 }

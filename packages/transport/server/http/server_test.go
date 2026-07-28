@@ -19,7 +19,10 @@ import (
 	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/health"
-	"go.uber.org/zap"
+	"github.com/wplbyx/modular/packages/log"
+	"github.com/wplbyx/modular/packages/metadata"
+	"github.com/wplbyx/modular/packages/resilience"
+	modulartransport "github.com/wplbyx/modular/packages/transport"
 )
 
 func withStop(t *testing.T, srv *Server) {
@@ -160,6 +163,55 @@ func TestRegisterRoute(t *testing.T) {
 	assert.Equal(t, "pong", w.Body.String())
 }
 
+func TestDefaultPolicyExtractsMetadataAndPublishesRequestID(t *testing.T) {
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0})
+	require.NoError(t, err)
+	withStop(t, srv)
+
+	var requestID, language string
+	srv.RegisterRoute(func(engine *gin.Engine) {
+		engine.GET("/metadata", func(ctx *gin.Context) {
+			md := metadata.FromContext(ctx.Request.Context())
+			requestID = md.Get(metadata.RequestIDKey)[0]
+			language = md.Get(metadata.LanguageKey)[0]
+			ctx.Status(http.StatusNoContent)
+		})
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metadata", nil)
+	request.Header.Set("X-Request-Id", "req-42")
+	request.Header.Set("Accept-Language", "zh-CN,en;q=0.8")
+	srv.engine.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusNoContent, recorder.Code)
+	assert.Equal(t, "req-42", requestID)
+	assert.Equal(t, "zh-CN", language)
+	assert.Equal(t, "req-42", recorder.Header().Get("X-Request-Id"))
+}
+
+func TestPolicyRejectionDoesNotEnterHandler(t *testing.T) {
+	policy := modulartransport.NewPolicy(
+		"test",
+		modulartransport.WithTracing(false),
+		modulartransport.WithAccessLog(false),
+		modulartransport.WithProtection(rejectingProtection{}),
+	)
+	srv, err := NewServer(&configitem.HTTP{Host: "127.0.0.1", Port: 0}, WithPolicy(policy))
+	require.NoError(t, err)
+	withStop(t, srv)
+
+	called := false
+	srv.RegisterRoute(func(engine *gin.Engine) {
+		engine.GET("/protected", func(ctx *gin.Context) {
+			called = true
+			ctx.Status(http.StatusNoContent)
+		})
+	})
+	recorder := doRequest(t, srv, http.MethodGet, "/protected")
+	assert.Equal(t, http.StatusTooManyRequests, recorder.Code)
+	assert.False(t, called)
+}
+
 func TestErrorHandlerLocalizesAndHidesInternalError(t *testing.T) {
 	srv, err := NewServer(
 		&configitem.HTTP{Host: "127.0.0.1", Port: 0},
@@ -240,7 +292,7 @@ func testHTTPErrorHandler(t *testing.T) *errs.Handler {
 		"locales/en-US.yaml": {Data: []byte("UNKNOWN: 'Request failed'\nINTERNAL_ERROR: 'Service unavailable'\nUSER_NOT_FOUND: 'User {{.user_id}} was not found'\n")},
 	}, "locales", "zh-CN")
 	require.NoError(t, err)
-	handler, err := errs.NewHandler(catalog, zap.NewNop())
+	handler, err := errs.NewHandler(catalog, log.Default())
 	require.NoError(t, err)
 	return handler
 }
@@ -266,3 +318,11 @@ func (checker testHealthChecker) Name() string { return checker.name }
 func (checker testHealthChecker) Check(context.Context) error { return checker.err }
 
 var _ health.Checker = testHealthChecker{}
+
+type rejectingProtection struct{}
+
+var admissionRejectedMessage = errs.Define("ADMISSION_REJECTED", errs.Template("too many requests"))
+
+func (rejectingProtection) Allow(context.Context, string) (resilience.DoneFunc, error) {
+	return nil, errs.TooManyRequests(admissionRejectedMessage)
+}

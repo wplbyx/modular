@@ -72,6 +72,21 @@
         "Prune previews deletion by default, requires --apply, and refuses to delete a modified managed file.",
         "The report explains manifest ownership and hashes without treating manifest as an architecture specification."
       ]
+    },
+    {
+      "id": 6,
+      "name": "operational-bootstrap-and-transport-policy",
+      "prompt": "Initialize a single-process modular project with an HTTP and gRPC orders svc plus OpenTelemetry. Keep cmd in full control of composition. Verify the exact bootstrap order, Context logging, Metadata propagation, default resilience middleware, and queue ownership. Do not implement a RingMPSC algorithm or create a domain shell.",
+      "expected_output": "A compiling framework whose managed cmd loads config before creating the logger, whose scaffold-once cmd policy controls transport behavior, and whose runtime uses modular Metadata/Aegis policy and cyub ringbuffer without custom algorithms or empty business layers.",
+      "files": [],
+      "expectations": [
+        "Generated process config includes Logging and framework bootstrap order is config -> logger -> policy -> resources/endpoints -> Application.",
+        "cmd/<process>/policy.go is scaffold-once and is the only generated seam for logger outputs and Transport policy overrides.",
+        "HTTP and gRPC receive one shared policy providing Metadata, OpenTelemetry, access logging, and Aegis BBR/SRE protection.",
+        "Application and error handlers receive the explicit context-required log.Logger; removed GetLogger/Infof/Sugar APIs do not appear.",
+        "No custom RingMPSC package or algorithm is generated; queue ownership remains in the modular log/EventBus implementations backed by github.com/cyub/ringbuffer.",
+        "No domain or repository shell is created, strict doctor passes, repeated sync is idempotent, and the generated framework builds."
+      ]
     }
   ]
 }

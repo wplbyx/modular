@@ -14,6 +14,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	modulartransport "github.com/wplbyx/modular/packages/transport"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.uber.org/zap"
 )
 
 const maxRetryResponseDrain = 64 << 10
@@ -32,6 +36,7 @@ type Config struct {
 	IdleConnTimeout time.Duration
 	Transport       http.RoundTripper
 	RetryPolicy     RetryPolicy
+	Policy          *modulartransport.Policy
 }
 
 // DefaultConfig returns conservative defaults suitable for general API calls.
@@ -50,6 +55,7 @@ func DefaultConfig() *Config {
 type Client struct {
 	client *http.Client
 	config Config
+	policy *modulartransport.Policy
 }
 
 // NewClient creates a concrete HTTP client. A nil config uses DefaultConfig.
@@ -58,6 +64,10 @@ func NewClient(cfg *Config) *Client {
 		cfg = DefaultConfig()
 	}
 	config := *cfg
+	policy := config.Policy
+	if policy == nil {
+		policy = modulartransport.NewPolicy("http-client")
+	}
 	transport := config.Transport
 	if transport == nil {
 		transport = &http.Transport{
@@ -67,9 +77,13 @@ func NewClient(cfg *Config) *Client {
 			ForceAttemptHTTP2:  true,
 		}
 	}
+	if policy.TracingEnabled() {
+		transport = otelhttp.NewTransport(transport)
+	}
 	return &Client{
 		client: &http.Client{Timeout: config.Timeout, Transport: transport},
 		config: config,
+		policy: policy,
 	}
 }
 
@@ -94,7 +108,7 @@ func (client *Client) Do(request *http.Request) (*http.Response, error) {
 			request.Body = body
 		}
 
-		response, err := client.client.Do(request)
+		response, err := client.execute(request, attempt)
 		if contextErr := request.Context().Err(); contextErr != nil {
 			closeRetryResponse(response)
 			return nil, contextErr
@@ -109,6 +123,68 @@ func (client *Client) Do(request *http.Request) (*http.Response, error) {
 			return nil, err
 		}
 	}
+}
+
+func (client *Client) execute(request *http.Request, attempt int) (*http.Response, error) {
+	attemptRequest := request.Clone(request.Context())
+	attemptRequest.Header = request.Header.Clone()
+	if attemptRequest.Header == nil {
+		attemptRequest.Header = make(http.Header)
+	}
+	attemptRequest.Body = request.Body
+	if err := client.policy.Propagator().Inject(
+		attemptRequest.Context(),
+		modulartransport.HTTPHeaderCarrier{Header: attemptRequest.Header},
+	); err != nil {
+		return nil, fmt.Errorf("inject HTTP metadata: %w", err)
+	}
+
+	var done func(error)
+	if protection := client.policy.Protection(); protection != nil {
+		operation := attemptRequest.Method + " " + attemptRequest.URL.Host
+		admitted, err := protection.Allow(attemptRequest.Context(), operation)
+		if err != nil {
+			return nil, err
+		}
+		done = admitted
+	}
+
+	started := time.Now()
+	response, err := client.client.Do(attemptRequest)
+	failure := httpClientFailure(attemptRequest.Context(), response, err)
+	if done != nil {
+		done(failure)
+	}
+	if client.policy.AccessLogEnabled() {
+		fields := []zap.Field{
+			zap.String("method", attemptRequest.Method),
+			zap.String("host", attemptRequest.URL.Host),
+			zap.Int("attempt", attempt+1),
+			zap.Duration("duration", time.Since(started)),
+		}
+		if response != nil {
+			fields = append(fields, zap.Int("status", response.StatusCode))
+		}
+		if failure != nil {
+			client.policy.Logger().Error(attemptRequest.Context(), "HTTP client request completed", append(fields, zap.Error(failure))...)
+		} else {
+			client.policy.Logger().Info(attemptRequest.Context(), "HTTP client request completed", fields...)
+		}
+	}
+	return response, err
+}
+
+func httpClientFailure(ctx context.Context, response *http.Response, err error) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if response != nil && response.StatusCode >= http.StatusInternalServerError {
+		return fmt.Errorf("http response status %d", response.StatusCode)
+	}
+	return nil
 }
 
 // Get sends a GET request and returns a successful response body.

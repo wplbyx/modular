@@ -2,11 +2,14 @@ package http
 
 import (
 	"fmt"
+	"net/http"
 	"runtime/debug"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/wplbyx/modular/packages/errs"
+	"github.com/wplbyx/modular/packages/log"
+	"go.uber.org/zap"
 )
 
 const requestIDHeader = "X-Request-Id"
@@ -48,6 +51,26 @@ func errorMiddleware(handler *errs.Handler) gin.HandlerFunc {
 			return
 		}
 		handleHTTPError(ctx, handler, ctx.Errors.Last().Err)
+	}
+}
+
+func defaultErrorMiddleware(logger log.Logger) gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logger.Error(ctx.Request.Context(), "http handler panic",
+					zap.Any("panic", recovered),
+					zap.ByteString("stack", debug.Stack()),
+				)
+				ctx.AbortWithStatus(http.StatusInternalServerError)
+			}
+		}()
+
+		ctx.Next()
+		if len(ctx.Errors) == 0 || ctx.Writer.Written() {
+			return
+		}
+		ctx.AbortWithStatus(errs.Code(ctx.Errors.Last().Err))
 	}
 }
 

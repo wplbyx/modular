@@ -9,7 +9,9 @@ import (
 
 	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/errs"
-	"go.uber.org/zap"
+	"github.com/wplbyx/modular/packages/log"
+	modularmetadata "github.com/wplbyx/modular/packages/metadata"
+	modulartransport "github.com/wplbyx/modular/packages/transport"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -18,17 +20,18 @@ import (
 )
 
 func TestServerName(t *testing.T) {
-	server, err := NewServer(&configitem.GRPC{Host: "0.0.0.0", Port: 50051}, nil)
+	server, err := NewServer(&configitem.GRPC{Host: "127.0.0.1", Port: 0}, nil)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 	if got, want := server.Name(), "gRPC Server"; got != want {
 		t.Fatalf("Name() = %q, want %q", got, want)
 	}
 }
 
 func TestServerShutdownBeforeStart(t *testing.T) {
-	server, err := NewServer(&configitem.GRPC{Host: "127.0.0.1", Port: 50051}, nil)
+	server, err := NewServer(&configitem.GRPC{Host: "127.0.0.1", Port: 0}, nil)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -105,6 +108,32 @@ func TestErrorStreamInterceptorLocalizesStatus(t *testing.T) {
 	}
 }
 
+func TestMetadataUnaryInterceptorExtractsRequestContext(t *testing.T) {
+	policy := modulartransport.NewPolicy(
+		"test",
+		modulartransport.WithTracing(false),
+		modulartransport.WithAccessLog(false),
+		modulartransport.WithProtection(nil),
+	)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		modularmetadata.RequestIDKey, "req-42",
+		"accept-language", "zh-CN,en;q=0.8",
+	))
+	_, err := metadataUnaryInterceptor(policy)(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test/Get"}, func(ctx context.Context, _ any) (any, error) {
+		md := modularmetadata.FromContext(ctx)
+		if got := md.Get(modularmetadata.RequestIDKey); len(got) != 1 || got[0] != "req-42" {
+			t.Fatalf("request ID = %#v", got)
+		}
+		if got := md.Get(modularmetadata.LanguageKey); len(got) != 1 || got[0] != "zh-CN" {
+			t.Fatalf("language = %#v", got)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("interceptor error = %v", err)
+	}
+}
+
 type testServerStream struct {
 	ctx context.Context
 }
@@ -125,7 +154,7 @@ func testRPCErrorHandler(t *testing.T) *errs.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := errs.NewHandler(catalog, zap.NewNop())
+	handler, err := errs.NewHandler(catalog, log.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

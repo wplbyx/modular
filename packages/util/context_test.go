@@ -169,14 +169,34 @@ func TestPropagateGrpcContext_EmptyMetadata(t *testing.T) {
 func TestPropagateGrpcContext_Propagates(t *testing.T) {
 	incoming := metadata.NewIncomingContext(
 		context.Background(),
-		metadata.Pairs("trace-id", "abc-123", "user-id", "u1"),
+		metadata.Pairs("x-request-id", "abc-123", "x-md-global-user-id", "u1"),
 	)
 	ctx := ForwardContext(incoming)
 
 	out, ok := metadata.FromOutgoingContext(ctx)
 	require.True(t, ok, "应有出站 MD")
-	assert.Equal(t, []string{"abc-123"}, out.Get("trace-id"))
-	assert.Equal(t, []string{"u1"}, out.Get("user-id"))
+	assert.Equal(t, []string{"abc-123"}, out.Get("x-request-id"))
+	assert.Equal(t, []string{"u1"}, out.Get("x-md-global-user-id"))
+}
+
+func TestPropagateGrpcContext_DropsUnsafeAndLocalMetadata(t *testing.T) {
+	incoming := metadata.NewIncomingContext(
+		context.Background(),
+		metadata.Pairs(
+			"authorization", "Bearer secret",
+			"cookie", "session=secret",
+			"x-md-local-debug", "enabled",
+			"x-unscoped", "private",
+		),
+	)
+	ctx := ForwardContext(incoming)
+
+	out, ok := metadata.FromOutgoingContext(ctx)
+	require.True(t, ok)
+	assert.Empty(t, out.Get("authorization"))
+	assert.Empty(t, out.Get("cookie"))
+	assert.Empty(t, out.Get("x-md-local-debug"))
+	assert.Empty(t, out.Get("x-unscoped"))
 }
 
 func TestPropagateGrpcContext_DoesNotMutateInput(t *testing.T) {

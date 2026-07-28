@@ -42,21 +42,23 @@ Resource.Setup()  FIFO
 | `packages/app` | 应用生命周期编排器，提供 `WithServiceNode`、`WithRegistrar`、`WithResource`、`WithEndpoint`。 |
 | `packages/config` | Viper 配置加载器与 Cobra 命令集成，支持本地文件、远程 KV、环境变量和自动模块 flags。 |
 | `packages/config/configitem` | 可组合的强类型基础设施配置：Application、HTTP、GRPC、Database、Redis、Storage、Logging、Telemetry 和消息中间件。 |
-| `packages/log` | Zap 日志封装，支持控制台、文件轮转、OpenTelemetry 输出；使用包级日志函数。 |
+| `packages/log` | Context 强制日志接口；Zap 输出与基于 `cyub/ringbuffer` 的异步分发，支持文件轮转、动态 OpenTelemetry sink 和有界降级。 |
+| `packages/metadata` | 不可变、分 scope 的上下文元数据，统一 HTTP/gRPC/消息 Header 与 OTel trace context 穿透。 |
+| `packages/eventbus` | 进程内有序 EventBus Resource；队列数据直接存放在 `cyub/ringbuffer.MpscRingBuffer`。 |
 | `packages/errs` | Kratos 风格统一错误、多语言 YAML Catalog、错误链/堆栈诊断与客户端/日志分流。 |
 | `packages/generate` | 可安装的代码生成工具；`err_template_gen` 从 `errs.Define` 生成并校验多语言 YAML。 |
 | `packages/util` | AES/RSA/ECC、随机字符串、URL、HTTP 请求和 context 工具。 |
 | `packages/transport/server/http` | 基于 Gin 的 HTTP endpoint，支持中间件、健康检查、TLS、h2c；构造时即监听端口。 |
 | `packages/transport/server/rpc` | gRPC endpoint，支持健康检查、拦截器和 mTLS。 |
 | `packages/transport/server/sse` | SSE 服务，可挂载到 HTTP 路由，作为 `core.Endpoint` 管理连接生命周期。 |
-| `packages/transport/client` | HTTP / gRPC 客户端封装。保留全局单例能力，但应用装配时优先依赖注入。 |
+| `packages/transport/client` | 显式注入的 HTTP / gRPC 客户端，默认接入 Metadata、OTel、访问日志和弹性保护。 |
 | `packages/transport/pubsub` | 消息订阅 endpoint 抽象，以及 Kafka、MQTT、RocketMQ、Redis Pub/Sub、Redis Stream 适配。 |
 | `packages/registry` | Consul 注册发现、K8s discovery、gRPC resolver；Consul 按 transport 注册服务记录。 |
 | `packages/infra/database` | Bun / GORM / MongoDB 数据库连接能力；Bun、GORM 提供可直接注入 Application 的 Resource。 |
 | `packages/infra/cache/redis` | go-redis 客户端、布隆过滤器、幂等工具。 |
 | `packages/infra/storage` | 对象存储富接口与可选直传预签名接口，当前实现为本地磁盘 `filedisk` 和阿里云 OSS v2 `alioss`。 |
 | `packages/telemetry` | OpenTelemetry trace、metric、log provider，作为 `core.Resource` 注入应用。 |
-| `packages/resilience` | 熔断、重试、限流、隔板，以及 middleware chain 风格 wrapper。 |
+| `packages/resilience` | 熔断、重试、限流、隔板，以及基于 Kratos Aegis BBR/SRE 的 Transport 自适应保护。 |
 | `packages/patterns` | 缓存模式（Cache-Aside、Write-Through、Write-Behind、Refresh-Ahead）和并发模式。 |
 | `packages/pool` | `WorkerPool` 抽象与 ants 协程池实现。 |
 
@@ -98,6 +100,7 @@ import (
 	modularconfig "github.com/wplbyx/modular/packages/config"
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/log"
+	modulartransport "github.com/wplbyx/modular/packages/transport"
 	httpserver "github.com/wplbyx/modular/packages/transport/server/http"
 
 	projectconfig "<project>/config/user"
@@ -123,13 +126,17 @@ func main() {
 }
 
 func run(ctx context.Context, cfg *projectconfig.Config) error {
-	logger, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
+	// cfg 已由 config.NewRoot 加载；日志固定是第二个初始化步骤。
+	loggerManager, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
-	defer logger.Close()
+	restoreLogger := log.SetDefault(loggerManager.Logger())
+	defer restoreLogger()
+	defer loggerManager.Close(context.WithoutCancel(ctx))
+	policy := modulartransport.NewPolicy(cfg.Name, modulartransport.WithLogger(loggerManager.Logger()))
 
-	httpSrv, err := httpserver.NewServer(&cfg.HTTP)
+	httpSrv, err := httpserver.NewServer(&cfg.HTTP, httpserver.WithPolicy(policy))
 	if err != nil {
 		return fmt.Errorf("create HTTP server: %w", err)
 	}
@@ -144,6 +151,7 @@ func run(ctx context.Context, cfg *projectconfig.Config) error {
 	application, err := app.NewApplication(
 		ctx,
 		&cfg.Application,
+		loggerManager.Logger(),
 		app.WithServiceNode(node),
 		app.WithEndpoint(httpSrv),
 	)
@@ -176,6 +184,7 @@ if err != nil {
 application, err := app.NewApplication(
 	ctx,
 	&cfg.Application,
+	loggerManager.Logger(),
 	app.WithServiceNode(node),
 	app.WithRegistrar(registrar),
 	app.WithEndpoint(httpSrv),
@@ -236,7 +245,7 @@ catalog, err := errs.LoadCatalog(os.DirFS("."), "locales", "zh-CN")
 if err != nil {
 	return fmt.Errorf("load error catalog: %w", err)
 }
-errorHandler, err := errs.NewHandler(catalog, log.GetLogger())
+errorHandler, err := errs.NewHandler(catalog, loggerManager.Logger())
 if err != nil {
 	return fmt.Errorf("create error handler: %w", err)
 }
@@ -245,7 +254,7 @@ httpSrv, err := httpserver.NewServer(&cfg.HTTP, httpserver.WithErrorHandler(erro
 grpcSrv, err := rpcserver.NewServer(&cfg.GRPC, register, rpcserver.WithErrorHandler(errorHandler))
 ```
 
-HTTP handler 可通过 `httpserver.Wrap(func(*gin.Context) error)` 返回错误，也可使用 `c.Error(err)`。HTTP 从 `Accept-Language`、gRPC 从 `accept-language` metadata 选择文案。客户端只收到 `code`、`reason`、本地化 `message`；cause、内部 fields、完整错误链和堆栈只写入注入的 zap logger，并携带 request/trace/span 关联字段。
+HTTP handler 可通过 `httpserver.Wrap(func(*gin.Context) error)` 返回错误，也可使用 `c.Error(err)`。HTTP 从 `Accept-Language`、gRPC 从 `accept-language` metadata 选择文案。客户端只收到 `code`、`reason`、本地化 `message`；cause、内部 fields、完整错误链和堆栈只写入注入的 Context Logger，并携带 request/trace/span 关联字段。
 
 ### 数据库连接
 
@@ -391,7 +400,7 @@ v2 脚手架把基础设施框架和业务实现分开。第一阶段由 CLI 生
 | `init <project> --topology single|service` | 创建项目内工具、manifest、Make 目标和可编译框架。 |
 | `service add/remove` | 管理 svc 配置和进程装配；添加时必须显式选择 transport。 |
 | `transport add/remove` | 修改已有 svc 的 HTTP/gRPC 选择。 |
-| `resource add/remove` | 管理 DB、Redis、Storage 和 Telemetry 资源装配。 |
+| `resource add/remove` | 管理 DB、Redis、Storage、Telemetry 和进程内 EventBus 资源装配。 |
 | `sync` / `prune` | 幂等同步受管文件，或安全删除不再需要且未被修改的受管文件。 |
 | `migrate topology` | 只迁移受管的 cmd/config 进程文件，保留业务 wiring 和业务包。 |
 | `project upgrade` | 更新项目内工具和已发布的 modular 依赖版本。 |
@@ -431,6 +440,6 @@ go generate ./packages/config/...
 - 仓库自身没有 `.proto`、`_pb.go`、buf/protoc 生成链路；proto-first 是下游业务项目的约定，`agent/modular` 会为下游项目生成骨架。
 - `app` 不导入 `transport`，只接收 `core.Endpoint` 和 `core.Resource`。
 - 请求边缘和需要稳定业务 reason 的错误使用 `packages/errs`；生命周期初始化/关闭错误仍使用 `fmt.Errorf("...: %w", err)` 和 `errors.Join`。
-- 日志是包级全局 logger，不走 context；未初始化时 `log.GetLogger()` 返回 `zap.NewNop()`。
+- 所有日志方法强制接收 `context.Context`；`log.Default()` 未安装时为 no-op。进程必须在配置加载后第二步创建 `LoggerManager`，再由 `cmd` 显式安装默认 logger。
 - storage 当前只有 `disk` 和 `oss` 两类实现；OSS 使用 `alibabacloud-oss-go-sdk-v2`，不要引入 v1 SDK。
 - `infra/cache/redis`、`infra/database`、`transport/client` 保留包级全局能力，但应用装配时应优先把返回实例作为依赖注入。

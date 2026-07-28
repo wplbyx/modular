@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wplbyx/modular/packages/metadata"
+	modulartransport "github.com/wplbyx/modular/packages/transport"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -194,6 +197,32 @@ func TestDownloadKeepsDestinationOnHTTPError(t *testing.T) {
 	content, err := os.ReadFile(destination)
 	require.NoError(t, err)
 	assert.Equal(t, "old content", string(content))
+}
+
+func TestDoInjectsMetadataWithoutMutatingOriginalHeaders(t *testing.T) {
+	var receivedRequestID string
+	policy := modulartransport.NewPolicy(
+		"test-client",
+		modulartransport.WithTracing(false),
+		modulartransport.WithAccessLog(false),
+		modulartransport.WithProtection(nil),
+	)
+	client := NewClient(&Config{
+		Timeout: time.Second,
+		Policy:  policy,
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			receivedRequestID = request.Header.Get(metadata.RequestIDKey)
+			return textResponse(http.StatusOK, "ok"), nil
+		}),
+	})
+	ctx := metadata.MustWith(context.Background(), metadata.ScopeGlobal, metadata.RequestIDKey, "req-42")
+	request := newRequest(t, http.MethodGet, nil).WithContext(ctx)
+
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	assert.Equal(t, "req-42", receivedRequestID)
+	assert.Empty(t, request.Header.Get(metadata.RequestIDKey))
 }
 
 func testClient(roundTrip func(*http.Request) (*http.Response, error)) *Client {

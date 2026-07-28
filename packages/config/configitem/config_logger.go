@@ -1,15 +1,28 @@
 package configitem
 
-import "github.com/wplbyx/modular/packages/config"
+import (
+	"time"
+
+	"github.com/wplbyx/modular/packages/config"
+)
 
 //go:generate gomodifytags -file $GOFILE -add-tags mapstructure -remove-tags json,yaml,default -transform pascalcase -all -w --override --sort --quiet
 
 // Logging 日志配置
 type Logging struct {
-	Level  string     `mapstructure:"Level" validate:"required,oneof=debug info warn error"` // 日志级别
-	Output []string   `mapstructure:"Output"`                                                // 输出目标
-	File   FileConfig `mapstructure:"File"`
-	OTel   OTelConfig `mapstructure:"OTel"`
+	Level  string             `mapstructure:"Level" validate:"required,oneof=debug info warn error"` // 日志级别
+	Output []string           `mapstructure:"Output"`                                                // 输出目标
+	Async  AsyncLoggingConfig `mapstructure:"Async"`
+	File   FileConfig         `mapstructure:"File"`
+	OTel   OTelConfig         `mapstructure:"OTel"`
+}
+
+// AsyncLoggingConfig controls the RingMPSC-backed dispatcher.
+type AsyncLoggingConfig struct {
+	Enabled      bool          `mapstructure:"Enabled"`
+	Capacity     int           `mapstructure:"Capacity" validate:"omitempty,min=1"`
+	ErrorTimeout time.Duration `mapstructure:"ErrorTimeout"`
+	FlushTimeout time.Duration `mapstructure:"FlushTimeout"`
 }
 
 // FileConfig 是文件输出的配置
@@ -33,6 +46,10 @@ func (Logging) Flags(prefix string) []config.FlagSpec {
 	return []config.FlagSpec{
 		{Name: prefix + ".level", Default: "info", Usage: "日志级别"},
 		{Name: prefix + ".output", Default: []string{"console"}, Usage: "日志输出目标"},
+		{Name: prefix + ".async.enabled", Default: true, Usage: "enable asynchronous logging"},
+		{Name: prefix + ".async.capacity", Default: 8192, Usage: "asynchronous log queue capacity"},
+		{Name: prefix + ".async.errortimeout", Default: 50 * time.Millisecond, Usage: "maximum enqueue wait for error logs"},
+		{Name: prefix + ".async.flushtimeout", Default: 5 * time.Second, Usage: "default log flush timeout"},
 		{Name: prefix + ".file.filename", Default: "./logs/app.log", Usage: "日志文件名"},
 		{Name: prefix + ".file.maxsize", Default: 100, Usage: "单个日志文件最大大小"},
 		{Name: prefix + ".file.maxbackups", Default: 7, Usage: "保留的旧日志文件数量"},

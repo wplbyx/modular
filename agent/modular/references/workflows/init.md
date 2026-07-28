@@ -9,7 +9,10 @@ Read [commands](../commands.md), [config](../config.md), and
 3. Resolve the remote modular version. The minimum supported version is
    `v0.2.0`; never invent a local `replace` path.
 4. Run `init` with `--dry-run --diff`, review the framework paths, then apply.
-5. Run `make scaffold-check`. The first phase must compile and may contain only
+5. Verify the generated bootstrap order: config callback first, logger manager
+   second, process transport policy third, then Resources/Endpoints/Application.
+   Keep policy changes in scaffold-once `cmd/<process>/policy.go`.
+6. Run `make scaffold-check`. The first phase must compile and may contain only
    the intentional unwired business seam.
 
 Do not add a svc without an explicit transport selection. Keep business

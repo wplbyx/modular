@@ -19,7 +19,10 @@ import (
 
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/errs"
-	"github.com/wplbyx/modular/packages/log"
+	modularlog "github.com/wplbyx/modular/packages/log"
+	modulartransport "github.com/wplbyx/modular/packages/transport"
+	mw "github.com/wplbyx/modular/packages/transport/server/http/middleware"
+	"go.uber.org/zap"
 )
 
 var _ core.Endpoint = (*Server)(nil)
@@ -65,7 +68,9 @@ type Server struct {
 
 	// 由 option 写入、在 NewServer 各阶段消费的配置字段
 	mode             string
-	logger           zapLogger
+	logger           modularlog.Logger
+	policy           *modulartransport.Policy
+	policySet        bool
 	errorHandler     *errs.Handler
 	middlewares      []gin.HandlerFunc
 	h2c              bool
@@ -96,17 +101,33 @@ func NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error) {
 		gin.SetMode(srv.mode)
 	}
 
-	// 3. 创建引擎：注册 Recovery 防止 panic；若注入了 logger 则改用 zap 版本
-	srv.engine = gin.New()
-	if srv.logger != nil {
-		srv.engine.Use(ginLogger(srv.logger))
+	if !srv.policySet {
+		policyOptions := []modulartransport.PolicyOption{}
+		if srv.logger != nil {
+			policyOptions = append(policyOptions, modulartransport.WithLogger(srv.logger))
+		}
+		srv.policy = modulartransport.NewPolicy("http-server", policyOptions...)
 	}
+	if srv.logger == nil {
+		srv.logger = srv.policy.Logger()
+	}
+
+	// 3. 固定基础链：Recovery -> Metadata -> Tracing -> AccessLog -> Protection。
+	srv.engine = gin.New()
 	if srv.errorHandler != nil {
 		srv.engine.Use(errorMiddleware(srv.errorHandler))
-	} else if srv.logger != nil {
-		srv.engine.Use(ginRecovery(srv.logger))
 	} else {
-		srv.engine.Use(gin.Recovery())
+		srv.engine.Use(defaultErrorMiddleware(srv.logger))
+	}
+	srv.engine.Use(mw.Metadata(srv.policy))
+	if srv.policy.TracingEnabled() {
+		srv.engine.Use(mw.OpenTelemetry(srv.policy.ServiceName()))
+	}
+	if srv.policy.AccessLogEnabled() {
+		srv.engine.Use(ginLogger(srv.policy.Logger()))
+	}
+	if srv.policy.Protection() != nil {
+		srv.engine.Use(mw.Protection(srv.policy))
 	}
 	for _, m := range srv.middlewares {
 		srv.engine.Use(m)
@@ -186,7 +207,7 @@ func (s *Server) Startup(ctx context.Context) error {
 	s.isRunning = true
 	s.mu.Unlock()
 
-	log.Infof("HTTP server listening on %s", s.server.Addr)
+	s.logger.Info(ctx, "HTTP server listening", zap.String("address", s.server.Addr))
 
 	var err error
 	if s.enableTLS {

@@ -12,7 +12,7 @@ import (
 
 	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/core"
-	"go.uber.org/zap"
+	modularlog "github.com/wplbyx/modular/packages/log"
 )
 
 // --- test Resource ---
@@ -28,6 +28,7 @@ func TestNewApplication_RegistrarRequiresServiceNode(t *testing.T) {
 	application, err := NewApplication(
 		context.Background(),
 		&configitem.Application{Name: "test"},
+		modularlog.Default(),
 		WithRegistrar(&testRegistrar{}),
 	)
 
@@ -44,6 +45,7 @@ func TestApplicationCloseBeforeRun(t *testing.T) {
 	application, err := NewApplication(
 		context.Background(),
 		&configitem.Application{Name: "test"},
+		modularlog.Default(),
 		WithEndpoint(endpoint),
 	)
 	if err != nil {
@@ -68,6 +70,7 @@ func TestApplicationRejectsDuplicateRun(t *testing.T) {
 	application, err := NewApplication(
 		ctx,
 		&configitem.Application{Name: "test"},
+		modularlog.Default(),
 		WithEndpoint(endpoint),
 	)
 	if err != nil {
@@ -96,18 +99,14 @@ func TestApplicationRejectsDuplicateRun(t *testing.T) {
 	}
 }
 
-func TestApplicationWithLogger(t *testing.T) {
-	logger := zap.NewNop()
+func TestApplicationRequiresLogger(t *testing.T) {
 	application, err := NewApplication(
 		context.Background(),
 		&configitem.Application{Name: "test"},
-		WithLogger(logger),
+		nil,
 	)
-	if err != nil {
-		t.Fatalf("NewApplication() error = %v", err)
-	}
-	if application.getLogger() != logger {
-		t.Fatal("Application did not retain injected logger")
+	if application != nil || err == nil {
+		t.Fatalf("NewApplication() = (%v, %v), want nil application and error", application, err)
 	}
 }
 
@@ -198,7 +197,7 @@ func TestApplicationRunStopsEndpointAndClosesResource(t *testing.T) {
 	var order []string
 	res := &testResource{name: "db", initOrder: &order}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithResource(res),
 		WithEndpoint(endpoint),
 	)
@@ -247,7 +246,7 @@ func TestApplicationRegistersServiceNode(t *testing.T) {
 	)
 	reg := &testRegistrar{}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "holo", Version: "v1.2.3"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "holo", Version: "v1.2.3"}, modularlog.Default(),
 		WithRegistrar(reg),
 		WithServiceNode(node),
 		WithEndpoint(endpoint),
@@ -296,7 +295,7 @@ func TestApplicationRegisterFailureDoesNotStartEndpoint(t *testing.T) {
 	)
 	reg := &testRegistrar{registerErr: errors.New("registry unavailable")}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "holo"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "holo"}, modularlog.Default(),
 		WithRegistrar(reg),
 		WithServiceNode(node),
 		WithEndpoint(endpoint),
@@ -320,7 +319,7 @@ func TestApplicationRunResourceInitFails(t *testing.T) {
 	sentinel := errors.New("init boom")
 	res := &testResource{name: "db", initErr: sentinel}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithResource(res),
 		WithEndpoint(&testEndpoint{started: make(chan struct{})}),
 	)
@@ -343,7 +342,7 @@ func TestApplicationRunParallelStop(t *testing.T) {
 	ep1 := &slowEndpoint{started: make(chan struct{}), stopDelay: stopDelay, count: &stopCount}
 	ep2 := &slowEndpoint{started: make(chan struct{}), stopDelay: stopDelay, count: &stopCount}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithEndpoint(ep1),
 		WithEndpoint(ep2),
 	)
@@ -388,7 +387,7 @@ func TestApplicationRunNoEndpointsExitsCleanly(t *testing.T) {
 
 	res := &testResource{name: "only", initOrder: &[]string{}}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithResource(res),
 	)
 	if err != nil {
@@ -419,7 +418,7 @@ func TestApplicationRunEndpointErrorPropagated(t *testing.T) {
 		startErr:      endpointErr,
 	}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithEndpoint(ep),
 	)
 	if err != nil {
@@ -449,7 +448,7 @@ func TestApplicationRunShutdownErrorJoinedOnEarlyReturn(t *testing.T) {
 	ready := &testResource{name: "ready", closeErr: closeErr, initOrder: &order}
 	failed := &testResource{name: "failed", initErr: initErr, closeErr: errors.New("failed close should not run"), initOrder: &order}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithResource(ready),
 		WithResource(failed),
 		WithEndpoint(&testEndpoint{started: make(chan struct{})}),
@@ -483,7 +482,7 @@ func TestApplicationRunDoesNotCloseResourceThatFailedSetup(t *testing.T) {
 	second := &testResource{name: "second", initErr: setupErr, initOrder: &order}
 	third := &testResource{name: "third", initOrder: &order}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithResource(first),
 		WithResource(second),
 		WithResource(third),
@@ -512,7 +511,7 @@ func TestApplicationCloseAndRunShutdownOnlyOnce(t *testing.T) {
 	res := &testResource{name: "db", initOrder: &order}
 	endpoint := &slowEndpoint{started: make(chan struct{}), stopDelay: 10 * time.Millisecond, count: new(int64)}
 
-	application, err := NewApplication(ctx, &configitem.Application{Name: "test"},
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithResource(res),
 		WithEndpoint(endpoint),
 	)

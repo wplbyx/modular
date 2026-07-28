@@ -7,6 +7,7 @@ import (
 
 	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/log"
+	"go.uber.org/zap"
 )
 
 var (
@@ -93,8 +94,12 @@ func (rl *rateLimiter) Allow(ctx context.Context) bool {
 	}
 
 	// 没有足够的令牌，拒绝请求
-	log.Infof("Rate limiter '%s' rejected request, available tokens: %.2f, rate: %.2f/s, burst: %d",
-		rl.config.Name, rl.available, rl.config.Rate, rl.config.Burst)
+	log.Info(ctx, "rate limiter rejected request",
+		zap.String("rate_limiter", rl.config.Name),
+		zap.Float64("available_tokens", rl.available),
+		zap.Float64("rate", rl.config.Rate),
+		zap.Int("burst", rl.config.Burst),
+	)
 	return false
 }
 

@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"strings"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
 	"github.com/wplbyx/modular/packages/errs"
+	modularmetadata "github.com/wplbyx/modular/packages/metadata"
 )
 
 var panicMessage = errs.Define("INTERNAL_ERROR", errs.Template("internal server error"))
@@ -78,13 +76,23 @@ type contextServerStream struct {
 func (stream *contextServerStream) Context() context.Context { return stream.ctx }
 
 func rpcRequestInfo(ctx context.Context, operation string) (context.Context, errs.RequestInfo) {
-	incoming, _ := metadata.FromIncomingContext(ctx)
-	ctx = otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{metadata: incoming})
+	md := modularmetadata.FromContext(ctx)
+	requestID := firstMetadata(md.Get(modularmetadata.RequestIDKey))
+	language := firstMetadata(md.Get(modularmetadata.LanguageKey))
+	if requestID == "" || language == "" {
+		incoming, _ := metadata.FromIncomingContext(ctx)
+		if requestID == "" {
+			requestID = firstMetadata(incoming.Get(modularmetadata.RequestIDKey))
+		}
+		if language == "" {
+			language = firstMetadata(incoming.Get("accept-language"))
+		}
+	}
 	return ctx, errs.RequestInfo{
 		Transport: "grpc",
 		Operation: operation,
-		RequestID: firstMetadata(incoming, "x-request-id"),
-		Language:  firstMetadata(incoming, "accept-language"),
+		RequestID: requestID,
+		Language:  language,
 	}
 }
 
@@ -94,30 +102,9 @@ func setContentLanguage(ctx context.Context, locale string) {
 	}
 }
 
-func firstMetadata(md metadata.MD, key string) string {
-	values := md.Get(key)
+func firstMetadata(values []string) string {
 	if len(values) == 0 {
 		return ""
 	}
 	return values[0]
-}
-
-type metadataCarrier struct{ metadata metadata.MD }
-
-var _ propagation.TextMapCarrier = metadataCarrier{}
-
-func (carrier metadataCarrier) Get(key string) string {
-	return strings.Join(carrier.metadata.Get(key), ",")
-}
-
-func (carrier metadataCarrier) Set(key, value string) {
-	carrier.metadata.Set(key, value)
-}
-
-func (carrier metadataCarrier) Keys() []string {
-	keys := make([]string, 0, len(carrier.metadata))
-	for key := range carrier.metadata {
-		keys = append(keys, key)
-	}
-	return keys
 }

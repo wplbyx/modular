@@ -10,6 +10,7 @@ selects CRUD, domain, resource, or migration work.
 - `config/<svc>/config.yaml` is a managed svc configuration fragment.
 - `config/<project>/...` is the managed single-topology process aggregate.
 - `cmd/<process>/main.go|framework.gen.go` is managed Application wiring.
+- `cmd/<process>/policy.go` is scaffold-once process policy owned by the user.
 - `internal/platform/wiring/framework.gen.go` is the managed hook/provider seam.
 - `internal/platform/wiring/business.go` is scaffold-once business registration.
 
@@ -34,6 +35,11 @@ domain services provide real leverage. Do not split domain by API surface.
 Single topology has one `cmd/<project>` process and one generated process config
 containing nested svc configs. Service topology has one `cmd/<svc>` per svc and
 loads `config/<svc>.Config` directly.
+
+Both topologies use the same bootstrap contract: `config.NewRoot` loads config,
+then `newLoggerManager` creates logging, then `newTransportPolicy` defines
+Metadata/tracing/access/protection, and only then does cmd construct Resources,
+Endpoints, and `Application`. `cmd` is the only composition root.
 
 Use `migrate topology --to single|service --apply`. It changes only managed
 process cmd/config files. Proto, common output, business packages, and

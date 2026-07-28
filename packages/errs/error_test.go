@@ -11,6 +11,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	modularlog "github.com/wplbyx/modular/packages/log"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -219,7 +220,7 @@ func TestCatalogRejectsInvalidConfiguration(t *testing.T) {
 
 func TestHandlerSeparatesClientAndDiagnosticData(t *testing.T) {
 	core, observed := observer.New(zapcore.DebugLevel)
-	handler, err := NewHandler(testCatalog(t), zap.New(core))
+	handler, err := NewHandler(testCatalog(t), observedLogger{logger: zap.New(core)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +265,7 @@ func TestHandlerSeparatesClientAndDiagnosticData(t *testing.T) {
 
 func TestHandlerUsesWarnForClientErrors(t *testing.T) {
 	core, observed := observer.New(zapcore.DebugLevel)
-	handler, err := NewHandler(testCatalog(t), zap.New(core))
+	handler, err := NewHandler(testCatalog(t), observedLogger{logger: zap.New(core)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,4 +285,25 @@ func testCatalog(t *testing.T) *Catalog {
 		t.Fatal(err)
 	}
 	return catalog
+}
+
+type observedLogger struct{ logger *zap.Logger }
+
+func (l observedLogger) Debug(_ context.Context, message string, fields ...modularlog.Field) {
+	l.logger.Debug(message, fields...)
+}
+func (l observedLogger) Info(_ context.Context, message string, fields ...modularlog.Field) {
+	l.logger.Info(message, fields...)
+}
+func (l observedLogger) Warn(_ context.Context, message string, fields ...modularlog.Field) {
+	l.logger.Warn(message, fields...)
+}
+func (l observedLogger) Error(_ context.Context, message string, fields ...modularlog.Field) {
+	l.logger.Error(message, fields...)
+}
+func (l observedLogger) With(fields ...modularlog.Field) modularlog.Logger {
+	return observedLogger{logger: l.logger.With(fields...)}
+}
+func (l observedLogger) Named(name string) modularlog.Logger {
+	return observedLogger{logger: l.logger.Named(name)}
 }

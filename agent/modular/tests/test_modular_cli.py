@@ -244,6 +244,7 @@ class ModularCliTest(unittest.TestCase):
         self.project_cli(project, "resource", "add", "redis", "--svc", "user")
         self.project_cli(project, "resource", "add", "storage", "--svc", "user")
         self.project_cli(project, "resource", "add", "telemetry", "--svc", "user")
+        self.project_cli(project, "resource", "add", "eventbus", "--svc", "user")
 
         cmd = (project / "cmd/demo/framework.gen.go").read_text(encoding="utf-8")
         wiring = (project / "internal/platform/wiring/framework.gen.go").read_text(encoding="utf-8")
@@ -253,19 +254,40 @@ class ModularCliTest(unittest.TestCase):
         self.assertIn("redisresource.NewResource", cmd)
         self.assertIn("storageresource.New", cmd)
         self.assertIn("telemetry.NewOpenTelemetry", cmd)
+        self.assertIn("eventbus.New", cmd)
+        self.assertIn("telemetry.WithLoggerManager(loggerManager)", cmd)
         self.assertIn("UserDB", wiring)
         self.assertIn("*bunresource.Resource", wiring)
         self.assertIn("UserRedis", wiring)
         self.assertIn("*redisresource.Resource", wiring)
         self.assertIn("UserStorage", wiring)
         self.assertIn("*storageresource.Resource", wiring)
+        self.assertIn("UserEventBus", wiring)
+        self.assertIn("*eventbus.Bus", wiring)
         self.assertIn("AddHTTP", wiring)
         self.assertIn("AddGRPC", wiring)
         self.assertIn("Database", config)
         self.assertIn("Redis", config)
         self.assertIn("Storage", config)
         self.assertIn("Telemetry", config)
+        self.assertIn("EventBus", config)
         self.assertFalse((project / "internal/user/repository").exists())
+
+        bootstrap = [
+            cmd.index("newLoggerManager(ctx, &cfg.Logging)"),
+            cmd.index("modularlog.SetDefault(loggerManager.Logger())"),
+            cmd.index("newTransportPolicy(cfg.Name, loggerManager.Logger())"),
+            cmd.index("app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)"),
+        ]
+        self.assertEqual(bootstrap, sorted(bootstrap))
+        self.assertTrue((project / "cmd/demo/policy.go").is_file())
+
+        import_body = cmd.split("import (\n", 1)[1].split("\n)\n", 1)[0]
+        import_groups = import_body.split("\n\n")
+        self.assertEqual(len(import_groups), 3)
+        self.assertNotIn("github.com/", import_groups[0])
+        self.assertTrue(all("github.com/wplbyx/modular" in line for line in import_groups[1].splitlines()))
+        self.assertTrue(all('"demo/' in line for line in import_groups[2].splitlines()))
 
     def test_phase_gates_allow_only_the_expected_markers_and_require_tests(self) -> None:
         project = self.init_project()

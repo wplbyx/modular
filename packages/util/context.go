@@ -2,9 +2,12 @@ package util
 
 import (
 	"context"
+	"sort"
 	"time"
 
-	"google.golang.org/grpc/metadata"
+	grpcmetadata "google.golang.org/grpc/metadata"
+
+	modularmetadata "github.com/wplbyx/modular/packages/metadata"
 )
 
 // DetachOption 配置 DetachContext 的行为。
@@ -64,13 +67,53 @@ func DetachContext(parent context.Context, opts ...DetachOption) (context.Contex
 	return ctx, func() {}
 }
 
-// ForwardContext 将入站 gRPC metadata 透传为出站 metadata，
-// 用于 gRPC 服务间调用时上下文参数（metadata）丢失的问题。
-// 没有 metadata 时原样返回，避免附加空 MD。
+// ForwardContext 按统一传播策略将安全的入站 gRPC metadata 写入出站 context。
+// local、未声明和敏感字段不会跨进程传播；没有 metadata 时原样返回。
+// Deprecated: transport 默认策略会自动完成传播，新代码不应手动调用。
 func ForwardContext(ctx context.Context) context.Context {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok || len(md) == 0 {
+	incoming, ok := grpcmetadata.FromIncomingContext(ctx)
+	if !ok || len(incoming) == 0 {
 		return ctx
 	}
-	return metadata.NewOutgoingContext(ctx, md.Copy())
+
+	propagator := modularmetadata.NewPropagator()
+	propagated, err := propagator.Extract(ctx, grpcMetadataCarrier{metadata: incoming})
+	if err != nil {
+		return ctx
+	}
+
+	outgoing, _ := grpcmetadata.FromOutgoingContext(ctx)
+	outgoing = outgoing.Copy()
+	if outgoing == nil {
+		outgoing = grpcmetadata.MD{}
+	}
+	if err := propagator.Inject(propagated, grpcMetadataCarrier{metadata: outgoing}); err != nil {
+		return ctx
+	}
+	return grpcmetadata.NewOutgoingContext(propagated, outgoing)
+}
+
+type grpcMetadataCarrier struct {
+	metadata grpcmetadata.MD
+}
+
+func (c grpcMetadataCarrier) Get(key string) string {
+	values := c.metadata.Get(key)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func (c grpcMetadataCarrier) Set(key, value string) {
+	c.metadata.Set(key, value)
+}
+
+func (c grpcMetadataCarrier) Keys() []string {
+	keys := make([]string, 0, len(c.metadata))
+	for key := range c.metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

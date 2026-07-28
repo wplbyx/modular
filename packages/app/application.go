@@ -48,7 +48,7 @@ type Application struct {
 	registrar  registry.Registrar
 	endpoints  []core.Endpoint
 	resources  []core.Resource
-	logger     *zap.Logger
+	logger     log.Logger
 	registered bool
 
 	// lifecycleLock 防止启动准备和关闭过程交错修改生命周期集合。
@@ -67,12 +67,15 @@ type Application struct {
 }
 
 // NewApplication 创建应用程序实例。
-func NewApplication(ctx context.Context, cfg *configitem.Application, options ...Option) (*Application, error) {
+func NewApplication(ctx context.Context, cfg *configitem.Application, logger log.Logger, options ...Option) (*Application, error) {
 	if ctx == nil {
 		return nil, errors.New("application context is nil")
 	}
 	if cfg == nil {
 		return nil, errors.New("config.Application instance is nil")
+	}
+	if logger == nil {
+		return nil, errors.New("application logger is nil")
 	}
 
 	application := &Application{
@@ -82,6 +85,7 @@ func NewApplication(ctx context.Context, cfg *configitem.Application, options ..
 		resources:       make([]core.Resource, 0),
 		readyResources:  make([]core.Resource, 0),
 		activeEndpoints: make([]core.Endpoint, 0),
+		logger:          logger.Named("application"),
 		state:           applicationNew,
 		shutdownTimeout: defaultShutdownTimeout,
 	}
@@ -113,11 +117,11 @@ func (application *Application) Run() error {
 	}()
 
 	if len(application.endpoints) == 0 {
-		application.getLogger().Warn("application has no endpoints; Run will exit immediately")
+		application.logger.Warn(runCtx, "application has no endpoints; Run will exit immediately")
 		return nil
 	}
 
-	application.getLogger().Info("application starting", zap.String("name", application.cfg.Name))
+	application.logger.Info(runCtx, "application starting", zap.String("name", application.cfg.Name))
 
 	triggerShutdown := func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), application.shutdownTimeout)
@@ -153,12 +157,12 @@ func (application *Application) Run() error {
 	triggerShutdown()
 
 	if runErr != nil {
-		application.getLogger().Error("application stopped with error", zap.Error(runErr))
+		application.logger.Error(application.ctx, "application stopped with error", zap.Error(runErr))
 	}
 	if application.shutdownErr != nil {
-		application.getLogger().Error("application shutdown failed", zap.Error(application.shutdownErr))
+		application.logger.Error(application.ctx, "application shutdown failed", zap.Error(application.shutdownErr))
 	}
-	application.getLogger().Info("application exited")
+	application.logger.Info(application.ctx, "application exited")
 	return errors.Join(runErr, application.shutdownErr)
 }
 
@@ -222,7 +226,7 @@ func (application *Application) shutdown(ctx context.Context) error {
 
 func (application *Application) setupResources(ctx context.Context) error {
 	for _, resource := range application.resources {
-		application.getLogger().Info("resource initializing", zap.String("resource", resource.Name()))
+		application.logger.Info(ctx, "resource initializing", zap.String("resource", resource.Name()))
 		if err := resource.Setup(ctx); err != nil {
 			return fmt.Errorf("init resource %s: %w", resource.Name(), err)
 		}
@@ -235,7 +239,7 @@ func (application *Application) closeResources(ctx context.Context) error {
 	var errs error
 	for i := len(application.readyResources) - 1; i >= 0; i-- {
 		resource := application.readyResources[i]
-		application.getLogger().Info("resource closing", zap.String("resource", resource.Name()))
+		application.logger.Info(ctx, "resource closing", zap.String("resource", resource.Name()))
 		if err := resource.Close(ctx); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("close resource %s: %w", resource.Name(), err))
 		}
@@ -251,7 +255,7 @@ func (application *Application) registerNode(ctx context.Context) error {
 		return fmt.Errorf("register service node: %w", err)
 	}
 	application.registered = true
-	application.getLogger().Info("service node registered", zap.String("node", application.node.ID))
+	application.logger.Info(ctx, "service node registered", zap.String("node", application.node.ID))
 	return nil
 }
 
@@ -263,7 +267,7 @@ func (application *Application) unregisterNode(ctx context.Context) error {
 	if err := application.registrar.Unregister(ctx, application.node); err != nil {
 		return fmt.Errorf("unregister service node %s: %w", application.node.ID, err)
 	}
-	application.getLogger().Info("service node unregistered", zap.String("node", application.node.ID))
+	application.logger.Info(ctx, "service node unregistered", zap.String("node", application.node.ID))
 	return nil
 }
 
@@ -278,7 +282,7 @@ func (application *Application) startEndpoints(
 			if ctx.Err() != nil {
 				return nil
 			}
-			application.getLogger().Info("endpoint starting", zap.String("endpoint", endpoint.Name()))
+			application.logger.Info(ctx, "endpoint starting", zap.String("endpoint", endpoint.Name()))
 			err := endpoint.Startup(ctx)
 			cancel()
 			if err != nil && !errors.Is(err, context.Canceled) {
@@ -300,7 +304,7 @@ func (application *Application) shutdownEndpoints(ctx context.Context) error {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			application.getLogger().Info("endpoint shutting down", zap.String("endpoint", endpoint.Name()))
+			application.logger.Info(ctx, "endpoint shutting down", zap.String("endpoint", endpoint.Name()))
 			if err := endpoint.Shutdown(ctx); err != nil {
 				mu.Lock()
 				errs = errors.Join(errs, fmt.Errorf("stop endpoint %s: %w", endpoint.Name(), err))
@@ -311,11 +315,4 @@ func (application *Application) shutdownEndpoints(ctx context.Context) error {
 
 	wait.Wait()
 	return errs
-}
-
-func (application *Application) getLogger() *zap.Logger {
-	if application.logger != nil {
-		return application.logger
-	}
-	return log.GetLogger()
 }

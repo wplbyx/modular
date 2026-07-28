@@ -7,6 +7,7 @@ import (
 
 	"github.com/wplbyx/modular/packages/errs"
 	"github.com/wplbyx/modular/packages/log"
+	"go.uber.org/zap"
 )
 
 var (
@@ -108,7 +109,10 @@ func (cb *circuitBreaker) Execute(ctx context.Context, fn func() error) error {
 	// 检查熔断器状态
 	if !cb.allowRequest() {
 		state := cb.State()
-		log.Infof("Circuit breaker '%s' is %s, rejecting request", cb.config.Name, state)
+		log.Info(ctx, "circuit breaker rejected request",
+			zap.String("circuit_breaker", cb.config.Name),
+			zap.String("state", state.String()),
+		)
 		// 返回带有上下文的错误
 		return errs.ServiceUnavailable(
 			circuitOpenMessage.With("name", cb.config.Name).With("state", state.String()),
@@ -123,12 +127,12 @@ func (cb *circuitBreaker) Execute(ctx context.Context, fn func() error) error {
 
 	// 根据执行结果更新熔断器状态
 	if err != nil {
-		cb.onFailure()
+		cb.onFailure(ctx)
 		// 返回原始错误，熔断器上下文已记录
 		return err
 	}
 
-	cb.onSuccess()
+	cb.onSuccess(ctx)
 	return nil
 }
 
@@ -157,7 +161,7 @@ func (cb *circuitBreaker) allowRequest() bool {
 }
 
 // onSuccess 处理成功的请求
-func (cb *circuitBreaker) onSuccess() {
+func (cb *circuitBreaker) onSuccess(ctx context.Context) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
@@ -175,7 +179,10 @@ func (cb *circuitBreaker) onSuccess() {
 		}
 		// 如果连续成功次数达到阈值，关闭熔断器
 		if cb.successes >= cb.config.SuccessThreshold {
-			log.Infof("Circuit breaker '%s' closed after %d successful calls", cb.config.Name, cb.successes)
+			log.Info(ctx, "circuit breaker closed",
+				zap.String("circuit_breaker", cb.config.Name),
+				zap.Int("successes", cb.successes),
+			)
 			cb.state = StateClosed
 			cb.failures = 0
 			cb.successes = 0
@@ -185,7 +192,7 @@ func (cb *circuitBreaker) onSuccess() {
 }
 
 // onFailure 处理失败的请求
-func (cb *circuitBreaker) onFailure() {
+func (cb *circuitBreaker) onFailure(ctx context.Context) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
@@ -197,13 +204,16 @@ func (cb *circuitBreaker) onFailure() {
 		cb.failures++
 		// 如果失败次数超过阈值，打开熔断器
 		if cb.failures >= cb.config.FailureThreshold {
-			log.Infof("Circuit breaker '%s' opened after %d failures", cb.config.Name, cb.failures)
+			log.Info(ctx, "circuit breaker opened",
+				zap.String("circuit_breaker", cb.config.Name),
+				zap.Int("failures", cb.failures),
+			)
 			cb.state = StateOpen
 			cb.expiry = time.Now().Add(cb.config.Timeout)
 		}
 	case StateHalfOpen:
 		// 半开状态下失败，立即打开熔断器
-		log.Infof("Circuit breaker '%s' opened after failure in half-open state", cb.config.Name)
+		log.Info(ctx, "circuit breaker opened after half-open failure", zap.String("circuit_breaker", cb.config.Name))
 		cb.state = StateOpen
 		cb.expiry = time.Now().Add(cb.config.Timeout)
 		if cb.halfOpenCalls > 0 {

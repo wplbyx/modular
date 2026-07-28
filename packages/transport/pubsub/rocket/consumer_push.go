@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	rmq "github.com/apache/rocketmq-clients/golang/v5"
+	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
@@ -116,8 +117,11 @@ func NewPushConsumer(opts ...ConsumerOption) (*PushConsumer, error) {
 	}
 	c.pc = pc
 
-	log.Infof("[RocketMQ] push consumer started (endpoint=%s, group=%s, topic=%s)",
-		o.Endpoint, o.Group, o.Topic)
+	log.Info(context.Background(), "RocketMQ push consumer started",
+		zap.String("endpoint", o.Endpoint),
+		zap.String("group", o.Group),
+		zap.String("topic", o.Topic),
+	)
 	return c, nil
 }
 
@@ -130,7 +134,7 @@ func (c *PushConsumer) Subscribe(ctx context.Context, topic string, handler pubs
 		return fmt.Errorf("rocketmq subscribe topic is required")
 	}
 
-	c.handlers.Store(topic, handler)
+	c.handlers.Store(topic, pubsub.WithMessageMetadata(handler))
 
 	// The initial topic is already subscribed at construction; registering it
 	// again would re-fetch route metadata, so skip it.
@@ -142,7 +146,7 @@ func (c *PushConsumer) Subscribe(ctx context.Context, topic string, handler pubs
 		}
 	}
 
-	log.Infof("[RocketMQ] subscribed to topic %s", topic)
+	log.Info(ctx, "RocketMQ subscribed", zap.String("topic", topic))
 	return nil
 }
 
@@ -153,7 +157,7 @@ func (c *PushConsumer) Unsubscribe(ctx context.Context, topic string) error {
 	if err := c.pc.Unsubscribe(topic); err != nil {
 		return fmt.Errorf("rocketmq unsubscribe %s: %w", topic, err)
 	}
-	log.Infof("[RocketMQ] unsubscribed from topic %s", topic)
+	log.Info(ctx, "RocketMQ unsubscribed", zap.String("topic", topic))
 	return nil
 }
 
@@ -167,7 +171,7 @@ func (c *PushConsumer) Close() error {
 	c.closed = true
 	c.mu.Unlock()
 
-	log.Info("[RocketMQ] push consumer closing...")
+	log.Info(context.Background(), "RocketMQ push consumer closing")
 	return c.pc.GracefulStop()
 }
 
@@ -178,14 +182,15 @@ func (c *PushConsumer) dispatch(mv *rmq.MessageView) rmq.ConsumerResult {
 	val, ok := c.handlers.Load(mv.GetTopic())
 	if !ok {
 		// No handler for this topic: ack to avoid an unbounded retry loop.
-		log.Warnf("[RocketMQ] no handler registered for topic %s, acking", mv.GetTopic())
+		log.Warn(context.Background(), "RocketMQ message has no handler; acknowledging", zap.String("topic", mv.GetTopic()))
 		return rmq.SUCCESS
 	}
 	handler := val.(pubsub.MessageHandler)
 
 	message := messageFromMessageView(mv)
-	if err := handler(context.Background(), message); err != nil {
-		log.Warnf("[RocketMQ] handler error for topic %s: %v", mv.GetTopic(), err)
+	ctx := context.Background()
+	if err := handler(ctx, message); err != nil {
+		log.Warn(ctx, "RocketMQ handler failed", zap.String("topic", mv.GetTopic()), zap.Error(err))
 		return rmq.FAILURE
 	}
 	return rmq.SUCCESS
