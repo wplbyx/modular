@@ -1,0 +1,47 @@
+.PHONY: scaffold-service scaffold-resource scaffold-sync scaffold-diff scaffold-doctor scaffold-prune scaffold-migrate
+.PHONY: gen build test test-race coverage scaffold-check contract-check verify
+
+scaffold-service:
+	$(PYTHON) $(MODULAR_TOOL) service add $(SVC) $(foreach transport,$(TRANSPORTS),--transport $(transport))
+
+scaffold-resource:
+	$(PYTHON) $(MODULAR_TOOL) resource add $(RESOURCE) --svc $(SVC) $(if $(DRIVER),--driver $(DRIVER),) $(if $(DIALECT),--dialect $(DIALECT),)
+
+scaffold-sync:
+	$(PYTHON) $(MODULAR_TOOL) sync
+
+scaffold-diff:
+	$(PYTHON) $(MODULAR_TOOL) $(ARGS) --diff
+
+scaffold-doctor:
+	$(PYTHON) $(MODULAR_TOOL) doctor --strict --phase framework
+
+scaffold-prune:
+	$(PYTHON) $(MODULAR_TOOL) prune $(if $(APPLY),--apply,) $(ARGS)
+
+scaffold-migrate:
+	$(PYTHON) $(MODULAR_TOOL) migrate topology --to $(TOPOLOGY) $(if $(APPLY),--apply,)
+
+gen:
+	$(PYTHON) $(MODULAR_TOOL) gen
+
+build:
+	go build ./...
+
+test:
+	go test ./...
+
+test-race:
+	go test -race ./...
+
+coverage:
+	$(PYTHON) $(MODULAR_TOOL) coverage
+
+scaffold-check:
+	$(PYTHON) $(MODULAR_TOOL) verify --phase framework
+
+contract-check:
+	$(PYTHON) $(MODULAR_TOOL) verify --phase contract
+
+verify:
+	$(PYTHON) $(MODULAR_TOOL) verify --phase complete

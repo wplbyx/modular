@@ -7,7 +7,10 @@ param(
     [string]$Directory = (Join-Path (Join-Path $HOME ".claude") "skills"),
 
     [Alias("f")]
-    [switch]$Force
+    [switch]$Force,
+
+    [Alias("l")]
+    [switch]$DevelopmentLink
 )
 
 Set-StrictMode -Version Latest
@@ -16,8 +19,7 @@ $ErrorActionPreference = "Stop"
 function Fail {
     param([string]$Message)
 
-    Write-Error $Message
-    exit 1
+    throw $Message
 }
 
 function Assert-SkillName {
@@ -36,117 +38,132 @@ function Normalize-PathString {
     if ([string]::Equals($fullPath, $rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $fullPath
     }
-
     return $fullPath.TrimEnd('\', '/')
 }
 
-function Same-Path {
+function Assert-ChildPath {
     param(
-        [string]$Left,
-        [string]$Right
+        [string]$Parent,
+        [string]$Child
     )
 
-    $leftNormalized = Normalize-PathString $Left
-    $rightNormalized = Normalize-PathString $Right
-    return [string]::Equals($leftNormalized, $rightNormalized, [System.StringComparison]::OrdinalIgnoreCase)
+    $parentFull = Normalize-PathString $Parent
+    $childFull = Normalize-PathString $Child
+    $prefix = $parentFull + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $childFull.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Fail "install path escapes target parent: $childFull"
+    }
 }
 
-function Get-LinkTarget {
-    param([object]$Item)
-
-    $targetProperty = $Item.PSObject.Properties["Target"]
-    if ($null -eq $targetProperty -or $null -eq $targetProperty.Value) {
-        return ""
-    }
-
-    if ($targetProperty.Value -is [array]) {
-        if ($targetProperty.Value.Count -eq 0) {
-            return ""
+function Get-Python {
+    foreach ($candidate in @("python", "python3")) {
+        $command = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($null -ne $command) {
+            return $command.Source
         }
-
-        return [string]$targetProperty.Value[0]
     }
-
-    return [string]$targetProperty.Value
+    Fail "python is required to run the modular skill self-check"
 }
 
-function Get-LinkType {
-    param([object]$Item)
+function Invoke-SelfCheck {
+    param([string]$SkillRoot)
 
-    $linkTypeProperty = $Item.PSObject.Properties["LinkType"]
-    if ($null -eq $linkTypeProperty -or $null -eq $linkTypeProperty.Value) {
-        return ""
+    $cli = Join-Path (Join-Path $SkillRoot "scripts") "modular.py"
+    if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) {
+        return
     }
-
-    return [string]$linkTypeProperty.Value
+    $python = Get-Python
+    & $python $cli self-check
+    if ($LASTEXITCODE -ne 0) {
+        Fail "post-install self-check failed for $SkillRoot"
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($Directory)) {
     Fail "target parent directory cannot be empty"
 }
-
 if ([string]::IsNullOrWhiteSpace($Name)) {
     Fail "missing skill name"
 }
-
 Assert-SkillName $Name
 
-$Source = Join-Path (Join-Path $PSScriptRoot "agent") $Name
-$SkillFile = Join-Path $Source "SKILL.md"
-
-if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
-    Fail "source skill directory not found: $Source"
+$source = Join-Path (Join-Path $PSScriptRoot "agent") $Name
+$skillFile = Join-Path $source "SKILL.md"
+if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+    Fail "source skill directory not found: $source"
+}
+if (-not (Test-Path -LiteralPath $skillFile -PathType Leaf)) {
+    Fail "source skill is missing SKILL.md: $skillFile"
 }
 
-if (-not (Test-Path -LiteralPath $SkillFile -PathType Leaf)) {
-    Fail "source skill is missing SKILL.md: $SkillFile"
+$sourceFull = Normalize-PathString $source
+$targetParent = Normalize-PathString $Directory
+if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
+    New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
+}
+$target = Normalize-PathString (Join-Path $targetParent $Name)
+Assert-ChildPath $targetParent $target
+if ([string]::Equals($sourceFull, $target, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Fail "source and target are the same path: $target"
 }
 
-$SourceReal = Normalize-PathString $Source
-$TargetParent = Normalize-PathString $Directory
-
-if (-not (Test-Path -LiteralPath $TargetParent -PathType Container)) {
-    New-Item -ItemType Directory -Path $TargetParent -Force | Out-Null
-}
-
-$TargetFull = Normalize-PathString (Join-Path $TargetParent $Name)
-$Existing = Get-Item -LiteralPath $TargetFull -Force -ErrorAction SilentlyContinue
-if ($null -ne $Existing) {
-    $isReparsePoint = (($Existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-    $linkType = Get-LinkType $Existing
-    $isSymbolicLink = $isReparsePoint -and [string]::Equals($linkType, "SymbolicLink", [System.StringComparison]::OrdinalIgnoreCase)
-    $linkTarget = Get-LinkTarget $Existing
-
-    if ($isSymbolicLink -and -not [string]::IsNullOrWhiteSpace($linkTarget)) {
-        if (-not [System.IO.Path]::IsPathRooted($linkTarget)) {
-            $linkTarget = Join-Path (Split-Path -Parent $TargetFull) $linkTarget
-        }
-
-        if ((Test-Path -LiteralPath $linkTarget -PathType Container) -and (Same-Path $linkTarget $SourceReal)) {
-            Write-Host "$Name skill is already installed:"
-            Write-Host "  $TargetFull -> $SourceReal"
-            exit 0
-        }
-    }
-
-    if ($isSymbolicLink) {
-        if ($Force) {
-            Remove-Item -LiteralPath $TargetFull -Force
-        } else {
-            Fail "target already exists and is not the expected symlink:`n  $TargetFull`n`nUse -f to replace an existing symlink, or pass a different parent directory with -d."
-        }
-    } else {
-        Fail "target already exists and is not a symlink:`n  $TargetFull`n`nRefusing to remove a regular file or directory. Remove it manually or pass a different parent directory with -d."
-    }
-}
+$nonce = [Guid]::NewGuid().ToString("N")
+$stage = Normalize-PathString (Join-Path $targetParent ".$Name.install-$nonce")
+$backup = Normalize-PathString (Join-Path $targetParent ".$Name.backup-$nonce")
+Assert-ChildPath $targetParent $stage
+Assert-ChildPath $targetParent $backup
+$backupCreated = $false
+$targetInstalled = $false
 
 try {
-    New-Item -ItemType SymbolicLink -Path $TargetFull -Target $SourceReal | Out-Null
+    if ($DevelopmentLink) {
+        New-Item -ItemType SymbolicLink -Path $stage -Target $sourceFull | Out-Null
+    } else {
+        Copy-Item -LiteralPath $sourceFull -Destination $stage -Recurse -Force
+    }
+    Invoke-SelfCheck $stage
+
+    $existing = Get-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+    if ($null -ne $existing) {
+        if (-not $Force) {
+            Fail "target already exists: $target`nUse -Force to replace it with rollback protection, or choose another parent with -Directory."
+        }
+        if (-not $existing.PSIsContainer -and (($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) {
+            Fail "target is a regular file and will not be replaced: $target"
+        }
+        Move-Item -LiteralPath $target -Destination $backup
+        $backupCreated = $true
+    }
+
+    Move-Item -LiteralPath $stage -Destination $target
+    $targetInstalled = $true
+    Invoke-SelfCheck $target
+
+    if ($backupCreated) {
+        Remove-Item -LiteralPath $backup -Recurse -Force
+        $backupCreated = $false
+    }
 } catch {
-    Fail "failed to create symbolic link: $($_.Exception.Message)`nRun PowerShell as Administrator and try again."
+    if ($targetInstalled -and (Test-Path -LiteralPath $target)) {
+        Remove-Item -LiteralPath $target -Recurse -Force
+    }
+    if ($backupCreated -and (Test-Path -LiteralPath $backup)) {
+        Move-Item -LiteralPath $backup -Destination $target
+        $backupCreated = $false
+    }
+    if (Test-Path -LiteralPath $stage) {
+        Remove-Item -LiteralPath $stage -Recurse -Force
+    }
+    Write-Error $_
+    exit 1
 }
 
-Write-Host "Installed $Name skill:"
-Write-Host "  $TargetFull -> $SourceReal"
+$mode = if ($DevelopmentLink) { "development link" } else { "copy" }
+Write-Host "Installed $Name skill ($mode):"
+if ($DevelopmentLink) {
+    Write-Host "  $target -> $sourceFull"
+} else {
+    Write-Host "  $target"
+}
 Write-Host ""
-Write-Host "To update it later, run git pull in this repository."
+Write-Host "Run this installer again with -Force after updating the repository."

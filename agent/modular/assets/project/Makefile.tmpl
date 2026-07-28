@@ -1,14 +1,4 @@
-.PHONY: gen build tidy check
+PYTHON ?= python
+MODULAR_TOOL ?= .modular/tool/modular.py
 
-gen:
-	buf generate
-
-build:
-	go build ./...
-
-tidy:
-	go mod tidy
-
-check:
-	go vet ./...
-	gofmt -l .
+include .modular/make/modular.mk

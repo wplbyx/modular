@@ -35,6 +35,9 @@ go.work.sum
 __pycache__/
 *.py[cod]
 
+# Local skill evaluation workspaces
+/agent/modular-workspace/
+
 # Local disk storage test artifacts (persisted by TestDiskStorage_PersistToUploadDir)
 storage/upload/
 packages/infra/storage/upload/

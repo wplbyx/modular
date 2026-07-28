@@ -1,77 +1,33 @@
-# Adapter And Repository Recommendation
+# Adapter And Repository Placement
 
-Use this before generating ports from a natural-language feature request.
+Use this reference after routing a request to the CRUD or domain workflow. The
+CLI does not infer repository signatures; the Agent owns this architecture
+decision and writes the selected contract templates directly.
 
-The CLI has a deterministic helper for shell use:
+## App placement
 
-```bash
-python agent/modular/scripts/modular.py repository recommend <svc> [surface] \
-  --aggregate User \
-  --feature "CRUD user profile management" \
-  --query FindUser \
-  --command SaveUser
-```
-
-Treat its output as a first pass: it prints the recommended placement, expanded
-Go signatures, and the exact scaffold command. The agent should still adjust the
-recommendation when the user's domain context is clearer than the heuristic.
-
-## Placement
-
-Choose `app/<surface>/adapter.go` when the flow is simple:
+Choose `internal/<svc>/app/<surface>/ports.go` when the flow is simple:
 
 - CRUD or query/mutation with no rich domain behavior.
-- The pb method can call a repository implementation directly.
-- DTO-style data is acceptable at the app boundary.
+- The use case can call a repository adapter directly.
+- DTO-style data is acceptable at the app seam.
 
-Choose `domain/adapter.go` when the flow is complex:
+Put the adapter under `internal/<svc>/repository/app` only after its interface
+is known. Do not create a repository shell merely because a svc exists.
 
-- Aggregates, invariants, policies, or transactions matter.
-- Multiple repositories or entities are coordinated.
-- App should depend on domain definitions and domain services.
+## Domain placement
 
-## App Scaffold
-
-After confirmation, use:
-
-```bash
-python agent/modular/scripts/modular.py repository app <svc> <surface> \
-  --aggregate User \
-  --query "FindUser(ctx context.Context, id string) (UserDTO, error)" \
-  --command "SaveUser(ctx context.Context, item UserDTO) error"
-```
-
-Name-only defaults:
-
-- `Find/Get/LoadX` -> `(ctx context.Context, id string) (XDTO, error)`
-- `ListX` -> `(ctx context.Context) ([]XDTO, error)`
-- `Delete/RemoveX` -> `(ctx context.Context, id string) error`
-- other commands -> `(ctx context.Context, item XDTO) error`
-
-## Domain Scaffold
-
-After confirmation, use:
-
-```bash
-python agent/modular/scripts/modular.py repository domain <svc> \
-  --aggregate User \
-  --query "FindUser(ctx context.Context, id string) (*entity.User, error)" \
-  --command "SaveUser(ctx context.Context, item *entity.User) error"
-```
-
-Name-only defaults:
-
-- `Find/Get/LoadX` -> `(ctx context.Context, id string) (*entity.X, error)`
-- `ListX` -> `(ctx context.Context) ([]*entity.X, error)`
-- `Delete/RemoveX` -> `(ctx context.Context, id string) error`
-- other commands -> `(ctx context.Context, item *entity.X) error`
+Choose `internal/<svc>/domain/ports.go` when aggregates, invariants, policies,
+transactions, or cross-entity behavior matter. Put persistence adapters under
+`internal/<svc>/repository/domain` and persistence models/tags under
+`repository/model`, never on domain entities.
 
 ## Rules
 
-- Explain app-vs-domain placement before scaffolding.
-- Keep persistence tags out of `domain/entity`.
-- Put app implementations in `repository/app`.
-- Put domain implementations in `repository/domain`.
-- Accept generated typed `core.Provider[T]` dependencies in repository constructors; never read package-level DB/Redis/client globals.
-- Generate `repository/dto` and `repository/model` only when the chosen design actually needs them.
-- Cross-svc dependencies go through generated pb clients, not another svc's `internal`.
+- Explain app-vs-domain placement before writing files.
+- Give each interface the smallest surface that supports the use case and its tests.
+- Accept generated `core.Provider[T]` dependencies in repository constructors.
+- Do not call `Provider.Value()` before Application completes Resource Setup.
+- Generate DTO/model packages only when the chosen adapter needs them.
+- Cross-svc dependencies use generated pb clients, not another svc's `internal`.
+- Unimplemented adapters return an explicit error; never generate fake success data.

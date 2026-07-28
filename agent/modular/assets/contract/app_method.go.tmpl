@@ -1,0 +1,19 @@
+// Code scaffolded by modular. This file is user-maintained.
+package {{PACKAGE}}
+
+import (
+	"context"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	common "{{GO_PACKAGE}}"
+)
+
+func (s *Server) {{METHOD}}(ctx context.Context, req *common.{{REQUEST}}) (*common.{{RESPONSE}}, error) {
+	// modular:contract-unimplemented - replace this body during the business phase.
+	_ = s
+	_ = ctx
+	_ = req
+	return nil, status.Error(codes.Unimplemented, codes.Unimplemented.String())
+}

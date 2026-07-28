@@ -3,57 +3,75 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "In a new Go project called billing-demo, use modular to initialize a single-process app, add a billing svc with public CreateInvoice and ListInvoices methods, and leave it ready for buf generation.",
-      "expected_output": "Uses the modular skill, runs or proposes init/service/method commands, creates config/billing + config/billing-demo process aggregation + proto/billing + internal/billing, generates a config.NewRoot entrypoint, and does not hand-edit common generated files.",
-      "files": []
+      "name": "simple-crud-without-domain-shell",
+      "prompt": "Create a single-process billingdemo project on modular v0.2.0. Add a billing svc exposed only over HTTP, then define a simple CRUD contract with CreateInvoice and ListInvoices. Stop at the contract phase: use explicit Unimplemented behavior where implementation is intentionally deferred, and do not invent business fields without deciding them first.",
+      "expected_output": "A compiling framework plus a complete CRUD contract under proto/app/api, with no domain or repository shell, no Example placeholders, HTTP-only framework imports, and a passing contract gate.",
+      "files": [],
+      "expectations": [
+        "go.mod contains a concrete github.com/wplbyx/modular v0.2.0 dependency and no local replace directive.",
+        "The framework selects HTTP explicitly and does not import or configure the gRPC server.",
+        "No internal/billing/domain or default repository package is created for the simple CRUD flow.",
+        "No ExampleDTO, fake repository result, or empty success response remains.",
+        "Deferred methods carry modular:contract-unimplemented and return an explicit Unimplemented error.",
+        "The framework and contract verification gates pass for their respective phases."
+      ]
     },
     {
       "id": 2,
-      "prompt": "We have an existing modular app and need an admin surface for the user svc. Add DisableUser and ListDisabledUsers methods and wire both HTTP and gRPC endpoints into cmd without splitting domain by surface.",
-      "expected_output": "Uses surface/method flow, keeps domain shared inside internal/user/domain, creates app/admin method files, and rewrites HTTP+gRPC cmd wiring.",
-      "files": []
+      "name": "order-domain-with-stable-errors",
+      "prompt": "Model order cancellation for an order svc. Cancellation must enforce order status transitions, line-item consistency, and a payment-refund policy. Design the domain concepts and persistence ports, expose an admin CancelOrder contract, define ORDER_NOT_FOUND and ORDER_CANNOT_CANCEL as stable reasons, and add focused tests. Client messages must be localized only at the API edge.",
+      "expected_output": "A domain model split by meaningful concepts rather than one generic entity, language-free domain errors, API error mapping/localization, repository ports at the domain seam, and passing business verification with tests.",
+      "files": [],
+      "expectations": [
+        "The domain module exists because concrete invariants and policies justify it, and it is not split by API surface.",
+        "Order, line-item, status transition, and refund policy concepts are represented explicitly rather than as an ID-only entity.",
+        "Persistence tags stay outside domain entities and repository ports use the domain types.",
+        "ORDER_NOT_FOUND and ORDER_CANNOT_CANCEL remain stable machine-readable reasons without localized prose in the domain package.",
+        "Localization and public error mapping happen at the API/app edge through errs messages or a process-level Handler.",
+        "Focused tests cover allowed and rejected cancellation transitions, and complete verification passes."
+      ]
     },
     {
       "id": 3,
-      "prompt": "For an order feature, recommend whether the ports belong in app/order/admin adapter or domain/adapter. We need to fetch an order detail, list a customer's orders, save an order aggregate, and cancel an order. Persistence will use Bun.",
-      "expected_output": "Runs adapter/repository recommendation first, distinguishes app adapter vs domain adapter, proposes QueryRepository and CommandRepository signatures, and waits for confirmation before scaffold.",
-      "files": []
+      "name": "resource-wiring-without-fake-repositories",
+      "prompt": "In an existing user svc, attach Bun/PostgreSQL, Redis, disk storage, and OpenTelemetry. Keep every dependency under Application lifecycle ownership and expose typed providers for later business adapters. Do not generate repository implementations because no business port has been selected yet.",
+      "expected_output": "Managed config and cmd wiring for the four library Resources, typed Providers at the business wiring seam, no fake repository package, and a passing framework gate.",
+      "files": [],
+      "expectations": [
+        "Bun, Redis, Storage, and Telemetry use the library Resource constructors and are appended to Application resources.",
+        "Database, Redis, and Storage are exposed through typed Provider fields without calling Value before Setup.",
+        "No repository implementation, Example data, or resource wrapper is generated without a selected business port.",
+        "The svc and process config aggregates contain only the selected transport and Resource fields.",
+        "A repeated sync produces no file changes, and framework verification passes."
+      ]
     },
     {
       "id": 4,
-      "prompt": "Attach Postgres via Bun, Redis, disk storage, and OpenTelemetry to the user svc. Use Application lifecycle resources where the library provides them.",
-      "expected_output": "Maps Bun/Redis/Telemetry to built-in Resource types, generates only the storage wrapper under internal/user/repository, updates config/user and the single-process aggregate, and keeps cmd on config.NewRoot with server.Transport metadata.",
-      "files": []
+      "name": "topology-migration-preserves-business",
+      "prompt": "Migrate a single-process project with user and billing svcs to one process per svc. The existing internal/platform/wiring/business.go and all proto/common/internal business packages contain user changes and must be preserved. Show the diff before applying and then verify the framework.",
+      "expected_output": "Only managed cmd/process-config files and manifest provenance change; user business wiring and business packages remain byte-for-byte unchanged.",
+      "files": [],
+      "expectations": [
+        "The migration is previewed with --diff or the scaffold-diff Make target before writing.",
+        "The old single-process cmd and process aggregate are removed only after --apply.",
+        "One managed cmd entrypoint is created per svc and each loads its svc config.",
+        "internal/platform/wiring/business.go and all proto/common/internal business files remain unchanged.",
+        "The manifest records service topology and framework verification passes."
+      ]
     },
     {
       "id": 5,
-      "prompt": "Run a convention audit on this modular project and tell me if it has old config/config.go, hand-written common files, or cross-svc internal imports.",
-      "expected_output": "Uses doctor or equivalent read-only checks, reports convention errors and warnings without mutating project files.",
-      "files": []
-    },
-    {
-      "id": 6,
-      "prompt": "Our single-topology modular app has user and billing services. Make the generated command support a local config file, an etcd remote config, and a CLI override for the user HTTP port.",
-      "expected_output": "Uses the generated config/<project> aggregate and config.NewRoot, explains --config and --remote, uses a nested --user.http.port override, preserves local-file-over-remote precedence, and does not add a separate command package.",
-      "files": []
-    },
-    {
-      "id": 7,
-      "prompt": "Migrate this modular project from single-process topology to one process per svc without changing the proto contracts or business packages.",
-      "expected_output": "Treats topology migration as an agent workflow rather than invoking a nonexistent switch command, rewrites cmd and process config ownership only, and leaves proto/common/internal business code unchanged.",
-      "files": []
-    },
-    {
-      "id": 8,
-      "prompt": "Our modular user svc needs a localized USER_NOT_FOUND error with a user_id variable. Generate zh-CN and en-US templates, wire the same handler into HTTP and gRPC, and give us the CI check command. Database details must only go to logs.",
-      "expected_output": "Defines one package-level errs.Message with errs.Define and errs.Template using a named user_id slot, keeps the cause/diagnostic fields out of client data, uses err_template_gen for both locales and --check, initializes logging before one process-level Catalog/Handler, and injects that Handler into both HTTP and gRPC servers.",
-      "files": []
-    },
-    {
-      "id": 9,
-      "prompt": "Product rewrote our localized MEMBER_NOT_FOUND copy and moved {{.org}} before {{.user_id}}. Update the generated locale set without losing their wording, and explain what happens if a slot is renamed or an old reason remains in YAML.",
-      "expected_output": "Preserves valid product text and comments because slot order is flexible, runs err_template_gen with the complete language set, rejects renamed/missing/duplicate slots and stale reasons without partial writes, and uses --check for read-only CI validation.",
-      "files": []
+      "name": "ownership-conflict-and-safe-prune",
+      "prompt": "Audit a generated project after a developer edited config/user/config.gen.go and config/user/config.go. Explain which edit is allowed, preview a sync, and remove an obsolete generated file only if it is still unchanged. Do not damage user code.",
+      "expected_output": "The managed-file edit blocks sync before writes, the scaffold-once edit is preserved, prune requires apply and hash agreement, and doctor remains read-only.",
+      "files": [],
+      "expectations": [
+        "doctor and dry-run/diff checks do not mutate project files.",
+        "The modified managed config.gen.go produces a conflict before any other file or manifest write.",
+        "The scaffold-once config.go edit is preserved across sync and upgrades.",
+        "Prune previews deletion by default, requires --apply, and refuses to delete a modified managed file.",
+        "The report explains manifest ownership and hashes without treating manifest as an architecture specification."
+      ]
     }
   ]
 }

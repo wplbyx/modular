@@ -1,0 +1,10 @@
+version = 1
+
+[checks]
+# Project-specific rules live here; modular's lifecycle rules stay universal.
+business_globs = [
+  "internal/*/api/**/*.go",
+  "internal/*/app/**/*.go",
+  "internal/*/domain/**/*.go",
+  "internal/*/repository/**/*.go",
+]

@@ -1,0 +1,16 @@
+// Code scaffolded by modular. This file is user-maintained.
+package {{PACKAGE}}
+
+type ErrorReason string
+
+const (
+{{ERROR_REASONS}}
+)
+
+type Error struct {
+	Reason ErrorReason
+	Cause  error
+}
+
+func (e *Error) Error() string { return string(e.Reason) }
+func (e *Error) Unwrap() error { return e.Cause }

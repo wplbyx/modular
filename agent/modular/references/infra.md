@@ -23,11 +23,11 @@ SQL uses `configitem.Database` with an explicit `DSN` and pool settings. Dialect
 - GORM/SQLite: `gorm/sqlite.NewResource(&cfg.Database)`; this is a pure Go driver.
 - MongoDB: `mongo.NewResource(&cfg.Mongo)` using the separate `configitem.Mongo` type.
 
-The CLI form is:
+The project-local CLI form is:
 
 ```bash
-python agent/modular/scripts/modular.py resource db \
-  --driver gorm --dialect postgres --svc user
+python .modular/tool/modular.py resource add db \
+  --svc user --driver gorm --dialect postgres
 ```
 
 Bun supports PostgreSQL only. Migrations use `bun.NewMigrationTool(db, migrationsFS)` with an explicit DB. Startup migrations or warmups can be modeled with `core.NewFuncResource` and the same typed Provider.

@@ -1,57 +1,40 @@
 # Layering
 
-The README svc layout is authoritative. Read this before `service`, `surface`,
-`method`, `adapter recommend`, repository scaffolding, or topology changes.
+The README svc layout is authoritative. Read this after the workflow router
+selects CRUD, domain, resource, or migration work.
 
-## Layers
+## Framework paths
 
-- `proto/<svc>/...` - source interface contracts for one business module.
-- `common/<svc>/...` - generated protobuf output only, mirroring `proto/<svc>`.
-- `config/<svc>/...` - per-svc config aggregate, editable YAML fragment, and resource metadata.
-- `config/<project>/...` - single-topology generated process aggregate and runtime YAML.
-- `internal/<svc>/api/<surface>/...` - inbound adapters for HTTP/gRPC/event.
-- `internal/<svc>/app/<surface>/...` - generated pb server implementation and simple app-layer use-case ports.
-- `internal/<svc>/domain/...` - complex domain model, domain ports, entities, and real domain services.
-- `internal/<svc>/repository/...` - infrastructure implementations for app/domain ports.
-- `cmd/<project>/main.go` or `cmd/<svc>/main.go` - Application wiring only.
+- `config/<svc>/config.gen.go` is managed transport/Resource configuration.
+- `config/<svc>/config.go` is a scaffold-once extension owned by the user.
+- `config/<svc>/config.yaml` is a managed svc configuration fragment.
+- `config/<project>/...` is the managed single-topology process aggregate.
+- `cmd/<process>/main.go|framework.gen.go` is managed Application wiring.
+- `internal/platform/wiring/framework.gen.go` is the managed hook/provider seam.
+- `internal/platform/wiring/business.go` is scaffold-once business registration.
 
-## Ownership
+`service add <svc> --transport ...` creates only these framework paths. It does
+not create proto, API, app, domain, repository, event, or Example shells.
 
-`app/<surface>/adapter.go` defines simple app-layer ports. Use it for CRUD/MVC-style flows where the pb method can call a repository implementation directly without a rich domain model. The default names are `QueryRepository` and `CommandRepository`.
+## Business paths
 
-`domain/adapter.go` defines complex domain ports. Use it when the app flow coordinates aggregates, invariants, policies, transactions, or domain services. App packages may depend on the `domain` package.
+- `proto/<svc>/<surface>.proto` contains source interface contracts.
+- `common/<svc>/...` contains buf output only.
+- `internal/<svc>/api/<surface>/...` contains selected inbound adapters.
+- `internal/<svc>/app/<surface>/...` contains use cases and simple ports.
+- `internal/<svc>/domain/...` exists only for real domain concepts and rules.
+- `internal/<svc>/repository/...` contains adapters for selected ports.
 
-`domain/service` is not a default pass-through layer. Add it only when behavior spans entities/aggregates and does not naturally belong to one entity.
-
-`repository/app` implements app-layer ports. `repository/domain` implements domain-layer ports. `repository/dto` and `repository/model` are generated only when needed; persistence tags stay in repository models, never in domain entities.
-
-## Adding A Svc
-
-`service <svc>`:
-
-1. Creates `config/<svc>/config.go|yaml`.
-2. Creates `proto/<svc>/<svc>.proto` for `public`, or `proto/<svc>/<surface>.proto` for a named surface.
-3. Creates `internal/<svc>/api/<surface>`.
-4. Creates `internal/<svc>/app/<surface>/adapter.go|server.go`.
-5. Creates `internal/<svc>/domain/adapter.go`.
-6. Creates `internal/<svc>/repository/app` with a minimal repository root.
-7. Rewrites cmd wiring with HTTP and gRPC endpoints.
-8. In single topology, rebuilds `config/<project>/config.go|yaml` and nests the svc config.
-
-Multiple surfaces in the same svc share one Go package under `common/<svc>`. Avoid generic message names that collide across surfaces; prefer `<MethodName>Request` / `<MethodName>Response`.
-
-## Adding A Surface
-
-`surface <svc> <surface>` creates the surface proto, api package, app adapter, app server, and rewrites cmd. It does not split `domain` or repository directories by surface.
-
-## Adding A Method
-
-`method <svc> <surface> <MethodName>` updates the surface proto and creates `internal/<svc>/app/<surface>/<method>.go`. Method files are the behavioral target; keep `server.go` focused on dependencies and construction.
+For simple CRUD, place ports in `app/<surface>` and omit domain. Create a
+domain module only when aggregates, invariants, policies, transactions, or
+domain services provide real leverage. Do not split domain by API surface.
 
 ## Topology
 
-Single topology uses one `cmd/<project>/main.go` and one `config.NewRoot[config/<project>.Config]`. The process config contains the root Application plus nested svc configs. Generated module flags carry svc prefixes such as `user.http.port`.
+Single topology has one `cmd/<project>` process and one generated process config
+containing nested svc configs. Service topology has one `cmd/<svc>` per svc and
+loads `config/<svc>.Config` directly.
 
-Service topology uses `cmd/<svc>/main.go` per svc. Each process runs `config.NewRoot[config/<svc>.Config]` and owns one `Application`.
-
-Topology migration is agent-driven because the CLI has no `switch` subcommand. Rewrite only `cmd/` and process-level config aggregation; do not rewrite `proto/`, `common/`, or `internal/`.
+Use `migrate topology --to single|service --apply`. It changes only managed
+process cmd/config files. Proto, common output, business packages, and
+`internal/platform/wiring/business.go` must remain unchanged.

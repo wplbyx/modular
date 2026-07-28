@@ -20,6 +20,9 @@ type resourceConfig struct {
 	factory Factory
 }
 
+// Resource is the lifecycle-managed storage provider returned by New.
+type Resource = core.ManagedResource[storage.Storage]
+
 // Option 配置 Storage Resource。
 type Option func(*resourceConfig)
 
@@ -33,7 +36,7 @@ func WithFactory(factory Factory) Option {
 }
 
 // New 创建 disk 或 OSS Storage 生命周期资源。
-func New(cfg *configitem.Storage, options ...Option) *core.ManagedResource[storage.Storage] {
+func New(cfg *configitem.Storage, options ...Option) *Resource {
 	resourceCfg := resourceConfig{factory: newStorage}
 	for _, option := range options {
 		if option != nil {

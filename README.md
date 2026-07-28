@@ -269,20 +269,26 @@ HTTP client 是显式构造的 `*httpclient.Client`，主接口为 `Do(*http.Req
 
 ## 推荐项目分层
 
-使用 `modular` 的业务项目建议采用以下结构：
+v2 脚手架把基础设施框架和业务实现分开。第一阶段由 CLI 生成可编译的进程、配置、transport、Resource 和 wiring；第二阶段由 Agent 根据需求写 proto、端口和稳定错误码；第三阶段再实现业务并用单测保证行为。
 
 ```text
 <project>/
+  .modular/
+    manifest.json            # 文件所有权、生成哈希、模板版本和最小生成来源
+    profile.toml             # 当前项目的附加检查策略
+    make/modular.mk          # 受管 Make 目标
+    tool/                    # 项目内可迁移的脚手架及模板
   cmd/
-    <svc>/main.go            # 只做配置加载、资源构造、endpoint 注册、Application 装配
+    <process>/main.go        # 受管入口
+    <process>/framework.gen.go
   config/
     <project>/               # single 拓扑进程配置，由 skill 聚合生成
-      config.go
+      config.gen.go
       config.yaml
     <svc>/
-      config.go              # svc Config 聚合类型，同时实现 FlagProvider
-      config.yaml            # svc 配置片段；service 拓扑直接作为运行配置
-      resources.json         # skill 的资源装配元数据
+      config.gen.go          # transport/Resource 字段，受管
+      config.go              # 一次性模板，之后由用户维护
+      config.yaml            # 受管配置片段；service 拓扑直接作为运行配置
   common/                    # protoc 生成物，不手写；目录结构镜像 proto/
     <svc>/
       <svc>.pb.go
@@ -290,6 +296,9 @@ HTTP client 是显式构造的 `*httpclient.Client`，主接口为 `Do(*http.Req
       <surface>.pb.go
       <surface>_grpc.pb.go
   internal/
+    platform/wiring/
+      framework.gen.go       # transport hook 和 Resource Provider 类型
+      business.go            # 一次性 wiring 接缝，由 Agent/用户维护
     <svc>/
       api/                   # 入站适配器：HTTP/gRPC/event 映射到对应接口面
         <surface>/           # admin / management / platform / openapi ...
@@ -322,6 +331,9 @@ HTTP client 是显式构造的 `*httpclient.Client`，主接口为 `Do(*http.Req
 
 约束：
 
+- `service add` 必须显式选择 `--transport http|grpc`；未选择的 transport、domain、repository 和 event 层不会生成。
+- `managed` 文件只有在当前哈希与 manifest 一致时才更新；`scaffold-once` 文件创建后归用户和 Agent 维护。
+- `.modular/manifest.json` 不是架构决策文档，只记录脚手架重放所需的所有权、哈希、模板版本和最小来源，用于冲突检测、幂等同步、升级和安全删除。
 - 跨领域调用走生成的 pb client，不导入其他领域的 `internal/`。
 - `proto/` 和 `common/` 都按业务模块分包：`proto/<svc>/...` 生成到 `common/<svc>/...`，与 `internal/<svc>/...` 对齐；这里的 `<svc>` 是最外层业务模块名。
 - 一个业务模块可以有多个接口面（surface），例如 `admin`、`management`、`platform`、`openapi`。接口面是外部契约维度，不是领域模型维度。
@@ -333,57 +345,67 @@ HTTP client 是显式构造的 `*httpclient.Client`，主接口为 `Do(*http.Req
 - `app/<surface>` 默认实现生成的 `XxxServiceServer`，同时编排用例流程。简单 CRUD/MVC 流程可以依赖本包 `adapter.go` 里定义的 `QueryRepository` / `CommandRepository`，由 `repository/app` 直接实现；复杂业务流程可以依赖 `internal/<svc>/domain` 里的领域定义和端口。
 - `app/<surface>/server.go` 放该接口面的 server 类型、构造函数和依赖注入；每个 pb 方法放到独立文件，文件名与方法名一一对应（Go 文件名用 snake_case，例如 `CreateUser` -> `create_user.go`）。
 - `service/` 不是默认层。只有当 pb 契约和内部用例模型明显分离、多版本 pb 需要复用同一组用例、或一个 pb service 需要组合多个 app 子模块时，才引入 `service` 作为额外适配层。
-- `domain` 是每个 `<svc>` 内部的复杂领域层，定义领域端口、充血实体/聚合和领域服务；`domain/service` 只在真实跨实体/聚合领域行为出现时引入，不作为默认空层。
+- 简单 CRUD 把端口放在 `app/<surface>`，不创建空 domain；只有不变量、聚合协调、策略或事务规则需要领域接缝时才创建 `domain`。
 - `app/<surface>/adapter.go` 和 `domain/adapter.go` 是两类接口边界：前者服务简单用例，后者服务复杂领域模型。两者的实现都交给 `repository` 层。
 - `repository` 是基础设施实现区：`repository/app` 实现 app 层简单接口，`repository/domain` 实现 domain 层复杂端口，`repository/dto` 和 `repository/model` 按需放 DTO、持久化模型和 ORM/BSON tag。
 - `internal/` 的业务逻辑不直接依赖 `github.com/wplbyx/modular/packages/app.Application`。
 - 项目自己的 svc `Config` 聚合类型放在 `config/<svc>`，并通过 `GetConfigFlagSpecsWithPrefix` 实现 `FlagProvider`。
 - service 拓扑由 `cmd/<svc>` 使用 `NewRoot[config/<svc>.Config]`；single 拓扑由 `cmd/<project>` 使用生成的 `config/<project>.Config`，其中嵌套各 svc 配置。
-- single 的 `config/<project>/config.go|yaml` 是 skill 生成物；业务配置以 `config/<svc>` 为来源，重新执行 scaffold/resource 命令会刷新进程聚合配置。
+- single 的 `config/<project>/config.gen.go|yaml` 是受管文件；业务配置以 `config/<svc>` 为来源，重新执行 scaffold/resource 命令会刷新进程聚合配置。
 - `cmd` 可以依赖 `github.com/wplbyx/modular/packages/*`，负责把资源、endpoint 和业务实现接起来。
+- 未实现的契约必须显式返回 Unimplemented 并携带 `modular:contract-unimplemented`，不能返回空成功响应。
+- 框架阶段通过 `make scaffold-check`，契约阶段通过 `make contract-check`，业务完成后通过 `make verify`；覆盖率只报告，不设通用数值门槛。
 
 ## Agent 使用方式
 
-仓库内提供了一个 Codex skill：`agent/modular`。技能列表里只会显示一个顶层 skill 名称 `modular`；`init`、`service`、`surface`、`method`、`resource`、`repository`、`doctor`、`gen` 是这个 skill 内部的命令语义，不是独立的子 skill。
+仓库内提供一个顶层 `modular` skill。`SKILL.md` 负责路由 init、CRUD、domain、resource、migration 和 audit 工作流；确定性的框架改动由 `modular.py` 完成，业务边界和业务代码由 Agent 根据需求编写。
+
+默认使用原子复制安装；只有本地开发 skill 时才使用符号链接：
+
+```bash
+./install-modular-skill.sh modular
+./install-modular-skill.sh modular --development-link
+```
+
+```powershell
+.\install-modular-skill.ps1 modular
+.\install-modular-skill.ps1 modular -DevelopmentLink
+```
 
 可以这样让 Agent 使用它：
 
 ```text
 使用 modular skill 初始化一个 single 拓扑项目，项目名叫 myapp
-使用 modular skill 给当前项目添加 user service
-使用 modular skill 给 user 服务添加 admin 接口面
-使用 modular skill 给 user/admin 接口实现 CreateUser 方法骨架
+使用 modular skill 给当前项目添加只暴露 HTTP 的 user svc
+使用 modular skill 为 user 设计简单 CRUD 契约，不要创建 domain 空壳
+使用 modular skill 为订单聚合设计领域对象、端口和稳定错误码
 使用 modular skill 给项目接入 redis resource
-使用 modular skill 重新生成 proto
 使用 modular skill 审计当前项目结构
-使用 modular skill 规划从单体到微服务的 cmd/config 迁移
+使用 modular skill 把 single 拓扑迁移为每个 svc 一个进程
 ```
 
-内部命令语义：
+确定性命令：
 
 | 命令 | 用途 |
 | --- | --- |
-| `init <project> [single|service]` | 创建下游项目骨架，包含 `go.mod`、buf 配置、`Makefile`、`proto/`、`common/`、`internal/`、`cmd/`、`config/`。 |
-| `service <svc>` | 添加业务模块：创建 `config/<svc>`、默认 proto、`internal/<svc>` 的 api/app/domain/repository，并接入 `cmd`。 |
-| `surface <svc> <surface>` | 为业务模块添加接口面，例如 `admin`、`management`、`platform`，生成 `proto/<svc>/<surface>.proto`、`api/<surface>`、`app/<surface>`。 |
-| `method <svc> <surface> <MethodName>` | 为某个接口面添加 pb 方法骨架，生成或更新 proto rpc，并创建 `app/<surface>/<method>.go` 基础实现文件。 |
-| `resource <kind>` | 添加基础设施资源；数据库支持 `--driver bun|gorm|mongo`，GORM 通过 `--dialect postgres|mysql|sqlite|clickhouse` 选择方言。 |
-| `repository recommend <svc> [surface]` | 根据需求推荐 app/domain adapter 放置，展开 repository 接口签名并输出下一步 scaffold 命令。 |
-| `repository app <svc> <surface>` | 为简单 app 用例生成 `app/<surface>/adapter.go` 和 `repository/app` 实现。 |
-| `repository domain <svc>` | 为复杂领域模型生成 `domain/adapter.go` 和 `repository/domain` 实现。 |
-| `doctor` | 检查旧结构残留、生成目录误写、跨 svc `internal` 引用等约束。 |
-| `gen` | 从 `proto/` 重新生成 `common/`。 |
-
-拓扑迁移是 Agent 工作流，不是 `modular.py` 子命令。迁移时只调整进程级 `cmd` 和配置聚合，不改写 `proto/`、`common/` 或 `internal/` 业务代码。
+| `init <project> --topology single|service` | 创建项目内工具、manifest、Make 目标和可编译框架。 |
+| `service add/remove` | 管理 svc 配置和进程装配；添加时必须显式选择 transport。 |
+| `transport add/remove` | 修改已有 svc 的 HTTP/gRPC 选择。 |
+| `resource add/remove` | 管理 DB、Redis、Storage 和 Telemetry 资源装配。 |
+| `sync` / `prune` | 幂等同步受管文件，或安全删除不再需要且未被修改的受管文件。 |
+| `migrate topology` | 只迁移受管的 cmd/config 进程文件，保留业务 wiring 和业务包。 |
+| `project upgrade` | 更新项目内工具和已发布的 modular 依赖版本。 |
+| `doctor` / `verify` | 执行只读审计和 framework/contract/complete 阶段门禁。 |
+| `gen` / `coverage` | 运行 buf 生成和无数值门槛的覆盖率报告。 |
 
 Agent 处理这些任务时会按需读取 `agent/modular/references/`：
 
-- 加服务、接口面、方法骨架或切拓扑：读取 `references/layering.md`。
-- 接基础设施资源：读取 `references/infra.md`。
-- 修改 `cmd` 生命周期：读取 `references/lifecycle.md`。
-- 增加 endpoint 或事件入口：读取 `references/transport.md`。
-- 接服务注册发现：读取 `references/registry.md`。
-- 调整配置：读取 `references/config.md`。
+- `references/workflows/init.md`
+- `references/workflows/crud.md`
+- `references/workflows/domain.md`
+- `references/workflows/resource.md`
+- `references/workflows/migration.md`
+- `references/workflows/audit.md`
 
 ## 开发与验证
 

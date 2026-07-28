@@ -53,7 +53,11 @@ At least one option is required or `NewConfigureLoader` errors.
 
 ## Combining types in a project
 
-A project defines one aggregate per svc in `config/<svc>/config.go`, next to `config/<svc>/config.yaml`. The svc config package owns the strong type and its `FlagProvider` implementation; generated `cmd/` entrypoints import the appropriate process config and let `config.NewRoot` perform loading instead of defining anonymous structs or calling a svc-specific loader in `main.go`.
+A project composes a managed `Generated` type in `config/<svc>/config.gen.go`
+with a scaffold-once `Config` extension in `config/<svc>/config.go`. The
+generated type contains only selected transport and Resource fields. The
+extension owns project-specific fields and its `FlagProvider` implementation;
+generated `cmd/` entrypoints use `config.NewRoot` rather than anonymous structs.
 
     package config
 
@@ -62,19 +66,21 @@ A project defines one aggregate per svc in `config/<svc>/config.go`, next to `co
         "github.com/wplbyx/modular/packages/config/configitem"
     )
 
-    type Config struct {
+    // config.gen.go
+    type Generated struct {
         configitem.Application `mapstructure:"application,squash"`
         HTTP      configitem.HTTP      `mapstructure:"http"`
-        GRPC      configitem.GRPC      `mapstructure:"grpc"`
         Database  configitem.Database  `mapstructure:"database"`
-        Redis     configitem.Redis     `mapstructure:"redis"`
-        Storage   configitem.Storage   `mapstructure:"storage"`
-        Telemetry configitem.Telemetry `mapstructure:"telemetry"`
+    }
+
+    // config.go
+    type Config struct {
+        Generated `mapstructure:",squash"`
         Logging   configitem.Logging   `mapstructure:"logging"`
     }
 
     func (Config) Flags(prefix string) []modularconfig.FlagSpec {
-        return modularconfig.GetConfigFlagSpecsWithPrefix[Config](prefix)
+        return modularconfig.GetConfigFlagSpecsWithPrefix[Generated](prefix)
     }
 
 Use `,squash` on the embedded `Application` so callers can access `cfg.Name` / `cfg.Version` while the serialized values remain under the `application` key.
@@ -85,7 +91,7 @@ An optional `Load` helper may be retained for tests or non-Cobra embedding, but 
 
 - Service topology: `cmd/<svc>` runs `NewRoot[config/<svc>.Config]` with `config/<svc>/config.yaml`.
 - Single topology: the skill generates `config/<project>/Config` containing the process `Application` plus one nested field per svc. Its YAML is generated from the `config/<svc>/config.yaml` fragments.
-- Treat `config/<project>/config.go|yaml` as generated output. Edit svc fragments, then rerun a scaffold/resource command to rebuild the process aggregate.
+- Treat `config/<project>/config.gen.go|yaml` as generated output. Edit svc extensions, then rerun a scaffold/resource command to rebuild the process aggregate.
 - Remote configuration for a single process uses the same nested shape (`user.http`, `billing.redis`, etc.).
 - A single-topology svc may not have the same name as the project because both would own `config/<project>`.
 

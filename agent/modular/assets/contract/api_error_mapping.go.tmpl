@@ -1,0 +1,11 @@
+// Code scaffolded by modular. This file is user-maintained.
+package {{PACKAGE}}
+
+import "github.com/wplbyx/modular/packages/errs"
+
+var {{MESSAGE_VAR}} = errs.Define(
+	"{{PUBLIC_REASON}}",
+	errs.Template("{{FALLBACK_MESSAGE}}"{{MESSAGE_NAMES}}),
+)
+
+{{ERROR_MAPPING}}
