@@ -56,6 +56,8 @@ type Bulkhead interface {
 	Name() string
 	// Running 返回当前运行中的请求数
 	Running() int
+	// Close 关闭隔板并唤醒所有等待中的调用
+	Close()
 }
 
 // Retry 重试机制接口

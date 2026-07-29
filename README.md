@@ -60,11 +60,38 @@ Resource.Setup()  FIFO
 | `packages/telemetry` | OpenTelemetry trace、metric、log provider，作为 `core.Resource` 注入应用。 |
 | `packages/resilience` | 熔断、重试、限流、隔板，以及基于 Kratos Aegis BBR/SRE 的 Transport 自适应保护。 |
 | `packages/patterns` | 缓存模式（Cache-Aside、Write-Through、Write-Behind、Refresh-Ahead）和并发模式。 |
-| `packages/pool` | `WorkerPool` 抽象与 ants 协程池实现。 |
+| `packages/pool` | 可观测的有界异步任务池；支持满载立即拒绝或有界排队，并作为 Resource 管理。 |
+| `packages/idgen` | 不透明业务 ID seam，以及 UUIDv7、可配置 Snowflake 和节点租约适配器。 |
 
 ## 典型使用方式
 
 下游项目通常只在 `cmd/<process>/main.go` 里组装 `modular` 基础设施。业务代码放在 `internal/`，通过 proto 生成的接口暴露能力；切换 DB、Redis、Storage、HTTP/gRPC 或进程拓扑时，优先改 `cmd` 装配层。
+
+异步任务池需要显式注入并交给 Application 管理：
+
+```go
+workerPool, err := pool.New(pool.Config{
+	Name:          "email-workers",
+	Capacity:      32,
+	Policy:        pool.Queue,
+	QueueCapacity: 256,
+}, logger)
+application, err := app.NewApplication(ctx, &cfg.Application, logger,
+	app.WithResource(workerPool),
+)
+```
+
+业务代码通过 `core.Provider[idgen.Generator]` 使用不透明 ID。UUIDv7 不需要分布式协调，是单体和微服务的默认方案：
+
+```go
+ids := idresource.NewUUIDv7("business-id")
+application, err := app.NewApplication(ctx, &cfg.Application, logger,
+	app.WithResource(ids),
+)
+repository := NewRepository(ids)
+```
+
+Snowflake 使用显式、不可变的位布局。单体可以用 `snowflake.StaticNode(0)`；微服务必须注入能保证节点号唯一、续租失败即关闭 `Lost()` 的租约适配器。静态节点号本身不代表自动高可用。
 
 配置入口推荐使用 `config.NewRoot[T]`。它会扫描业务聚合配置中实现 `FlagProvider` 的模块，注册 Cobra flags，并按以下优先级合并：
 

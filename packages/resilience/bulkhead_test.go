@@ -31,7 +31,7 @@ func TestBulkheadExecuteRecoversPanicAndResetsRunning(t *testing.T) {
 
 func TestBulkheadExecuteAfterCloseReturnsClosedError(t *testing.T) {
 	bh := NewBulkhead(BulkheadConfig{Name: "closed-test"})
-	bh.(*bulkheadImpl).Close()
+	bh.Close()
 
 	err := bh.Execute(context.Background(), func() error { return nil })
 	if !errors.Is(err, ErrBulkheadClosed) {
@@ -43,10 +43,9 @@ func TestBulkheadCloseUnblocksWaitingExecute(t *testing.T) {
 	bh := NewBulkhead(BulkheadConfig{
 		Name:               "close-test",
 		MaxConcurrentCalls: 1,
-		QueueSize:          0,
+		QueueSize:          1,
 		WaitTimeout:        time.Second,
 	})
-	impl := bh.(*bulkheadImpl)
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -84,7 +83,7 @@ func TestBulkheadCloseUnblocksWaitingExecute(t *testing.T) {
 		t.Fatal("second call did not start waiting")
 	}
 
-	impl.Close()
+	bh.Close()
 	close(release)
 
 	select {
@@ -109,6 +108,79 @@ func TestBulkheadCloseUnblocksWaitingExecute(t *testing.T) {
 
 	if got := bh.Running(); got != 0 {
 		t.Fatalf("Running() = %d, want 0", got)
+	}
+}
+
+func TestBulkheadZeroQueueRejectsImmediately(t *testing.T) {
+	bh := NewBulkhead(BulkheadConfig{
+		Name:               "zero-queue",
+		MaxConcurrentCalls: 1,
+		QueueSize:          0,
+		WaitTimeout:        time.Second,
+	})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- bh.Execute(context.Background(), func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+
+	start := time.Now()
+	err := bh.Execute(context.Background(), func() error { return nil })
+	if !errors.Is(err, ErrBulkheadFull) {
+		t.Fatalf("Execute() error = %v, want ErrBulkheadFull", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 50*time.Millisecond {
+		t.Fatalf("full bulkhead blocked for %s", elapsed)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBulkheadFullQueueRejectsAdditionalWaiter(t *testing.T) {
+	bh := NewBulkhead(BulkheadConfig{
+		Name:               "full-queue",
+		MaxConcurrentCalls: 1,
+		QueueSize:          1,
+		WaitTimeout:        time.Second,
+	})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = bh.Execute(context.Background(), func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+
+	waiterDone := make(chan error, 1)
+	go func() {
+		waiterDone <- bh.Execute(context.Background(), func() error { return nil })
+	}()
+	deadline := time.Now().Add(time.Second)
+	for bh.(*bulkheadImpl).Waiting() != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := bh.(*bulkheadImpl).Waiting(); got != 1 {
+		t.Fatalf("Waiting() = %d, want 1", got)
+	}
+
+	err := bh.Execute(context.Background(), func() error { return nil })
+	if !errors.Is(err, ErrBulkheadFull) {
+		t.Fatalf("Execute() error = %v, want ErrBulkheadFull", err)
+	}
+	close(release)
+	if err := <-waiterDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

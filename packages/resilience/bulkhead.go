@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wplbyx/modular/packages/errs"
@@ -47,13 +48,13 @@ var DefaultBulkheadConfig = BulkheadConfig{
 type bulkheadImpl struct {
 	config BulkheadConfig
 
-	mutex     sync.RWMutex
-	running   int
-	waiting   int
-	released  chan struct{}
+	running   atomic.Int64
+	waiting   atomic.Int64
+	slots     chan struct{}
+	queue     chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
-	closed    bool
+	closed    atomic.Bool
 }
 
 // NewBulkhead 创建一个新的隔板
@@ -73,9 +74,10 @@ func NewBulkhead(config BulkheadConfig) Bulkhead {
 	}
 
 	b := &bulkheadImpl{
-		config:   config,
-		released: make(chan struct{}, 1),
-		done:     make(chan struct{}),
+		config: config,
+		slots:  make(chan struct{}, config.MaxConcurrentCalls),
+		queue:  make(chan struct{}, config.QueueSize),
+		done:   make(chan struct{}),
 	}
 
 	return b
@@ -88,13 +90,17 @@ func (b *bulkheadImpl) Name() string {
 
 // Running 返回当前运行中的请求数
 func (b *bulkheadImpl) Running() int {
-	b.mutex.RLock()
-	defer b.mutex.RUnlock()
-	return b.running
+	return int(b.running.Load())
 }
 
 // Execute 在隔板内执行函数
 func (b *bulkheadImpl) Execute(ctx context.Context, fn func() error) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if fn == nil {
+		return fmt.Errorf("bulkhead function is nil")
+	}
 	if err := b.acquire(ctx); err != nil {
 		return err
 	}
@@ -115,96 +121,66 @@ func (b *bulkheadImpl) Execute(ctx context.Context, fn func() error) (err error)
 // Close 关闭隔板
 func (b *bulkheadImpl) Close() {
 	b.closeOnce.Do(func() {
-		b.mutex.Lock()
-		b.closed = true
+		b.closed.Store(true)
 		close(b.done)
-		b.mutex.Unlock()
-		b.notifyReleased()
 	})
 }
 
 func (b *bulkheadImpl) acquire(ctx context.Context) error {
-	timeout := b.config.WaitTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		if waitTime := time.Until(deadline); waitTime < timeout {
-			timeout = waitTime
+	if b.closed.Load() {
+		return b.closedError()
+	}
+
+	select {
+	case b.slots <- struct{}{}:
+		b.running.Add(1)
+		if b.closed.Load() {
+			b.running.Add(-1)
+			<-b.slots
+			return b.closedError()
 		}
-	}
-	if timeout <= 0 {
-		timeout = b.config.WaitTimeout
+		return nil
+	default:
 	}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	queued := false
+	select {
+	case b.queue <- struct{}{}:
+		b.waiting.Add(1)
+	default:
+		return b.fullError(ctx, "queue full")
+	}
 	defer func() {
-		if queued {
-			b.mutex.Lock()
-			b.waiting--
-			b.mutex.Unlock()
-		}
+		b.waiting.Add(-1)
+		<-b.queue
 	}()
 
-	for {
-		b.mutex.Lock()
-		if b.closed {
-			b.mutex.Unlock()
+	timer := time.NewTimer(b.config.WaitTimeout)
+	defer timer.Stop()
+	select {
+	case b.slots <- struct{}{}:
+		b.running.Add(1)
+		if b.closed.Load() {
+			b.running.Add(-1)
+			<-b.slots
 			return b.closedError()
 		}
-		if b.running < b.config.MaxConcurrentCalls {
-			b.running++
-			b.mutex.Unlock()
-			return nil
-		}
-		if !queued && b.waiting < b.config.QueueSize {
-			b.waiting++
-			queued = true
-		}
-		b.mutex.Unlock()
-
-		select {
-		case <-b.released:
-			continue
-		case <-b.done:
-			return b.closedError()
-		case <-timer.C:
-			log.Info(ctx, "bulkhead queue timeout",
-				zap.String("bulkhead", b.config.Name),
-				zap.Int("running", b.Running()),
-				zap.Int("waiting", b.Waiting()),
-				zap.Int("max_concurrent", b.config.MaxConcurrentCalls),
-				zap.Int("queue_size", b.config.QueueSize),
-			)
-			return errs.TooManyRequests(
-				bulkheadFullMessage.With("name", b.config.Name),
-				errs.WithCause(ErrBulkheadFull),
-				errs.WithField("bulkhead", b.config.Name),
-			)
-		case <-ctx.Done():
-			return errs.ClientClosed(
-				bulkheadContextMessage.With("name", b.config.Name),
-				errs.WithCause(ctx.Err()),
-				errs.WithField("bulkhead", b.config.Name),
-			)
-		}
+		return nil
+	case <-b.done:
+		return b.closedError()
+	case <-timer.C:
+		return b.fullError(ctx, "queue timeout")
+	case <-ctx.Done():
+		return errs.ClientClosed(
+			bulkheadContextMessage.With("name", b.config.Name),
+			errs.WithCause(ctx.Err()),
+			errs.WithField("bulkhead", b.config.Name),
+		)
 	}
 }
 
 func (b *bulkheadImpl) release() {
-	b.mutex.Lock()
-	if b.running > 0 {
-		b.running--
-	}
-	b.mutex.Unlock()
-	b.notifyReleased()
-}
-
-func (b *bulkheadImpl) notifyReleased() {
-	select {
-	case b.released <- struct{}{}:
-	default:
-	}
+	b.running.Add(-1)
+	<-b.slots
 }
 
 func (b *bulkheadImpl) closedError() error {
@@ -216,7 +192,21 @@ func (b *bulkheadImpl) closedError() error {
 }
 
 func (b *bulkheadImpl) Waiting() int {
-	b.mutex.RLock()
-	defer b.mutex.RUnlock()
-	return b.waiting
+	return int(b.waiting.Load())
+}
+
+func (b *bulkheadImpl) fullError(ctx context.Context, cause string) error {
+	log.Info(ctx, "bulkhead rejected request",
+		zap.String("bulkhead", b.config.Name),
+		zap.String("cause", cause),
+		zap.Int("running", b.Running()),
+		zap.Int("waiting", b.Waiting()),
+		zap.Int("max_concurrent", b.config.MaxConcurrentCalls),
+		zap.Int("queue_size", b.config.QueueSize),
+	)
+	return errs.TooManyRequests(
+		bulkheadFullMessage.With("name", b.config.Name),
+		errs.WithCause(ErrBulkheadFull),
+		errs.WithField("bulkhead", b.config.Name),
+	)
 }
