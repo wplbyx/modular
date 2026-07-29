@@ -93,7 +93,7 @@ repository := NewRepository(ids)
 
 Snowflake 使用显式、不可变的位布局。单体可以用 `snowflake.StaticNode(0)`；微服务必须注入能保证节点号唯一、续租失败即关闭 `Lost()` 的租约适配器。静态节点号本身不代表自动高可用。
 
-配置入口推荐使用 `config.NewRoot[T]`。它会扫描业务聚合配置中实现 `FlagProvider` 的模块，注册 Cobra flags，并按以下优先级合并：
+配置入口推荐使用 `config.NewRootCommand[T]`。它会扫描业务聚合配置中实现 `FlagProvider` 的模块，注册 PascalCase Cobra flags，并按以下优先级合并：
 
 ```text
 显式 Cobra 配置参数 > 环境变量 > 本地文件 > 远程 KV > FlagSpec 默认值
@@ -137,8 +137,8 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	command := modularconfig.NewRoot[projectconfig.Config](modularconfig.Options[projectconfig.Config]{
-		AppName:     "user",
+	command := modularconfig.NewRootCommand[projectconfig.Config](modularconfig.CommandOptions[projectconfig.Config]{
+		Name:        "user",
 		DefaultFile: "./config/user/config.yaml",
 		EnvPrefix:   "USER",
 		Run:         run,
@@ -153,7 +153,7 @@ func main() {
 }
 
 func run(ctx context.Context, cfg *projectconfig.Config) error {
-	// cfg 已由 config.NewRoot 加载；日志固定是第二个初始化步骤。
+	// cfg 已由 config.NewRootCommand 加载；日志固定是第二个初始化步骤。
 	loggerManager, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
@@ -161,7 +161,7 @@ func run(ctx context.Context, cfg *projectconfig.Config) error {
 	restoreLogger := log.SetDefault(loggerManager.Logger())
 	defer restoreLogger()
 	defer loggerManager.Close(context.WithoutCancel(ctx))
-	policy := modulartransport.NewPolicy(cfg.Name, modulartransport.WithLogger(loggerManager.Logger()))
+	policy := modulartransport.NewPolicy(cfg.Application.Name, modulartransport.WithLogger(loggerManager.Logger()))
 
 	httpSrv, err := httpserver.NewServer(&cfg.HTTP, httpserver.WithPolicy(policy))
 	if err != nil {
@@ -173,7 +173,7 @@ func run(ctx context.Context, cfg *projectconfig.Config) error {
 		})
 	})
 
-	node := core.NewServiceNode(cfg.Name, cfg.Version, httpSrv.Transport())
+	node := core.NewServiceNode(cfg.Application.Name, cfg.Application.Version, httpSrv.Transport())
 
 	application, err := app.NewApplication(
 		ctx,
@@ -195,10 +195,10 @@ func run(ctx context.Context, cfg *projectconfig.Config) error {
 ```bash
 user --config ./config/user/config.yaml \
   --remote etcd://10.0.0.1:2379/config/user \
-  --http.port 18080
+  --HTTP.Port 18080
 ```
 
-single 拓扑的进程配置会嵌套多个 svc，此时模块参数也带 svc 前缀，例如 `--user.http.port`、`--billing.redis.host`。
+single 拓扑的进程配置会嵌套多个 svc，此时模块参数也带 svc 前缀，例如 `--User.HTTP.Port`、`--Billing.Redis.Host`。环境变量使用 `_` 表示层级，例如 `APP_STORAGE_OSS_ACCESSKEYID`；字段单词内部不插入下划线。
 
 需要注册中心时，在 `cmd` 中构造 registrar 并注入：
 
@@ -386,7 +386,7 @@ v2 脚手架把基础设施框架和业务实现分开。第一阶段由 CLI 生
 - `repository` 是基础设施实现区：`repository/app` 实现 app 层简单接口，`repository/domain` 实现 domain 层复杂端口，`repository/dto` 和 `repository/model` 按需放 DTO、持久化模型和 ORM/BSON tag。
 - `internal/` 的业务逻辑不直接依赖 `github.com/wplbyx/modular/packages/app.Application`。
 - 项目自己的 svc `Config` 聚合类型放在 `config/<svc>`，并通过 `GetConfigFlagSpecsWithPrefix` 实现 `FlagProvider`。
-- service 拓扑由 `cmd/<svc>` 使用 `NewRoot[config/<svc>.Config]`；single 拓扑由 `cmd/<project>` 使用生成的 `config/<project>.Config`，其中嵌套各 svc 配置。
+- service 拓扑由 `cmd/<svc>` 使用 `NewRootCommand[config/<svc>.Config]`；single 拓扑由 `cmd/<project>` 使用生成的 `config/<project>.Config`，其中嵌套各 svc 配置。
 - single 的 `config/<project>/config.gen.go|yaml` 是受管文件；业务配置以 `config/<svc>` 为来源，重新执行 scaffold/resource 命令会刷新进程聚合配置。
 - `cmd` 可以依赖 `github.com/wplbyx/modular/packages/*`，负责把资源、endpoint 和业务实现接起来。
 - 未实现的契约必须显式返回 Unimplemented 并携带 `modular:contract-unimplemented`，不能返回空成功响应。

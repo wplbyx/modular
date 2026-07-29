@@ -1,10 +1,10 @@
-application:
+Application:
   Name: "custom-modular-monolith"
   Mode: "prod"
   Version: "v1.0.0"
   ShutdownTimeout: "10s"
 
-logging:
+Logging:
   Level: "info"
   Output:
     - "console"
@@ -19,14 +19,14 @@ logging:
     Endpoint: ""
     Insecure: true
 
-database:
+Database:
   DSN: "postgres://user:password@db1.example.com:5432/mydb?sslmode=require"
   MaxOpenConn: 50
   MaxIdleConn: 10
   ConnMaxLifetime: "1h"
   ConnMaxIdleTime: "30m"
 
-redis:
+Redis:
   Host: "127.0.0.1"
   Port: 6379
   Username: ""
@@ -41,7 +41,7 @@ redis:
   MinRetryBackoff: 8
   MaxRetryBackoff: 512
 
-http:
+HTTP:
   Host: "0.0.0.0"
   Port: 18080
   ReadHeaderTimeout: "5s"
@@ -53,7 +53,7 @@ http:
   TLSKeyFile: ""
   TLSCertFile: ""
 
-grpc:
+GRPC:
   Host: "0.0.0.0"
   Port: 28080
   Timeout: "15s"
@@ -62,7 +62,7 @@ grpc:
   TLSKeyFile: ""
   TLSCertFile: ""
 
-storage:
+Storage:
   Type: "disk"
   PublicBaseURL: "http://localhost:18080/files"
   Disk:
@@ -81,23 +81,23 @@ storage:
     Timeout: "60s"
     MaxRetries: 3
 
-kafka:
-  brokers:
+Kafka:
+  Brokers:
     - "kafka1.example.com:9092"
     - "kafka2.example.com:9092"
-  producer:
-    topic: "order-events"
-    required_ack: "all"
-    compression: "snappy"
-    batch_size: 200
-    batch_timeout: "20ms"
-    balancer: "hash"
-  consumer:
-    topic: "order-events"
-    group_id: "order-service-group"
-    min_bytes: 10000
-    max_bytes: 10000000
-    start_offset: "newest"
-    commit_interval: 0
-    max_retries: 5
-    dlq_topic: "order-events-dlq"
+  Producer:
+    Topic: "order-events"
+    RequiredAck: "all"
+    Compression: "snappy"
+    BatchSize: 200
+    BatchTimeout: "20ms"
+    Balancer: "hash"
+  Consumer:
+    Topic: "order-events"
+    GroupID: "order-service-group"
+    MinBytes: 10000
+    MaxBytes: 10000000
+    StartOffset: "newest"
+    CommitInterval: 0
+    MaxRetries: 5
+    DLQTopic: "order-events-dlq"

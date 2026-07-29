@@ -112,6 +112,28 @@ class ModularCliTest(unittest.TestCase):
         self.assertTrue((project / ".modular/tool/assets/templates.json").is_file())
         self.assertTrue((project / ".modular/tool/references/commands.md").is_file())
 
+    def test_generated_runtime_carries_managed_tomli(self) -> None:
+        out = self.root / "vendored-out"
+        self.run_cli(
+            "init",
+            "vendored",
+            "--topology",
+            "single",
+            "--out",
+            str(out),
+        )
+        project = out / "vendored"
+
+        self.assertTrue((project / ".modular/tool/_vendor/tomli/__init__.py").is_file())
+        self.assertTrue((project / ".modular/tool/_vendor/tomli/LICENSE").is_file())
+
+        manifest = json.loads((project / ".modular/manifest.json").read_text(encoding="utf-8"))
+        for path in [
+            ".modular/tool/_vendor/tomli/__init__.py",
+            ".modular/tool/_vendor/tomli/LICENSE",
+        ]:
+            self.assertEqual(manifest["files"][path]["owner"], "managed")
+
     def test_init_uses_concrete_remote_version_and_no_local_replace(self) -> None:
         project = self.init_project(version="v0.2.7")
         go_mod = (project / "go.mod").read_text(encoding="utf-8")
@@ -146,6 +168,27 @@ class ModularCliTest(unittest.TestCase):
         self.assertFalse(any((project / "proto").rglob("*.proto")))
         self.assertFalse((project / "internal/user").exists())
         self.assertFalse((project / "internal/platform/wiring/framework.gen.go").read_text(encoding="utf-8").find("httpserver") >= 0)
+
+    def test_generated_config_uses_named_pascal_case_application(self) -> None:
+        project = self.init_project("namedconfig")
+        self.project_cli(project, "service", "add", "user", "--transport", "http")
+
+        generated = (project / "config/user/config.gen.go").read_text(encoding="utf-8")
+        config_yaml = (project / "config/user/config.yaml").read_text(encoding="utf-8")
+        process_yaml = (project / "config/namedconfig/config.yaml").read_text(encoding="utf-8")
+        command = (project / "cmd/namedconfig/framework.gen.go").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'Application configitem.Application `mapstructure:"Application"`',
+            generated,
+        )
+        self.assertNotIn('mapstructure:"application,squash"', generated)
+        self.assertIn("Application:\n", config_yaml)
+        self.assertIn("HTTP:\n", config_yaml)
+        self.assertIn("User:\n", process_yaml)
+        self.assertIn("modularconfig.NewRootCommand", command)
+        self.assertIn("cfg.Application.Name", command)
+        self.assertIn("cfg.Application.Version", command)
 
     def test_project_local_sync_is_idempotent_and_preserves_scaffold_once_files(self) -> None:
         project = self.init_project()
@@ -276,7 +319,7 @@ class ModularCliTest(unittest.TestCase):
         bootstrap = [
             cmd.index("newLoggerManager(ctx, &cfg.Logging)"),
             cmd.index("modularlog.SetDefault(loggerManager.Logger())"),
-            cmd.index("newTransportPolicy(cfg.Name, loggerManager.Logger())"),
+            cmd.index("newTransportPolicy(cfg.Application.Name, loggerManager.Logger())"),
             cmd.index("app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)"),
         ]
         self.assertEqual(bootstrap, sorted(bootstrap))
@@ -411,6 +454,20 @@ class ModularCliTest(unittest.TestCase):
 
 
 class ModularSkillContentTest(unittest.TestCase):
+    def test_cli_uses_one_vendored_toml_parser(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("from _vendor import tomli", source)
+        self.assertNotIn("import tomllib", source)
+
+    def test_python_sources_avoid_apis_newer_than_python38(self) -> None:
+        cli_source = SCRIPT.read_text(encoding="utf-8")
+        eval_source = (SKILL_ROOT / "evals/run_scaffold_benchmark.py").read_text(encoding="utf-8")
+
+        self.assertNotIn(".removeprefix(", cli_source)
+        self.assertNotIn(".write_text(content, encoding=\"utf-8\", newline=", cli_source)
+        self.assertNotIn("strict=True", eval_source)
+
     def test_skill_router_references_exist_and_legacy_cli_is_not_documented(self) -> None:
         skill = SKILL_ROOT / "SKILL.md"
         text = skill.read_text(encoding="utf-8")

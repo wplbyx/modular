@@ -2,8 +2,6 @@ package configitem
 
 import (
 	"time"
-
-	"github.com/wplbyx/modular/packages/config"
 )
 
 //go:generate gomodifytags -file $GOFILE -add-tags mapstructure -remove-tags json,yaml,default -transform pascalcase -all -w --override --sort --quiet
@@ -27,21 +25,21 @@ type Redis struct {
 }
 
 // Flags 返回 Redis 配置的命令行元数据。
-func (Redis) Flags(prefix string) []config.FlagSpec {
-	return []config.FlagSpec{
-		{Name: prefix + ".urls", Default: []string(nil), Usage: "Redis连接URL列表"},
-		{Name: prefix + ".host", Default: "127.0.0.1", Usage: "Redis主机"},
-		{Name: prefix + ".port", Default: 6379, Usage: "Redis端口"},
-		{Name: prefix + ".username", Default: "", Usage: "Redis用户名"},
-		{Name: prefix + ".password", Default: "", Usage: "Redis密码"},
-		{Name: prefix + ".database", Default: 0, Usage: "Redis数据库索引"},
-		{Name: prefix + ".poolsize", Default: 10, Usage: "Redis连接池大小"},
-		{Name: prefix + ".minidleconn", Default: 5, Usage: "Redis最小空闲连接数"},
-		{Name: prefix + ".dialtimeout", Default: 5 * time.Second, Usage: "Redis连接超时"},
-		{Name: prefix + ".readtimeout", Default: 3 * time.Second, Usage: "Redis读取超时"},
-		{Name: prefix + ".writetimeout", Default: 3 * time.Second, Usage: "Redis写入超时"},
-		{Name: prefix + ".maxretries", Default: 3, Usage: "Redis操作失败重试次数"},
-		{Name: prefix + ".minretrybackoff", Default: uint32(8), Usage: "Redis重试最小时间间隔"},
-		{Name: prefix + ".maxretrybackoff", Default: uint32(512), Usage: "Redis重试最大时间间隔"},
+func (Redis) Flags(prefix string) []FlagSpec {
+	return []FlagSpec{
+		{Name: flagName(prefix, "Urls"), Default: []string(nil), Usage: "Redis连接URL列表"},
+		{Name: flagName(prefix, "Host"), Default: "127.0.0.1", Usage: "Redis主机"},
+		{Name: flagName(prefix, "Port"), Default: 6379, Usage: "Redis端口"},
+		{Name: flagName(prefix, "Username"), Default: "", Usage: "Redis用户名"},
+		{Name: flagName(prefix, "Password"), Default: "", Usage: "Redis密码"},
+		{Name: flagName(prefix, "Database"), Default: 0, Usage: "Redis数据库索引"},
+		{Name: flagName(prefix, "PoolSize"), Default: 10, Usage: "Redis连接池大小"},
+		{Name: flagName(prefix, "MinIdleConn"), Default: 5, Usage: "Redis最小空闲连接数"},
+		{Name: flagName(prefix, "DialTimeout"), Default: 5 * time.Second, Usage: "Redis连接超时"},
+		{Name: flagName(prefix, "ReadTimeout"), Default: 3 * time.Second, Usage: "Redis读取超时"},
+		{Name: flagName(prefix, "WriteTimeout"), Default: 3 * time.Second, Usage: "Redis写入超时"},
+		{Name: flagName(prefix, "MaxRetries"), Default: 3, Usage: "Redis操作失败重试次数"},
+		{Name: flagName(prefix, "MinRetryBackoff"), Default: uint32(8), Usage: "Redis重试最小时间间隔"},
+		{Name: flagName(prefix, "MaxRetryBackoff"), Default: uint32(512), Usage: "Redis重试最大时间间隔"},
 	}
 }

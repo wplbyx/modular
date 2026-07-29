@@ -175,7 +175,7 @@ def common_facts(project: Path) -> dict[str, bool | int | str]:
     bootstrap_fragments = [
         "newLoggerManager(ctx, &cfg.Logging)",
         "modularlog.SetDefault(loggerManager.Logger())",
-        "newTransportPolicy(cfg.Name, loggerManager.Logger())",
+        "newTransportPolicy(cfg.Application.Name, loggerManager.Logger())",
         "app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)",
     ]
     positions = [framework_text.find(fragment) for fragment in bootstrap_fragments]
@@ -552,13 +552,15 @@ def verdicts(scenario: Scenario, facts: dict[str, bool | int | str]) -> list[dic
             completed and not bool(facts["has_domain_shell"]) and not bool(facts["has_repository_shell"]) and bool(facts["sync_idempotent"]),
             completed and bool(facts["strict_doctor"]) and bool(facts["build_passed"]),
         ]
+    if len(scenario.expectations) != len(checks):
+        raise ValueError("scenario expectations and checks must have equal lengths")
     return [
         {
             "text": text,
             "passed": passed,
             "evidence": f"facts={json.dumps(facts, sort_keys=True)}",
         }
-        for text, passed in zip(scenario.expectations, checks, strict=True)
+        for text, passed in zip(scenario.expectations, checks)
     ]
 
 

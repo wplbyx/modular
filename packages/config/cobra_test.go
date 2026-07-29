@@ -13,8 +13,8 @@ import (
 )
 
 type nestedServiceConfig struct {
-	HTTP  configitem.HTTP  `mapstructure:"http"`
-	Redis configitem.Redis `mapstructure:"redis"`
+	HTTP  configitem.HTTP  `mapstructure:"HTTP"`
+	Redis configitem.Redis `mapstructure:"Redis"`
 }
 
 func (nestedServiceConfig) Flags(prefix string) []modularconfig.FlagSpec {
@@ -22,15 +22,15 @@ func (nestedServiceConfig) Flags(prefix string) []modularconfig.FlagSpec {
 }
 
 type nestedRuntimeConfig struct {
-	User nestedServiceConfig `mapstructure:"user"`
+	User nestedServiceConfig `mapstructure:"User"`
 }
 
 func TestNewRootLoadsConfigFileAndFlagOverride(t *testing.T) {
 	file := writeCobraTestConfig(t, 18080)
 	var got *CustomConfig
 
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName:     "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:        "test-app",
 		DefaultFile: file,
 		EnvPrefix:   "TESTAPP",
 		Run: func(_ context.Context, cfg *CustomConfig) error {
@@ -38,7 +38,7 @@ func TestNewRootLoadsConfigFileAndFlagOverride(t *testing.T) {
 			return nil
 		},
 	})
-	cmd.SetArgs([]string{"--http.port", "19090"})
+	cmd.SetArgs([]string{"--HTTP.Port", "19090"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -54,19 +54,69 @@ func TestNewRootLoadsConfigFileAndFlagOverride(t *testing.T) {
 	}
 }
 
-func TestNewRootAliasOverridesConfigFile(t *testing.T) {
+func TestNewRootUsesPascalCaseConfigFlags(t *testing.T) {
 	file := writeCobraTestConfig(t, 18080)
 	var got *CustomConfig
 
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName:     "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:        "test-app",
 		DefaultFile: file,
 		Run: func(_ context.Context, cfg *CustomConfig) error {
 			got = cfg
 			return nil
 		},
 	})
-	cmd.SetArgs([]string{"--port", "19090"})
+	cmd.SetArgs([]string{"--HTTP.Port", "19090"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got == nil || got.HTTP.Port != 19090 {
+		t.Fatalf("config = %#v", got)
+	}
+	if cmd.Flags().Lookup("http.port") != nil {
+		t.Fatal("legacy lowercase flag http.port must not be registered")
+	}
+}
+
+func TestNewRootStrictDecodeRejectsUnknownKeys(t *testing.T) {
+	file := writeCobraTestConfig(t, 18080)
+	body, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if err := os.WriteFile(file, append(body, []byte("Unknown: rejected\n")...), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:         "test-app",
+		DefaultFile:  file,
+		StrictDecode: true,
+		Run: func(_ context.Context, _ *CustomConfig) error {
+			return nil
+		},
+	})
+
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unknown") {
+		t.Fatalf("Execute() error = %v, want unknown key error", err)
+	}
+}
+
+func TestNewRootAliasOverridesConfigFile(t *testing.T) {
+	file := writeCobraTestConfig(t, 18080)
+	var got *CustomConfig
+
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:        "test-app",
+		DefaultFile: file,
+		Run: func(_ context.Context, cfg *CustomConfig) error {
+			got = cfg
+			return nil
+		},
+	})
+	cmd.SetArgs([]string{"--Port", "19090"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -80,15 +130,15 @@ func TestNewRootFullPathFlagWinsOverAlias(t *testing.T) {
 	file := writeCobraTestConfig(t, 18080)
 	var got *CustomConfig
 
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName:     "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:        "test-app",
 		DefaultFile: file,
 		Run: func(_ context.Context, cfg *CustomConfig) error {
 			got = cfg
 			return nil
 		},
 	})
-	cmd.SetArgs([]string{"--port", "19090", "--http.port", "20080"})
+	cmd.SetArgs([]string{"--Port", "19090", "--HTTP.Port", "20080"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -103,8 +153,8 @@ func TestNewRootEnvOverridesConfigFile(t *testing.T) {
 	t.Setenv("TESTAPP_HTTP_PORT", "19090")
 	var got *CustomConfig
 
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName:     "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:        "test-app",
 		DefaultFile: file,
 		EnvPrefix:   "TESTAPP",
 		Run: func(_ context.Context, cfg *CustomConfig) error {
@@ -127,8 +177,8 @@ func TestNewRootFlagOverridesEnv(t *testing.T) {
 	t.Setenv("TESTAPP_HTTP_PORT", "19090")
 	var got *CustomConfig
 
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName:     "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:        "test-app",
 		DefaultFile: file,
 		EnvPrefix:   "TESTAPP",
 		Run: func(_ context.Context, cfg *CustomConfig) error {
@@ -136,7 +186,7 @@ func TestNewRootFlagOverridesEnv(t *testing.T) {
 			return nil
 		},
 	})
-	cmd.SetArgs([]string{"--http.port", "20080"})
+	cmd.SetArgs([]string{"--HTTP.Port", "20080"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -147,24 +197,24 @@ func TestNewRootFlagOverridesEnv(t *testing.T) {
 }
 
 func TestNewRootLoadsRemoteFlag(t *testing.T) {
-	fake := &fakeRemoteConfig{data: []byte(`application:
+	fake := &fakeRemoteConfig{data: []byte(`Application:
   Name: remote-app
   Mode: prod
   Version: v2.0.0
-http:
+HTTP:
   Host: 127.0.0.1
   Port: 18080
-database:
+Database:
   DSN: postgres://localhost/app
-redis:
+Redis:
   Host: remote-redis
   Port: 6379
 `)}
 	installFakeRemoteConfig(t, fake)
 	var got *CustomConfig
 
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName: "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name: "test-app",
 		Run: func(_ context.Context, cfg *CustomConfig) error {
 			got = cfg
 			return nil
@@ -181,16 +231,16 @@ redis:
 }
 
 func TestNewRootPrecedenceFlagEnvFileRemote(t *testing.T) {
-	fake := &fakeRemoteConfig{data: []byte(`application:
+	fake := &fakeRemoteConfig{data: []byte(`Application:
   Name: remote-app
   Mode: prod
   Version: v2.0.0
-http:
+HTTP:
   Host: remote-host
   Port: 17070
-database:
+Database:
   DSN: app:app@tcp(localhost:3306)/app
-redis:
+Redis:
   Host: remote-redis
   Port: 6379
 `)}
@@ -199,8 +249,8 @@ redis:
 	t.Setenv("TESTAPP_HTTP_PORT", "19090")
 	var got *CustomConfig
 
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName:       "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:          "test-app",
 		DefaultFile:   file,
 		DefaultRemote: "consul://127.0.0.1:8500/config/app",
 		EnvPrefix:     "TESTAPP",
@@ -209,7 +259,7 @@ redis:
 			return nil
 		},
 	})
-	cmd.SetArgs([]string{"--http.port", "20080"})
+	cmd.SetArgs([]string{"--HTTP.Port", "20080"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -228,44 +278,44 @@ redis:
 func TestConfigFlagSpecsUsesCustomConfigModules(t *testing.T) {
 	specs := modularconfig.GetConfigFlagSpecs[CustomConfig]()
 
-	if !hasFlagSpec(specs, "http.port") {
-		t.Fatalf("http.port spec missing")
+	if !hasFlagSpec(specs, "HTTP.Port") {
+		t.Fatalf("HTTP.Port spec missing")
 	}
-	if !hasFlagSpec(specs, "redis.host") {
-		t.Fatalf("redis.host spec missing")
+	if !hasFlagSpec(specs, "Redis.Host") {
+		t.Fatalf("Redis.Host spec missing")
 	}
-	if !hasFlagSpec(specs, "database.dsn") {
-		t.Fatalf("database.dsn spec missing")
+	if !hasFlagSpec(specs, "Database.DSN") {
+		t.Fatalf("Database.DSN spec missing")
 	}
-	if hasFlagSpec(specs, "storage.type") {
-		t.Fatalf("storage.type spec should not be registered")
+	if hasFlagSpec(specs, "Storage.Type") {
+		t.Fatalf("Storage.Type spec should not be registered")
 	}
 }
 
 func TestConfigFlagSpecsSupportsNestedConfigPrefix(t *testing.T) {
 	specs := modularconfig.GetConfigFlagSpecs[nestedRuntimeConfig]()
 
-	if !hasFlagSpec(specs, "user.http.port") {
-		t.Fatalf("user.http.port spec missing")
+	if !hasFlagSpec(specs, "User.HTTP.Port") {
+		t.Fatalf("User.HTTP.Port spec missing")
 	}
-	if !hasFlagSpec(specs, "user.redis.host") {
-		t.Fatalf("user.redis.host spec missing")
+	if !hasFlagSpec(specs, "User.Redis.Host") {
+		t.Fatalf("User.Redis.Host spec missing")
 	}
-	if hasFlagSpec(specs, "http.port") {
-		t.Fatalf("unprefixed http.port spec should not be registered")
+	if hasFlagSpec(specs, "HTTP.Port") {
+		t.Fatalf("unprefixed HTTP.Port spec should not be registered")
 	}
-	if !hasFlagAlias(specs, "user.http.port", "user.port") {
-		t.Fatalf("user.http.port alias user.port missing")
+	if !hasFlagAlias(specs, "User.HTTP.Port", "User.Port") {
+		t.Fatalf("User.HTTP.Port alias User.Port missing")
 	}
-	if hasAnyFlagAlias(specs, "port") {
-		t.Fatalf("bare alias port should not be registered for nested config")
+	if hasAnyFlagAlias(specs, "Port") {
+		t.Fatalf("bare alias Port should not be registered for nested config")
 	}
 }
 
 func TestNewRootExplicitMissingConfigReturnsError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName:     "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:        "test-app",
 		DefaultFile: missing,
 		Run: func(_ context.Context, _ *CustomConfig) error {
 			return nil
@@ -283,8 +333,8 @@ func TestNewRootMissingDefaultConfigIsIgnored(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
 	var got *CustomConfig
 
-	cmd := modularconfig.NewRoot[CustomConfig](modularconfig.Options[CustomConfig]{
-		AppName:     "test-app",
+	cmd := modularconfig.NewRootCommand[CustomConfig](modularconfig.CommandOptions[CustomConfig]{
+		Name:        "test-app",
 		DefaultFile: missing,
 		Run: func(_ context.Context, cfg *CustomConfig) error {
 			got = cfg
@@ -292,8 +342,8 @@ func TestNewRootMissingDefaultConfigIsIgnored(t *testing.T) {
 		},
 	})
 	cmd.SetArgs([]string{
-		"--application.name", "test-app",
-		"--database.dsn", "postgres",
+		"--Application.Name", "test-app",
+		"--Database.DSN", "postgres",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -309,17 +359,17 @@ func writeCobraTestConfig(t *testing.T, port int) string {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "app.yaml")
-	body := []byte(`application:
+	body := []byte(`Application:
   Name: cobra-test
   Mode: prod
   Version: v1.0.0
-http:
+HTTP:
   Host: 127.0.0.1
   Port: ` + itoa(port) + `
-redis:
+Redis:
   Host: 127.0.0.1
   Port: 6379
-database:
+Database:
   DSN: postgres://localhost/app
 `)
 	if err := os.WriteFile(file, body, 0o600); err != nil {

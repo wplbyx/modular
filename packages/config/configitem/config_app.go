@@ -4,8 +4,6 @@ package configitem
 
 import (
 	"time"
-
-	"github.com/wplbyx/modular/packages/config"
 )
 
 // Application 应用基础配置
@@ -17,11 +15,11 @@ type Application struct {
 }
 
 // Flags 返回应用基础配置的命令行元数据。
-func (Application) Flags(prefix string) []config.FlagSpec {
-	return []config.FlagSpec{
-		{Name: prefix + ".name", Default: "", Usage: "应用名称"},
-		{Name: prefix + ".mode", Aliases: []string{"mode"}, Default: "dev", Usage: "运行模式"},
-		{Name: prefix + ".version", Default: "v0.1.0", Usage: "应用版本"},
-		{Name: prefix + ".shutdowntimeout", Default: 10 * time.Second, Usage: "优雅关闭超时"},
+func (Application) Flags(prefix string) []FlagSpec {
+	return []FlagSpec{
+		{Name: flagName(prefix, "Name"), Default: "", Usage: "应用名称"},
+		{Name: flagName(prefix, "Mode"), Aliases: []string{"Mode"}, Default: "dev", Usage: "运行模式"},
+		{Name: flagName(prefix, "Version"), Default: "v0.1.0", Usage: "应用版本"},
+		{Name: flagName(prefix, "ShutdownTimeout"), Default: 10 * time.Second, Usage: "优雅关闭超时"},
 	}
 }

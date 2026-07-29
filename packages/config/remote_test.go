@@ -77,11 +77,11 @@ func captureStandardLog(t *testing.T) *bytes.Buffer {
 }
 
 func TestWithRemoteURLMapsEtcdToEtcd3(t *testing.T) {
-	fake := &fakeRemoteConfig{data: []byte("name: remote-etcd\n")}
+	fake := &fakeRemoteConfig{data: []byte("Name: remote-etcd\n")}
 	installFakeRemoteConfig(t, fake)
 
 	var cfg struct {
-		Name string `mapstructure:"name"`
+		Name string `mapstructure:"Name"`
 	}
 	if err := modularconfig.InitConfigure(
 		&cfg,
@@ -105,11 +105,11 @@ func TestWithRemoteURLMapsEtcdToEtcd3(t *testing.T) {
 }
 
 func TestWithRemoteURLLoadsConsulJSON(t *testing.T) {
-	fake := &fakeRemoteConfig{data: []byte(`{"name":"remote-consul"}`)}
+	fake := &fakeRemoteConfig{data: []byte(`{"Name":"remote-consul"}`)}
 	installFakeRemoteConfig(t, fake)
 
 	var cfg struct {
-		Name string `mapstructure:"name"`
+		Name string `mapstructure:"Name"`
 	}
 	if err := modularconfig.InitConfigure(
 		&cfg,
@@ -127,11 +127,11 @@ func TestWithRemoteURLLoadsConsulJSON(t *testing.T) {
 }
 
 func TestWithRemoteProviderDefaultsToYAML(t *testing.T) {
-	fake := &fakeRemoteConfig{data: []byte("name: direct-provider\n")}
+	fake := &fakeRemoteConfig{data: []byte("Name: direct-provider\n")}
 	installFakeRemoteConfig(t, fake)
 
 	var cfg struct {
-		Name string `mapstructure:"name"`
+		Name string `mapstructure:"Name"`
 	}
 	if err := modularconfig.InitConfigure(
 		&cfg,
@@ -172,22 +172,22 @@ func TestWithRemoteURLRejectsInvalidInput(t *testing.T) {
 }
 
 func TestConfigSourcesLocalOverridesRemoteAndRemoteFillsMissingValues(t *testing.T) {
-	fake := &fakeRemoteConfig{data: []byte(`name: remote
-port: 17070
-remoteOnly: loaded
-unknown: ignored
+	fake := &fakeRemoteConfig{data: []byte(`Name: remote
+Port: 17070
+RemoteOnly: loaded
+Unknown: ignored
 `)}
 	installFakeRemoteConfig(t, fake)
 
 	configFile := filepath.Join(t.TempDir(), "app.yaml")
-	if err := os.WriteFile(configFile, []byte("name: local\n"), 0o600); err != nil {
+	if err := os.WriteFile(configFile, []byte("Name: local\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
 	var cfg struct {
-		Name       string `mapstructure:"name"`
-		Port       int    `mapstructure:"port"`
-		RemoteOnly string `mapstructure:"remoteOnly"`
+		Name       string `mapstructure:"Name"`
+		Port       int    `mapstructure:"Port"`
+		RemoteOnly string `mapstructure:"RemoteOnly"`
 	}
 	if err := modularconfig.InitConfigure(
 		&cfg,
@@ -208,12 +208,12 @@ func TestConfigSourcesRemoteFailureFallsBackToLocal(t *testing.T) {
 	logOutput := captureStandardLog(t)
 
 	configFile := filepath.Join(t.TempDir(), "app.yaml")
-	if err := os.WriteFile(configFile, []byte("name: local\n"), 0o600); err != nil {
+	if err := os.WriteFile(configFile, []byte("Name: local\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
 	var cfg struct {
-		Name string `mapstructure:"name"`
+		Name string `mapstructure:"Name"`
 	}
 	if err := modularconfig.InitConfigure(
 		&cfg,
@@ -232,18 +232,18 @@ func TestConfigSourcesRemoteFailureFallsBackToLocal(t *testing.T) {
 }
 
 func TestConfigSourcesMalformedRemoteFallsBackWithoutPartialValues(t *testing.T) {
-	fake := &fakeRemoteConfig{data: []byte("name: remote\nport: [\n")}
+	fake := &fakeRemoteConfig{data: []byte("Name: remote\nPort: [\n")}
 	installFakeRemoteConfig(t, fake)
 	captureStandardLog(t)
 
 	configFile := filepath.Join(t.TempDir(), "app.yaml")
-	if err := os.WriteFile(configFile, []byte("name: local\n"), 0o600); err != nil {
+	if err := os.WriteFile(configFile, []byte("Name: local\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
 	var cfg struct {
-		Name string `mapstructure:"name"`
-		Port int    `mapstructure:"port"`
+		Name string `mapstructure:"Name"`
+		Port int    `mapstructure:"Port"`
 	}
 	if err := modularconfig.InitConfigure(
 		&cfg,
@@ -289,17 +289,17 @@ func TestConfigSourcesMissingDefaultFileDoesNotMaskRemoteFailure(t *testing.T) {
 }
 
 func TestConfigSourcesFormatMismatchSkipsRemote(t *testing.T) {
-	fake := &fakeRemoteConfig{data: []byte(`{"name":"remote"}`)}
+	fake := &fakeRemoteConfig{data: []byte(`{"Name":"remote"}`)}
 	installFakeRemoteConfig(t, fake)
 	logOutput := captureStandardLog(t)
 
 	configFile := filepath.Join(t.TempDir(), "app.yaml")
-	if err := os.WriteFile(configFile, []byte("name: local\n"), 0o600); err != nil {
+	if err := os.WriteFile(configFile, []byte("Name: local\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
 	var cfg struct {
-		Name string `mapstructure:"name"`
+		Name string `mapstructure:"Name"`
 	}
 	if err := modularconfig.InitConfigure(
 		&cfg,

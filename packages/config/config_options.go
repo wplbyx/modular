@@ -34,6 +34,15 @@ type remoteConfigSource struct {
 // ConfigureLoaderOption 定义配置选项的函数类型
 type ConfigureLoaderOption func(*ConfigureLoader) error
 
+// WithStrictDecode 启用严格解码，配置源中目标结构体不存在的键会返回错误。
+// 默认保持宽松模式，未知键会被过滤并由最终结构校验判断配置是否完整。
+func WithStrictDecode() ConfigureLoaderOption {
+	return func(loader *ConfigureLoader) error {
+		loader.strictDecode = true
+		return nil
+	}
+}
+
 // WithCommand 根据 FlagSpec 将自动注册的 Cobra flags 绑定到对应的 Viper 配置键。
 //
 // 每个 FlagSpec 先绑定规范参数，再检查 aliases。如果规范参数被显式设置，所有 aliases
@@ -113,9 +122,11 @@ func WithEnvPrefix(prefix string, replaces ...*strings.Replacer) ConfigureLoader
 	return func(c *ConfigureLoader) error {
 		// 设置读取环境变量相关配置
 		c.v.SetEnvPrefix(prefix)
+		replacer := strings.NewReplacer(".", "_")
 		if len(replaces) > 0 {
-			c.v.SetEnvKeyReplacer(replaces[0])
+			replacer = replaces[0]
 		}
+		c.v.SetEnvKeyReplacer(replacer)
 		// 显式绑定已存在的环境变量，确保 Unmarshal 能识别，同时保留 Viper 的优先级语义。
 		for _, environ := range os.Environ() {
 			parts := strings.SplitN(environ, "=", 2)
@@ -127,13 +138,14 @@ func WithEnvPrefix(prefix string, replaces ...*strings.Replacer) ConfigureLoader
 
 			// 有前缀
 			if prefix != "" {
-				if !strings.HasPrefix(key, prefix+"_") {
+				envPrefix := prefix + "_"
+				if len(key) < len(envPrefix) || !strings.EqualFold(key[:len(envPrefix)], envPrefix) {
 					continue
 				}
-				key = strings.TrimPrefix(key, prefix+"_")
+				key = key[len(envPrefix):]
 			}
 
-			viperKey := strings.ReplaceAll(strings.ToLower(key), "_", ".")
+			viperKey := strings.ReplaceAll(key, "_", ".")
 			if err := c.v.BindEnv(viperKey, envKey); err != nil {
 				return err
 			}

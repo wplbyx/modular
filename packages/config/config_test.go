@@ -17,10 +17,10 @@ import (
 )
 
 type CustomConfig struct {
-	Application configitem.Application `mapstructure:"application"`
-	Database    configitem.Database    `mapstructure:"database"`
-	Redis       configitem.Redis       `mapstructure:"redis"`
-	HTTP        configitem.HTTP        `mapstructure:"http"`
+	Application configitem.Application `mapstructure:"Application"`
+	Database    configitem.Database    `mapstructure:"Database"`
+	Redis       configitem.Redis       `mapstructure:"Redis"`
+	HTTP        configitem.HTTP        `mapstructure:"HTTP"`
 }
 
 func NewCustomConfig() *CustomConfig {
@@ -103,18 +103,21 @@ func TestDatabaseConfigRequiresExplicitDSN(t *testing.T) {
 
 func TestAppYAMLLoadsCurrentConfig(t *testing.T) {
 	type appYAMLConfig struct {
-		Application configitem.Application `mapstructure:"application"`
-		Logging     configitem.Logging     `mapstructure:"logging"`
-		Database    configitem.Database    `mapstructure:"database"`
-		Redis       configitem.Redis       `mapstructure:"redis"`
-		HTTP        configitem.HTTP        `mapstructure:"http"`
-		GRPC        configitem.GRPC        `mapstructure:"grpc"`
-		Storage     configitem.Storage     `mapstructure:"storage"`
+		Application configitem.Application `mapstructure:"Application"`
+		Logging     configitem.Logging     `mapstructure:"Logging"`
+		Database    configitem.Database    `mapstructure:"Database"`
+		Redis       configitem.Redis       `mapstructure:"Redis"`
+		HTTP        configitem.HTTP        `mapstructure:"HTTP"`
+		GRPC        configitem.GRPC        `mapstructure:"GRPC"`
+		Storage     configitem.Storage     `mapstructure:"Storage"`
 	}
 
 	var cfg appYAMLConfig
 	if err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFile("app.yml", false)); err != nil {
 		t.Fatalf("InitConfigure(app.yml) error = %v", err)
+	}
+	if cfg.Application.Name != "custom-modular-monolith" {
+		t.Fatalf("Application.Name = %q, want custom-modular-monolith", cfg.Application.Name)
 	}
 	if cfg.Storage.Type != "disk" {
 		t.Fatalf("storage type = %q, want disk", cfg.Storage.Type)
@@ -126,11 +129,11 @@ func TestAppYAMLLoadsCurrentConfig(t *testing.T) {
 
 func TestWithConfigFileLoadsExactPath(t *testing.T) {
 	type exactPathConfig struct {
-		Name string `mapstructure:"name"`
+		Name string `mapstructure:"Name"`
 	}
 
 	configFile := filepath.Join(t.TempDir(), "custom-name.yaml")
-	if err := os.WriteFile(configFile, []byte("name: exact-path\n"), 0o600); err != nil {
+	if err := os.WriteFile(configFile, []byte("Name: exact-path\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
@@ -176,10 +179,10 @@ func TestWithConfigFileDoesNotIgnoreMalformedFile(t *testing.T) {
 
 func TestWithConfigFSLoadsEmbeddedConfig(t *testing.T) {
 	filesystem := fstest.MapFS{
-		"config/app.yaml": &fstest.MapFile{Data: []byte("name: embedded\n")},
+		"config/app.yaml": &fstest.MapFile{Data: []byte("Name: embedded\n")},
 	}
 	var cfg struct {
-		Name string `mapstructure:"name"`
+		Name string `mapstructure:"Name"`
 	}
 
 	err := modularconfig.InitConfigure(&cfg, modularconfig.WithConfigFS(filesystem, "config/app.yaml"))

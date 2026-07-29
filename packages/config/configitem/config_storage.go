@@ -2,8 +2,6 @@ package configitem
 
 import (
 	"time"
-
-	"github.com/wplbyx/modular/packages/config"
 )
 
 //go:generate gomodifytags -file $GOFILE -add-tags mapstructure -remove-tags json,yaml,default -transform pascalcase -all -w --override --sort --quiet
@@ -38,23 +36,23 @@ type OSSStorageConfig struct {
 }
 
 // Flags 返回存储配置的命令行元数据。
-func (Storage) Flags(prefix string) []config.FlagSpec {
-	return []config.FlagSpec{
-		{Name: prefix + ".type", Default: "disk", Usage: "存储类型"},
-		{Name: prefix + ".publicbaseurl", Default: "", Usage: "文件对外访问域名"},
-		{Name: prefix + ".disk.rootdir", Default: "./storage/upload", Usage: "本地磁盘存储根目录"},
-		{Name: prefix + ".disk.baseurl", Default: "", Usage: "本地磁盘访问域名"},
+func (Storage) Flags(prefix string) []FlagSpec {
+	return []FlagSpec{
+		{Name: flagName(prefix, "Type"), Default: "disk", Usage: "存储类型"},
+		{Name: flagName(prefix, "PublicBaseURL"), Default: "", Usage: "文件对外访问域名"},
+		{Name: flagName(prefix, "Disk.RootDir"), Default: "./storage/upload", Usage: "本地磁盘存储根目录"},
+		{Name: flagName(prefix, "Disk.BaseUrl"), Default: "", Usage: "本地磁盘访问域名"},
 
-		{Name: prefix + ".oss.accesskeyid", Default: "", Usage: "OSS AccessKey ID"},
-		{Name: prefix + ".oss.accesskeysecret", Default: "", Usage: "OSS AccessKey Secret"},
-		{Name: prefix + ".oss.securitytoken", Default: "", Usage: "OSS临时安全令牌"},
-		{Name: prefix + ".oss.region", Default: "", Usage: "OSS区域"},
-		{Name: prefix + ".oss.bucket", Default: "", Usage: "OSS Bucket"},
-		{Name: prefix + ".oss.endpoint", Default: "", Usage: "OSS Endpoint"},
-		{Name: prefix + ".oss.basedir", Default: "", Usage: "OSS对象 key 前缀"},
-		{Name: prefix + ".oss.disablessl", Default: false, Usage: "是否禁用OSS SSL"},
-		{Name: prefix + ".oss.usecname", Default: false, Usage: "是否使用OSS CNAME"},
-		{Name: prefix + ".oss.timeout", Default: 60 * time.Second, Usage: "OSS请求超时"},
-		{Name: prefix + ".oss.maxretries", Default: 3, Usage: "OSS最大重试次数"},
+		{Name: flagName(prefix, "OSS.AccessKeyID"), Default: "", Usage: "OSS AccessKey ID"},
+		{Name: flagName(prefix, "OSS.AccessKeySecret"), Default: "", Usage: "OSS AccessKey Secret"},
+		{Name: flagName(prefix, "OSS.SecurityToken"), Default: "", Usage: "OSS临时安全令牌"},
+		{Name: flagName(prefix, "OSS.Region"), Default: "", Usage: "OSS区域"},
+		{Name: flagName(prefix, "OSS.Bucket"), Default: "", Usage: "OSS Bucket"},
+		{Name: flagName(prefix, "OSS.Endpoint"), Default: "", Usage: "OSS Endpoint"},
+		{Name: flagName(prefix, "OSS.BaseDir"), Default: "", Usage: "OSS对象 key 前缀"},
+		{Name: flagName(prefix, "OSS.DisableSSL"), Default: false, Usage: "是否禁用OSS SSL"},
+		{Name: flagName(prefix, "OSS.UseCName"), Default: false, Usage: "是否使用OSS CNAME"},
+		{Name: flagName(prefix, "OSS.Timeout"), Default: 60 * time.Second, Usage: "OSS请求超时"},
+		{Name: flagName(prefix, "OSS.MaxRetries"), Default: 3, Usage: "OSS最大重试次数"},
 	}
 }

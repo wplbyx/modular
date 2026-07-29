@@ -13,27 +13,28 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Options 定义 Cobra 根命令的展示信息、配置来源和最终执行函数。
+// CommandOptions 定义 Cobra 根命令的展示信息、配置来源和最终执行函数。
 //
-// 泛型参数 T 是业务侧组合后的完整配置类型。NewRoot 会扫描 T 的导出字段，
+// 泛型参数 T 是业务侧组合后的完整配置类型。NewRootCommand 会扫描 T 的导出字段，
 // 只为实现了 FlagProvider 的配置项注册命令行参数，并在执行 Run 前完成配置加载和校验。
-type Options[T any] struct {
-	Use           string                          // Use 对应 cobra.Command.Use。为空时依次回退到 AppName 和当前可执行文件名。
-	AppName       string                          // AppName 是应用名称，同时也是 Use 为空时的首选命令名。
+type CommandOptions[T any] struct {
+	Use           string                          // Use 对应 cobra.Command.Use。为空时依次回退到 Name 和当前可执行文件名。
+	Name          string                          // Name 是应用名称，同时也是 Use 为空时的首选命令名。
 	Short         string                          // Short 是 Cobra 帮助信息中的简短说明。
 	Long          string                          // Long 是 Cobra 帮助信息中的详细说明。
 	DefaultFile   string                          // DefaultFile 是 --config/-c 的默认值。默认文件不存在时允许继续使用其它配置来源。
 	DefaultRemote string                          // DefaultRemote 是 --remote 的默认值，支持 etcd:// 和 consul:// URL。
 	EnvPrefix     string                          // EnvPrefix 限定参与加载的环境变量前缀，例如 ORDER_HTTP_PORT 中的 ORDER。
+	StrictDecode  bool                            // StrictDecode 为 true 时拒绝目标结构体中不存在的配置键。
 	Args          cobra.PositionalArgs            // Args 是 Cobra 的位置参数校验函数；为空时不额外限制位置参数。
 	BindFlags     func(*cobra.Command)            // BindFlags 在模块配置参数注册完成后调用，用于补充业务自定义的 Cobra 参数。
 	Run           func(context.Context, *T) error // Run 在配置文件、环境变量和命令行参数合并并通过校验后执行。
 }
 
-// NewRoot 创建一个集成 Cobra、Viper 与模块化配置对象的根命令。
+// NewRootCommand 创建一个集成 Cobra、Viper 与模块化配置对象的根命令。
 //
 // 构建阶段会完成以下工作：
-//   - 根据 Options 确定命令名称和帮助信息；
+//   - 根据 CommandOptions 确定命令名称和帮助信息；
 //   - 注册 --config/-c；
 //   - 注册 --remote；
 //   - 扫描 T 中实现 FlagProvider 的配置项，并注册对应的 persistent flags；
@@ -42,11 +43,11 @@ type Options[T any] struct {
 // Execute 进入 RunE 后才会读取配置。配置值由配置文件、环境变量和 Cobra flags
 // 交给统一的 ConfigureLoader 合并，然后反序列化并校验为 *T。对于同一个配置键，
 // 显式规范参数优先于 alias，最终优先级为 Cobra 参数、环境变量、本地文件、远程 KV、默认值。
-func NewRoot[T any](opts Options[T]) *cobra.Command {
-	// 命令名按 Use、AppName、可执行文件名的顺序回退，确保 Cobra 始终有可展示的名称。
+func NewRootCommand[T any](opts CommandOptions[T]) *cobra.Command {
+	// 命令名按 Use、Name、可执行文件名的顺序回退，确保 Cobra 始终有可展示的名称。
 	use := opts.Use
 	if use == "" {
-		use = opts.AppName
+		use = opts.Name
 	}
 	if use == "" {
 		use = filepath.Base(os.Args[0])
@@ -58,7 +59,7 @@ func NewRoot[T any](opts Options[T]) *cobra.Command {
 	// 获取 FlagSpec 对象，FlagSpec是配置参数注册和 Viper 绑定的唯一元数据来源。
 	specs := GetConfigFlagSpecs[T]()
 
-	// NewRoot 的返回类型固定为 *cobra.Command，无法在构建阶段直接返回注册错误。
+	// NewRootCommand 的返回类型固定为 *cobra.Command，无法在构建阶段直接返回注册错误。
 	// 因此保存 buildErr，并在 Execute 进入 RunE 时作为命令执行错误返回。
 	var buildErr error
 	cmd := &cobra.Command{
@@ -102,20 +103,36 @@ func NewRoot[T any](opts Options[T]) *cobra.Command {
 //
 // T 应当是业务组合配置结构体或其指针。函数只扫描 T 的第一层导出字段；
 // 字段对应的配置类型实现 FlagProvider 时，才会参与命令行参数注册。
-// 字段的 mapstructure tag 决定配置键前缀，例如 mapstructure:"http" 会生成 http.port。
+// 字段的 mapstructure tag 决定配置键前缀，例如 mapstructure:"HTTP" 会生成 HTTP.Port。
 func GetConfigFlagSpecs[T any]() []FlagSpec {
-	return GetConfigFlagSpecsWithPrefix[T]("")
+	typ := reflect.TypeOf((*T)(nil)).Elem()
+	return getConfigFlagSpecs(typ, "", true)
 }
 
 // GetConfigFlagSpecsWithPrefix 返回配置聚合对象中所有模块声明的命令行元数据，
 // 并在每个配置键前追加 parentPrefix。
 //
 // 该函数用于把一个业务 Config 继续组合到更高层配置对象中。例如 user.Config
-// 实现 FlagProvider 时，可以在 Flags("user") 中调用本函数，最终生成
-// user.http.port、user.redis.host 等带业务模块前缀的配置键。
+// 实现 FlagProvider 时，可以在 Flags("User") 中调用本函数，最终生成
+// User.HTTP.Port、User.Redis.Host 等带业务模块前缀的配置键。
 func GetConfigFlagSpecsWithPrefix[T any](parentPrefix string) []FlagSpec {
 	// 通过 (*T)(nil) 获取 T 的 reflect.Type，即使 T 本身是指针类型也不会实例化配置对象。
 	typ := reflect.TypeOf((*T)(nil)).Elem()
+	return getConfigFlagSpecs(typ, parentPrefix, false)
+}
+
+func getConfigFlagSpecs(typ reflect.Type, parentPrefix string, useRootProvider bool) []FlagSpec {
+	if typ == nil {
+		return nil
+	}
+	if useRootProvider {
+		provider, ok := flagProvider(typ)
+		if !ok {
+			return getConfigFlagSpecs(typ, parentPrefix, false)
+		}
+		return provider.Flags(parentPrefix)
+	}
+
 	// 兼容 T、*T、**T 等形式，最终只处理底层结构体。
 	for typ.Kind() == reflect.Ptr {
 		typ = typ.Elem()
@@ -184,7 +201,7 @@ func RegisterConfigFlags(cmd *cobra.Command, specs []FlagSpec) error {
 // 默认配置文件不存在时允许继续启动，以便依赖远程配置、环境变量或 CLI；如果用户显式传入
 // --config，则文件不存在也视为输入错误。--remote 可与本地文件同时使用，远程配置优先级低于
 // 本地文件；远程读取失败时只有已成功读取的本地文件可以作为兜底。
-func LoadViperConfig[T any](cmd *cobra.Command, opts Options[T], specs []FlagSpec) (*T, error) {
+func LoadViperConfig[T any](cmd *cobra.Command, opts CommandOptions[T], specs []FlagSpec) (*T, error) {
 	// cmd.Flags() 在 RunE 阶段已包含当前命令可见的 persistent/local flags 及其 Changed 状态。
 	configFile, err := cmd.Flags().GetString("config")
 	if err != nil {
@@ -208,6 +225,9 @@ func LoadViperConfig[T any](cmd *cobra.Command, opts Options[T], specs []FlagSpe
 	}
 	if opts.EnvPrefix != "" {
 		loaderOptions = append(loaderOptions, WithEnvPrefix(opts.EnvPrefix))
+	}
+	if opts.StrictDecode {
+		loaderOptions = append(loaderOptions, WithStrictDecode())
 	}
 
 	// Cobra 参数始终加入加载器；Viper 自身按 flag > env > local config > remote KV > default 处理优先级。
@@ -277,12 +297,12 @@ func definePersistentFlag(cmd *cobra.Command, name, shorthand string, defaultVal
 }
 
 // configPrefix 返回聚合字段对应的 Viper 配置前缀。
-// mapstructure tag 优先；tag 中逗号后的选项会被剔除；未声明 tag 时回退到小写字段名。
+// mapstructure tag 优先；tag 中逗号后的选项会被剔除；未声明 tag 时回退到字段名。
 func configPrefix(field reflect.StructField) string {
 	if name := field.Tag.Get("mapstructure"); name != "" {
-		return strings.ToLower(strings.Split(name, ",")[0])
+		return strings.Split(name, ",")[0]
 	}
-	return strings.ToLower(field.Name)
+	return field.Name
 }
 
 func joinConfigPrefix(parent, child string) string {

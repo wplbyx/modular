@@ -95,7 +95,7 @@ restoreLogger := log.SetDefault(loggerManager.Logger())
 defer restoreLogger()
 defer loggerManager.Close(context.WithoutCancel(ctx))
 
-policy := transport.NewPolicy(cfg.Name, transport.WithLogger(loggerManager.Logger()))
+policy := transport.NewPolicy(cfg.Application.Name, transport.WithLogger(loggerManager.Logger()))
 
 catalog, err := errs.LoadCatalog(
 	os.DirFS("."),

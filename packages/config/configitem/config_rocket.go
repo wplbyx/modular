@@ -2,8 +2,6 @@ package configitem
 
 import (
 	"time"
-
-	"github.com/wplbyx/modular/packages/config"
 )
 
 //go:generate gomodifytags -file $GOFILE -add-tags mapstructure -remove-tags json,yaml,default -transform pascalcase -all -w --override --sort --quiet
@@ -41,26 +39,26 @@ type RocketConsumer struct {
 }
 
 // Flags 返回 RocketMQ 配置的命令行元数据。
-func (RocketMQ) Flags(prefix string) []config.FlagSpec {
-	return []config.FlagSpec{
-		{Name: prefix + ".nameservers", Default: []string(nil), Usage: "RocketMQ NameServer地址列表"},
-		{Name: prefix + ".producer.groupname", Default: "", Usage: "RocketMQ生产者组名"},
-		{Name: prefix + ".producer.retry", Default: 3, Usage: "RocketMQ发送失败重试次数"},
-		{Name: prefix + ".producer.timeout", Default: 30 * time.Second, Usage: "RocketMQ发送消息超时"},
-		{Name: prefix + ".producer.compress", Default: false, Usage: "RocketMQ是否压缩消息"},
-		{Name: prefix + ".producer.instancename", Default: "", Usage: "RocketMQ生产者实例名称"},
-		{Name: prefix + ".producer.loglevel", Default: "info", Usage: "RocketMQ生产者客户端日志级别"},
+func (RocketMQ) Flags(prefix string) []FlagSpec {
+	return []FlagSpec{
+		{Name: flagName(prefix, "NameServers"), Default: []string(nil), Usage: "RocketMQ NameServer地址列表"},
+		{Name: flagName(prefix, "Producer.GroupName"), Default: "", Usage: "RocketMQ生产者组名"},
+		{Name: flagName(prefix, "Producer.Retry"), Default: 3, Usage: "RocketMQ发送失败重试次数"},
+		{Name: flagName(prefix, "Producer.Timeout"), Default: 30 * time.Second, Usage: "RocketMQ发送消息超时"},
+		{Name: flagName(prefix, "Producer.Compress"), Default: false, Usage: "RocketMQ是否压缩消息"},
+		{Name: flagName(prefix, "Producer.InstanceName"), Default: "", Usage: "RocketMQ生产者实例名称"},
+		{Name: flagName(prefix, "Producer.LogLevel"), Default: "info", Usage: "RocketMQ生产者客户端日志级别"},
 
-		{Name: prefix + ".consumer.groupname", Default: "", Usage: "RocketMQ消费者组名"},
-		{Name: prefix + ".consumer.topic", Default: "", Usage: "RocketMQ订阅主题"},
-		{Name: prefix + ".consumer.expression", Default: "", Usage: "RocketMQ消息过滤表达式"},
-		{Name: prefix + ".consumer.maxreconsumetimes", Default: 16, Usage: "RocketMQ最大重试消费次数"},
-		{Name: prefix + ".consumer.consumemessagebatchmaxsize", Default: 1, Usage: "RocketMQ一批最大消费消息数"},
-		{Name: prefix + ".consumer.consumethreadmin", Default: 20, Usage: "RocketMQ最小消费线程数"},
-		{Name: prefix + ".consumer.consumethreadmax", Default: 20, Usage: "RocketMQ最大消费线程数"},
-		{Name: prefix + ".consumer.messagemodel", Default: "clustering", Usage: "RocketMQ消费模式"},
-		{Name: prefix + ".consumer.orderly", Default: false, Usage: "RocketMQ是否顺序消费"},
-		{Name: prefix + ".consumer.instancename", Default: "", Usage: "RocketMQ消费者实例名称"},
-		{Name: prefix + ".consumer.loglevel", Default: "info", Usage: "RocketMQ消费者客户端日志级别"},
+		{Name: flagName(prefix, "Consumer.GroupName"), Default: "", Usage: "RocketMQ消费者组名"},
+		{Name: flagName(prefix, "Consumer.Topic"), Default: "", Usage: "RocketMQ订阅主题"},
+		{Name: flagName(prefix, "Consumer.Expression"), Default: "", Usage: "RocketMQ消息过滤表达式"},
+		{Name: flagName(prefix, "Consumer.MaxReconsumeTimes"), Default: 16, Usage: "RocketMQ最大重试消费次数"},
+		{Name: flagName(prefix, "Consumer.ConsumeMessageBatchMaxSize"), Default: 1, Usage: "RocketMQ一批最大消费消息数"},
+		{Name: flagName(prefix, "Consumer.ConsumeThreadMin"), Default: 20, Usage: "RocketMQ最小消费线程数"},
+		{Name: flagName(prefix, "Consumer.ConsumeThreadMax"), Default: 20, Usage: "RocketMQ最大消费线程数"},
+		{Name: flagName(prefix, "Consumer.MessageModel"), Default: "clustering", Usage: "RocketMQ消费模式"},
+		{Name: flagName(prefix, "Consumer.Orderly"), Default: false, Usage: "RocketMQ是否顺序消费"},
+		{Name: flagName(prefix, "Consumer.InstanceName"), Default: "", Usage: "RocketMQ消费者实例名称"},
+		{Name: flagName(prefix, "Consumer.LogLevel"), Default: "info", Usage: "RocketMQ消费者客户端日志级别"},
 	}
 }

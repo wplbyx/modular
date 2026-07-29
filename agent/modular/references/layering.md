@@ -36,7 +36,7 @@ Single topology has one `cmd/<project>` process and one generated process config
 containing nested svc configs. Service topology has one `cmd/<svc>` per svc and
 loads `config/<svc>.Config` directly.
 
-Both topologies use the same bootstrap contract: `config.NewRoot` loads config,
+Both topologies use the same bootstrap contract: `config.NewRootCommand` loads config,
 then `newLoggerManager` creates logging, then `newTransportPolicy` defines
 Metadata/tracing/access/protection, and only then does cmd construct Resources,
 Endpoints, and `Application`. `cmd` is the only composition root.

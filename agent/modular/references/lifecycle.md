@@ -46,9 +46,9 @@ Application is single-use and transitions through new/running/stopping/stopped. 
 
 ## Assembly in cmd/main.go
 
-Generated entrypoints first create a Cobra root command with `config.NewRoot`, attach the signal context with `SetContext`, then build and inject inside the `Run` callback. Option order does not affect execution - resources are always FIFO up / LIFO down, endpoints always last:
+Generated entrypoints first create a Cobra root command with `config.NewRootCommand`, attach the signal context with `SetContext`, then build and inject inside the `Run` callback. Option order does not affect execution - resources are always FIFO up / LIFO down, endpoints always last:
 
-    command := config.NewRoot[projectconfig.Config](config.Options[projectconfig.Config]{
+    command := config.NewRootCommand[projectconfig.Config](config.CommandOptions[projectconfig.Config]{
         DefaultFile: "./config/user/config.yaml",
         EnvPrefix:   "USER",
         Run:         run,
@@ -67,7 +67,7 @@ Inside `run(ctx, cfg)`:
     )
     application.Run()
 
-Before this call, `config.NewRoot` must have loaded config and cmd must create
+Before this call, `config.NewRootCommand` must have loaded config and cmd must create
 `LoggerManager` second. Application does not own the logger; cmd closes it only
 after `Application.Run` returns. The four `With...` options are
 `WithResource(core.Resource)`, `WithEndpoint(core.Endpoint)`,

@@ -1,7 +1,5 @@
 package configitem
 
-import "github.com/wplbyx/modular/packages/config"
-
 //go:generate gomodifytags -file $GOFILE -add-tags mapstructure -remove-tags json,yaml,default -transform pascalcase -all -w --override --sort --quiet
 
 // Telemetry 遥测
@@ -12,10 +10,10 @@ type Telemetry struct {
 }
 
 // Flags 返回遥测配置的命令行元数据。
-func (Telemetry) Flags(prefix string) []config.FlagSpec {
-	return []config.FlagSpec{
-		{Name: prefix + ".logger", Default: "", Usage: "日志遥测输出"},
-		{Name: prefix + ".metric", Default: "", Usage: "指标遥测输出"},
-		{Name: prefix + ".tracer", Default: "", Usage: "链路遥测输出"},
+func (Telemetry) Flags(prefix string) []FlagSpec {
+	return []FlagSpec{
+		{Name: flagName(prefix, "Logger"), Default: "", Usage: "日志遥测输出"},
+		{Name: flagName(prefix, "Metric"), Default: "", Usage: "指标遥测输出"},
+		{Name: flagName(prefix, "Tracer"), Default: "", Usage: "链路遥测输出"},
 	}
 }

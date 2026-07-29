@@ -5,12 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	validator "github.com/go-playground/validator/v10"
-	mapstructure "github.com/go-viper/mapstructure/v2"
-	"github.com/gosuri/uitable"
 	"github.com/spf13/viper"
 )
 
@@ -20,6 +18,7 @@ type ConfigureLoader struct {
 	fileSource   *configFileSource   // 待加载的本地配置源
 	remoteSource *remoteConfigSource // 待加载的远程配置源
 	remoteReady  bool                // 远程 provider 已注册，可用于后续轮询
+	strictDecode bool                // 是否拒绝目标结构体中不存在的配置键
 }
 
 func InitConfigure(config interface{}, options ...ConfigureLoaderOption) error {
@@ -28,7 +27,7 @@ func InitConfigure(config interface{}, options ...ConfigureLoaderOption) error {
 		return err
 	}
 
-	return LoadFromViper(loader.v, config)
+	return loader.Load(config)
 }
 
 // LoadFromViper 将 Viper 中的配置反序列化到目标对象，并执行结构体验证。
@@ -36,40 +35,65 @@ func LoadFromViper(v *viper.Viper, config interface{}) error {
 	if v == nil {
 		return errors.New("viper instance is nil")
 	}
-	if err := v.Unmarshal(config, viper.DecodeHook(mapstructure.StringToTimeDurationHookFunc())); err != nil {
-		return err
-	}
-	return validateConfig(config)
+	return loadFromViper(v, config, false)
 }
 
-func validateConfig(config interface{}) error {
-	v := validator.New()
-	if err := v.Struct(config); err != nil {
-		var validationErrors validator.ValidationErrors
-		if errors.As(err, &validationErrors) {
-			table := uitable.New()
-			table.Separator = " "
-			for _, e := range validationErrors {
-				if e.Tag() == "oneof" {
-					table.AddRow(fmt.Sprintf("Validate '%s'", e.StructNamespace()), fmt.Sprintf("failed: oneof [%v]", e.Param()))
-				} else {
-					table.AddRow(fmt.Sprintf("Validate '%s'", e.StructNamespace()), fmt.Sprintf("failed: %s", e.Tag()))
-				}
-			}
-			return errors.New(table.String())
-		}
+// Load 将已聚合的配置源解码到目标对象，并执行最终校验。
+func (l *ConfigureLoader) Load(config interface{}) error {
+	if l == nil || l.v == nil {
+		return errors.New("configure loader is nil")
+	}
+	return loadFromViper(l.v, config, l.strictDecode)
+}
+
+func loadFromViper(v *viper.Viper, config interface{}, strict bool) error {
+	if err := validateTarget(config); err != nil {
 		return err
 	}
+	for _, spec := range getConfigFlagSpecs(reflect.TypeOf(config), "", true) {
+		v.SetDefault(spec.Name, spec.Default)
+	}
 
+	var err error
+	if strict {
+		err = v.UnmarshalExact(config)
+	} else {
+		err = v.Unmarshal(config)
+	}
+	if err != nil {
+		return fmt.Errorf("decode config: %w", err)
+	}
+	return Validate(config)
+}
+
+// TargetError 表示配置解码目标不是可写的结构体指针。
+type TargetError struct {
+	Reason string
+}
+
+func (e *TargetError) Error() string {
+	return "invalid config target: " + e.Reason
+}
+
+func validateTarget(config interface{}) error {
+	if config == nil {
+		return &TargetError{Reason: "target is nil"}
+	}
+	value := reflect.ValueOf(config)
+	if value.Kind() != reflect.Ptr {
+		return &TargetError{Reason: "target must be a pointer to a struct"}
+	}
+	if value.IsNil() {
+		return &TargetError{Reason: "target pointer is nil"}
+	}
+	if value.Elem().Kind() != reflect.Struct {
+		return &TargetError{Reason: "target must point to a struct"}
+	}
 	return nil
 }
 
 // NewConfigureLoader 创建一个新的配置加载器
 func NewConfigureLoader(options ...ConfigureLoaderOption) (*ConfigureLoader, error) {
-	if len(options) == 0 {
-		return nil, errors.New("please provide at least one configure loader option")
-	}
-
 	loader := &ConfigureLoader{v: viper.New()}
 
 	for _, option := range options {
@@ -84,20 +108,10 @@ func NewConfigureLoader(options ...ConfigureLoaderOption) (*ConfigureLoader, err
 	return loader, nil
 }
 
+// ValidateNode 保留旧名称以兼容现有调用；新代码应使用 Validate。
+// Deprecated: 使用 Validate。
 func ValidateNode(object interface{}) error {
-	v := validator.New()
-	if err := v.Struct(object); err != nil {
-		var validationErrors validator.ValidationErrors
-		if errors.As(err, &validationErrors) {
-			var errs []error
-			for _, e := range validationErrors {
-				errs = append(errs, fmt.Errorf("field '%s' validation failed on the '%s' tag", e.StructNamespace(), e.Tag()))
-			}
-			return errors.Join(errs...)
-		}
-		return err
-	}
-	return nil // 验证通过
+	return Validate(object)
 }
 
 // Watch 监听本地配置文件的变更。当文件发生变更时，调用提供的 callback 函数。
