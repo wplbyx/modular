@@ -1,6 +1,6 @@
 ---
 name: requirement
-description: "Use this skill whenever the user wants to turn vague product ideas, PRDs, feature lists, or rough backend requirements into executable protobuf interface contracts. It clarifies requirements, decomposes feature IDs, chooses svc/surface/RPC boundaries, and writes or updates modular-compatible proto/<svc>/*.proto files. Trigger this skill for requests like 整理需求, 写 PRD, 拆功能点, 拆接口, 接口设计, 从需求落到 API, proto, protobuf, gRPC, 后端接口契约, 后端功能模块接口, or 检查需求是否可实现, even if the user does not explicitly mention a skill."
+description: "Use this skill whenever the user wants to turn vague product ideas, PRDs, feature lists, or rough backend requirements into executable protobuf interface contracts. It clarifies requirements, decomposes feature IDs, chooses Business Module/surface/RPC boundaries, and writes or updates modular-compatible proto/<module>/*.proto files. Trigger this skill for requests like 整理需求, 写 PRD, 拆功能点, 拆接口, 接口设计, 从需求落到 API, proto, protobuf, gRPC, 后端接口契约, 后端功能模块接口, or 检查需求是否可实现, even if the user does not explicitly mention a skill."
 ---
 
 # Requirement Skill
@@ -9,7 +9,7 @@ description: "Use this skill whenever the user wants to turn vague product ideas
 
 ## 输出目标
 
-默认直接生成或更新 `proto/<svc>/*.proto` 文件。只有在无法确定项目路径、Go module、svc、surface 或接口边界时，才先在回复里给出 `.proto` 草案和必须确认的问题。
+默认直接生成或更新 `proto/<module>/*.proto` 文件。只有在无法确定项目路径、Go module、Business Module、surface 或接口边界时，才先在回复里给出 `.proto` 草案和必须确认的问题。
 
 不要依赖 `document/` 目录或旧的需求文档模板。需求澄清、feature ID、权限、幂等、事务、并发和错误语义，都应服务于 `.proto` 接口契约。
 
@@ -19,8 +19,8 @@ description: "Use this skill whenever the user wants to turn vague product ideas
 
 - 读取目标项目的 `go.mod`，获取 module path，用于 `option go_package`。
 - 查看是否存在 `proto/`、`buf.yaml`、`buf.gen.yaml`、`common/`、`internal/`、`config/`。
-- 如果已有 `proto/<svc>/*.proto`，先读现有文件，延续 package、go_package、service、message、enum、字段编号和注释风格。
-- 如果项目使用 modular 约定，遵循 `proto/<svc>` 作为接口源目录，`common/<svc>` 作为生成目录的边界。
+- 如果已有 `proto/<module>/*.proto`，先读现有文件，延续 package、go_package、service、message、enum、字段编号和注释风格。
+- 如果项目使用 modular v0.3 约定，读取 `.modular/architecture.yaml`，遵循 `proto/<module>` 作为接口源目录、`common/<module>` 作为生成目录，并确认跨模块依赖已经声明。
 - 不要手写或修改 `common/**/*.pb.go`、`common/**/*_grpc.pb.go`，这些文件只允许由生成器产生。
 
 ## 核心流程
@@ -31,7 +31,7 @@ description: "Use this skill whenever the user wants to turn vague product ideas
 模糊需求
 -> 业务目标和边界
 -> feature ID
--> svc / surface / RPC 划分
+-> Business Module / surface / RPC 划分
 -> request / response / message / enum
 -> proto 文件更新
 -> 未决问题和后续实现提示
@@ -80,23 +80,23 @@ feature ID 用于连接业务需求、RPC 注释、错误场景、数据影响�
 
 如果一个 feature 仍需要实现者决定业务意图，它还没有拆到可执行粒度。
 
-## 阶段 3：确定 svc、surface 和 RPC
+## 阶段 3：确定 Business Module、surface 和 RPC
 
 把 feature 映射到 modular 的接口边界：
 
-- `svc` 是业务模块名，使用小写 snake_case，例如 `user`、`order`、`inventory`。
+- Business Module 是业务能力和数据写入边界，名称使用小写 snake_case，例如 `user`、`order`、`inventory`。它不是部署 Process。
 - `surface` 是接口面，默认 `public`；管理端用 `admin`，平台集成用 `platform`，开放接口用 `openapi`，内部任务按实际语义命名。
-- `public` surface 写入 `proto/<svc>/<svc>.proto`。
-- 非 `public` surface 写入 `proto/<svc>/<surface>.proto`。
+- `public` surface 写入 `proto/<module>/<module>.proto`。
+- 非 `public` surface 写入 `proto/<module>/<surface>.proto`。
 - `public` service 命名为 `<Svc>Service`，例如 `OrderService`。
 - 非 `public` service 命名为 `<Svc><Surface>Service`，例如 `UserAdminService`。
 - RPC 方法名使用 PascalCase，表达业务动作，例如 `CreateOrder`、`CancelOrder`、`ListDisabledUsers`。
 
-同一个 svc 的多个 surface 共享 `common/<svc>` 生成包，因此 message 和 enum 名称不能互相冲突。优先使用 `<Method>Request` / `<Method>Response`，避免通用的 `Request`、`Response`、`Item`、`Data`。
+同一个 Business Module 的多个 surface 共享 `common/<module>` 生成包，因此 message 和 enum 名称不能互相冲突。优先使用 `<Method>Request` / `<Method>Response`，避免通用的 `Request`、`Response`、`Item`、`Data`。
 
 ## 阶段 4：设计 `.proto` 契约
 
-生成或更新 proto 时使用纯 gRPC 契约，不添加 `google.api.http` 或 grpc-gateway 注解。HTTP 路径、权限、幂等、事务、并发和错误语义写在 RPC 或 message 注释里，后续由 `internal/<svc>/api/<surface>/http.go` 适配。
+生成或更新 proto 时使用纯 gRPC 契约，不添加 `google.api.http` 或 grpc-gateway 注解。HTTP 路径、权限、幂等、事务、并发和错误语义写在 RPC 或 message 注释里，后续由 `internal/modules/<module>/internal/api/<surface>/http.go` 适配。
 
 基础结构：
 
@@ -113,7 +113,7 @@ service OrderService {
   // Auth: required.
   // Idempotency: required by idempotency_key.
   // Data effects: creates order and order items.
-  // Transaction: order and inventory reservation must commit atomically.
+  // Transaction: commits within the order module; inventory failure is compensated.
   // Errors: INVALID_ARGUMENT when item list is empty; FAILED_PRECONDITION when stock is insufficient.
   rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
 }
@@ -149,6 +149,12 @@ enum 规则：
 - 不要改动生成目录 `common/`。
 - 不要为了需求接口生成去改 `cmd/`、`internal/`、`config/`，除非用户明确要求继续实现。
 - 如果项目有 `buf.yaml`，在最终回复中建议后续运行 `buf generate`；不要在用户只要求需求或 proto 时擅自生成 Go 代码。
+
+跨模块一致性规则：
+
+- 事务默认止于一个 Business Module。若需求必须跨模块共享数据库事务，在 `.modular/architecture.yaml` 登记 `shared-transaction` Extraction Blocker，而不是把“可无缝拆分”写进接口承诺。
+- 跨 Process 的可靠事实使用 Integration Event，并在注释中明确 outbox/inbox、消费幂等、重试和对账；进程内 EventBus 只能表达 best-effort Local Notification。
+- 跨模块同步调用应使用 provider 模块的 protobuf 契约；生成的 unary Port 支持本地直接注入和显式 Remote Adapter。Streaming 不承诺自动本地/远程切换。
 
 ## 注释内容
 
@@ -193,7 +199,7 @@ enum 规则：
 1. 当前可确定的业务动作。
 2. 可以落到 proto 的 RPC。
 3. 缺失或高风险信息。
-4. 建议的 svc / surface / 文件路径。
+4. 建议的 Business Module / surface / 文件路径。
 5. 需要用户确认的问题。
 
 ## 避免的问题

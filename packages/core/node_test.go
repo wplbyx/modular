@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGenerateID(t *testing.T) {
@@ -82,4 +83,24 @@ func TestServiceNodeZeroValue(t *testing.T) {
 	assert.Empty(t, node.ID)
 	assert.Nil(t, node.Transports)
 	assert.Nil(t, node.Metadata)
+}
+
+func TestNewServiceNodeFromProcess(t *testing.T) {
+	metadata := map[string]string{"region": "cn-east"}
+	identity, err := NewProcessIdentity("billing", "v3", "instance-7", metadata)
+	require.NoError(t, err)
+	metadata["region"] = "changed"
+
+	node := NewServiceNodeFromProcess(identity, Transport{Protocol: "grpc", Address: "127.0.0.1", Port: 9000})
+	assert.Equal(t, "instance-7", node.ID)
+	assert.Equal(t, "billing", node.Name)
+	assert.Equal(t, "cn-east", node.Metadata["region"])
+
+	identity.Metadata["region"] = "changed-again"
+	assert.Equal(t, "cn-east", node.Metadata["region"])
+}
+
+func TestNewProcessIdentityRequiresName(t *testing.T) {
+	_, err := NewProcessIdentity(" ", "v1", "", nil)
+	require.Error(t, err)
 }

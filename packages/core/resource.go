@@ -14,7 +14,9 @@ type managedResourceState uint8
 
 const (
 	managedResourceNew managedResourceState = iota
+	managedResourceSettingUp
 	managedResourceReady
+	managedResourceClosing
 	managedResourceClosed
 )
 
@@ -43,6 +45,7 @@ type ManagedResource[T any] struct {
 	state    managedResourceState
 	value    T
 	closeErr error
+	wait     chan struct{}
 }
 
 // NewManagedResource 创建一个带类型安全值访问能力的生命周期资源。
@@ -75,26 +78,49 @@ func (resource *ManagedResource[T]) Setup(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	resource.mu.Lock()
-	defer resource.mu.Unlock()
 
-	switch resource.state {
-	case managedResourceReady:
-		return nil
-	case managedResourceClosed:
-		return fmt.Errorf("setup resource %s: %w", resource.name, ErrResourceNotReady)
-	}
-	if resource.setup == nil {
-		return fmt.Errorf("setup resource %s: setup function is nil", resource.name)
-	}
+	for {
+		resource.mu.Lock()
+		switch resource.state {
+		case managedResourceReady:
+			resource.mu.Unlock()
+			return nil
+		case managedResourceClosed:
+			resource.mu.Unlock()
+			return fmt.Errorf("setup resource %s: %w", resource.name, ErrResourceNotReady)
+		case managedResourceSettingUp, managedResourceClosing:
+			wait := resource.wait
+			resource.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-wait:
+			}
+			continue
+		}
+		if resource.setup == nil {
+			resource.mu.Unlock()
+			return fmt.Errorf("setup resource %s: setup function is nil", resource.name)
+		}
+		resource.state = managedResourceSettingUp
+		resource.wait = make(chan struct{})
+		wait := resource.wait
+		resource.mu.Unlock()
 
-	value, err := resource.setup(ctx)
-	if err != nil {
+		value, err := resource.setup(ctx)
+
+		resource.mu.Lock()
+		if err != nil {
+			resource.state = managedResourceNew
+		} else {
+			resource.value = value
+			resource.state = managedResourceReady
+		}
+		resource.wait = nil
+		close(wait)
+		resource.mu.Unlock()
 		return err
 	}
-	resource.value = value
-	resource.state = managedResourceReady
-	return nil
 }
 
 // Value 返回已初始化的资源值。
@@ -112,36 +138,64 @@ func (resource *ManagedResource[T]) Value() (T, error) {
 // Check 检查资源是否就绪以及底层依赖是否健康。
 func (resource *ManagedResource[T]) Check(ctx context.Context) error {
 	resource.mu.Lock()
-	defer resource.mu.Unlock()
-
 	if resource.state != managedResourceReady {
+		resource.mu.Unlock()
 		return fmt.Errorf("resource %s: %w", resource.name, ErrResourceNotReady)
 	}
-	if resource.check == nil {
+	check := resource.check
+	value := resource.value
+	resource.mu.Unlock()
+	if check == nil {
 		return nil
 	}
-	return resource.check(ctx, resource.value)
+	return check(ctx, value)
 }
 
 // Close 关闭资源。底层 close 最多执行一次，关闭结果会被缓存。
 func (resource *ManagedResource[T]) Close(ctx context.Context) error {
-	resource.mu.Lock()
-	defer resource.mu.Unlock()
+	for {
+		resource.mu.Lock()
+		switch resource.state {
+		case managedResourceClosed:
+			err := resource.closeErr
+			resource.mu.Unlock()
+			return err
+		case managedResourceNew:
+			resource.mu.Unlock()
+			return nil
+		case managedResourceSettingUp, managedResourceClosing:
+			wait := resource.wait
+			resource.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-wait:
+			}
+			continue
+		}
 
-	if resource.state == managedResourceClosed {
-		return resource.closeErr
-	}
-	if resource.state != managedResourceReady {
-		return nil
-	}
+		value := resource.value
+		closeFn := resource.close
+		resource.state = managedResourceClosing
+		resource.wait = make(chan struct{})
+		wait := resource.wait
+		resource.mu.Unlock()
 
-	if resource.close != nil {
-		resource.closeErr = resource.close(ctx, resource.value)
+		var closeErr error
+		if closeFn != nil {
+			closeErr = closeFn(ctx, value)
+		}
+
+		resource.mu.Lock()
+		resource.closeErr = closeErr
+		var zero T
+		resource.value = zero
+		resource.state = managedResourceClosed
+		resource.wait = nil
+		close(wait)
+		resource.mu.Unlock()
+		return closeErr
 	}
-	var zero T
-	resource.value = zero
-	resource.state = managedResourceClosed
-	return resource.closeErr
 }
 
 type funcResource struct {

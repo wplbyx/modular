@@ -6,11 +6,11 @@ available.
 
 `run_scaffold_benchmark.py` is the deterministic companion. It compares the
 current scaffold with a frozen old skill snapshot and checks file count,
-placeholder residue, dependency mode, build result, idempotency, typed Resource
-wiring, and topology migration safety.
+placeholder residue, dependency mode, build result, idempotency, typed Process
+resources, v0.2 migration safety, and Module/Process bootstrap behavior.
 
 ```bash
-python agent/modular/evals/run_scaffold_benchmark.py \
+python3 agent/modular/evals/run_scaffold_benchmark.py \
   --baseline agent/modular-workspace/skill-snapshot \
   --workspace agent/modular-workspace/iteration-1
 ```
@@ -18,8 +18,8 @@ python agent/modular/evals/run_scaffold_benchmark.py \
 Then aggregate and render with the skill-creator tools:
 
 ```bash
-python -m scripts.aggregate_benchmark <workspace>/iteration-1 --skill-name modular
-python eval-viewer/generate_review.py <workspace>/iteration-1 \
+python3 -m scripts.aggregate_benchmark <workspace>/iteration-1 --skill-name modular
+python3 eval-viewer/generate_review.py <workspace>/iteration-1 \
   --skill-name modular --benchmark <workspace>/iteration-1/benchmark.json \
   --static <workspace>/iteration-1/review.html
 ```

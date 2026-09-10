@@ -1,33 +1,34 @@
-# Adapter And Repository Placement
+# Adapter and repository placement
 
-Use this reference after routing a request to the CRUD or domain workflow. The
-CLI does not infer repository signatures; the Agent owns this architecture
-decision and writes the selected contract templates directly.
+Read after routing to CRUD or domain work. The CLI creates no repository shell;
+the Agent defines the smallest port after the use case is known.
 
-## App placement
+## Simple app flow
 
-Choose `internal/<svc>/app/<surface>/ports.go` when the flow is simple:
+For CRUD/query/mutation without rich domain behavior, put use-case ports under
+`internal/modules/<module>/internal/app` and implementations under
+`internal/modules/<module>/internal/repository/app`. DTO-style data is
+acceptable at this seam.
 
-- CRUD or query/mutation with no rich domain behavior.
-- The use case can call a repository adapter directly.
-- DTO-style data is acceptable at the app seam.
+## Domain flow
 
-Put the adapter under `internal/<svc>/repository/app` only after its interface
-is known. Do not create a repository shell merely because a svc exists.
-
-## Domain placement
-
-Choose `internal/<svc>/domain/ports.go` when aggregates, invariants, policies,
-transactions, or cross-entity behavior matter. Put persistence adapters under
-`internal/<svc>/repository/domain` and persistence models/tags under
-`repository/model`, never on domain entities.
+For aggregates, invariants, policies, or transaction coordination, put ports
+under `internal/modules/<module>/internal/domain`. Implement them in
+`internal/repository/domain`; keep persistence structs and ORM tags under
+`internal/repository/model`, outside domain entities.
 
 ## Rules
 
-- Explain app-vs-domain placement before writing files.
-- Give each interface the smallest surface that supports the use case and its tests.
-- Accept generated `core.Provider[T]` dependencies in repository constructors.
-- Do not call `Provider.Value()` before Application completes Resource Setup.
-- Generate DTO/model packages only when the chosen adapter needs them.
-- Cross-svc dependencies use generated pb clients, not another svc's `internal`.
-- Unimplemented adapters return an explicit error; never generate fake success data.
+- Explain app-versus-domain placement before adding packages.
+- Define the smallest interface needed by the use case and its tests.
+- Repositories receive concrete `core.Provider[T]` dependencies; call
+  `Value()` only while handling work after Resource Setup.
+- A module owns its UoW and data writes. Cross-module shared transactions must
+  be declared as extraction blockers.
+- Cross-module code depends on the provider's generated Port or public
+  `contract`, never its `internal` implementation.
+- A consumer-side remote adapter lives at
+  `internal/modules/<consumer>/internal/adapters/remote/<provider>` and
+  normalizes remote errors through the generated adapter.
+- Generate DTO/model packages only when a real adapter needs them. Temporary
+  adapters return explicit errors, never fake success values.

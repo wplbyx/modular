@@ -1,15 +1,20 @@
 # Commands
 
-The project-local tool is copied into `.modular/tool/` during `init` and is
-the same deterministic implementation used by the installed skill. The
-Makefile in every generated project calls this local copy.
+The project-local tool is copied into `.modular/tool/` during `init`; generated
+Make targets call that copy. Run commands from the generated project root.
 
-Documented command paths:
+## Command paths
 
 - `init`
-- `project upgrade`
-- `service add`
-- `service remove`
+- `module add`
+- `module remove`
+- `module depend add`
+- `module depend remove`
+- `module blocker add`
+- `module extract`
+- `process add`
+- `process remove`
+- `process attach`
 - `transport add`
 - `transport remove`
 - `resource add`
@@ -17,95 +22,133 @@ Documented command paths:
 - `sync`
 - `doctor`
 - `prune`
-- `migrate topology`
+- `migrate v0.2-to-v0.3`
+- `project upgrade`
 - `verify`
 - `gen`
 - `coverage`
 - `self-check`
 
-## New project
+The legacy `service add`, `service remove`, and `migrate topology` commands
+remain available only for v0.2 projects.
+
+`make scaffold-migrate TOPOLOGY=service APPLY=1` keeps the v0.2 topology path;
+without `TOPOLOGY`, the target previews or applies `migrate v0.2-to-v0.3`.
+
+## Initialize
+
+New projects use the Module/Process model and require modular v0.3.0 or newer:
 
 ```bash
-python scripts/modular.py init billing-demo --topology single
-python scripts/modular.py init billing-demo --topology service --modular-version v0.2.0
+python3 scripts/modular.py init billing-demo
+python3 scripts/modular.py init billing-demo --transport http --transport grpc \
+  --modular-version v0.3.0
 ```
 
-`init` resolves `github.com/wplbyx/modular@latest` when no tag is provided.
-It writes the resolved version to `go.mod`, never creates a local `replace`,
-and refuses versions older than `v0.2.0` before creating the project.
+The default creates one Process named after the project with one HTTP server
+and no Business Modules. `init --topology single|service` is the explicit v0.2
+compatibility path. Initialization resolves a concrete published version and
+never writes a local `replace` directive.
 
-## Tool and dependency upgrade
-
-Run `project upgrade` with the newly installed skill copy, not the older
-project-local tool, so the new runtime and templates can replace unchanged
-managed files:
+## Modules and dependencies
 
 ```bash
-python <installed-skill>/scripts/modular.py project upgrade \
-  --project-dir . --modular-version v0.2.1 --diff
-python <installed-skill>/scripts/modular.py project upgrade \
-  --project-dir . --modular-version v0.2.1 --apply
+python3 .modular/tool/modular.py module add customer
+python3 .modular/tool/modular.py module add order --depends-on customer
+python3 .modular/tool/modular.py module depend add billing order
+python3 .modular/tool/modular.py module depend remove billing order
+python3 .modular/tool/modular.py module blocker add \
+  --module order --module inventory \
+  --kind shared-transaction --reason "reservation commits with order"
 ```
 
-## Framework phase
+Every module is assigned to exactly one Process. `--process` is optional only
+when the architecture has one Process. Dependency additions reject cycles.
+Module addition creates business config, but no handlers, domain, repository,
+or placeholder business implementation.
 
-Run these commands from a generated project, or use the equivalent Makefile
-targets:
+Removing a module is destructive and previews by default:
 
 ```bash
-python .modular/tool/modular.py service add user --transport http --transport grpc
-python .modular/tool/modular.py resource add db --svc user --driver bun
-python .modular/tool/modular.py resource add eventbus --svc user
-python .modular/tool/modular.py sync
-python .modular/tool/modular.py verify --phase framework
+python3 .modular/tool/modular.py module remove customer
+python3 .modular/tool/modular.py module remove customer --apply
 ```
 
-The framework phase creates config, cmd, endpoint/resource wiring and a
-business registration seam. It does not create proto methods, domain models,
-repository implementations, or Example placeholders.
-
-Each process also gets scaffold-once `cmd/<process>/policy.go`. Generated
-framework wiring always loads config first, creates the context-required logger
-second, then constructs one process Transport policy before Resources and
-Endpoints.
-
-All mutating commands accept `--dry-run` and `--diff`. `--diff` never writes.
-`service remove`, `transport remove`, `resource remove`, `prune`, and
-`migrate topology` require `--apply` for writes.
-
-## Contract and business phases
-
-The Agent writes proto, app/domain ports, error reason definitions, and API
-mapping from the contract templates after it has made the architecture
-decision. The CLI does not infer fields or method signatures.
+## Processes
 
 ```bash
-make contract-check
-make verify
+python3 .modular/tool/modular.py process add workers
+python3 .modular/tool/modular.py process add billing --transport http --transport grpc
+python3 .modular/tool/modular.py process attach billing order
+python3 .modular/tool/modular.py transport add billing grpc
 ```
 
-`contract-check` allows only explicitly marked `Unimplemented` contract
-methods. `verify` rejects those markers, requires tests in configured business
-packages, runs build/vet/test/race, and never imposes a numeric coverage gate.
+A Process owns one Application, identity, config, health manager, and at most
+one server per enabled protocol. `process attach` changes deployment grouping
+only after the same blocker/contract/remote-adapter checks used by extraction
+pass. Use `process remove --apply` only after moving all of its modules.
 
-## Makefile targets
+## Resources
 
-Every project carries these targets: `scaffold-service`, `scaffold-resource`,
-`scaffold-sync`, `scaffold-diff`, `scaffold-doctor`, `scaffold-prune`,
-`scaffold-migrate`, `gen`, `build`, `test`, `test-race`, `coverage`,
-`scaffold-check`, `contract-check`, and `verify`.
+Resources belong to a Process in v0.3:
 
-## Safety
+```bash
+python3 .modular/tool/modular.py resource add db \
+  --process billing --driver gorm --dialect postgres
+python3 .modular/tool/modular.py resource add redis --process billing
+python3 .modular/tool/modular.py resource add eventbus --process workers
+```
 
-`.modular/manifest.json` records ownership, the last generated hash, template
-version, and minimal provenance. Managed files are updated only when their
-hash is unchanged. Scaffold-once files are never overwritten. `prune` only
-deletes unchanged managed files and requires `--apply`.
+With one Process, `--process` may be omitted. The v0.2 compatibility model uses
+`--svc` instead. `transport remove` and `resource remove` preview unless
+`--apply` is supplied.
 
-The manifest is replay state, not an architecture document: it answers which
-feature produced a file and whether the tool may replace/delete it. Domain
-boundaries and business decisions remain in code and project design records.
+## Extraction
 
-All writes are staged and rolled back if a post-write verification fails.
-`doctor --strict` checks structure, ownership, profile rules, generated common
-files, and cross-svc dependency direction without changing project files.
+```bash
+python3 .modular/tool/modular.py module extract order \
+  --to-process order_api --check
+python3 .modular/tool/modular.py module extract order \
+  --to-process order_api --apply
+```
+
+The check reports declared blockers, missing protobuf contracts, and missing
+remote adapters for dependencies that would cross a Process boundary. Apply
+only changes architecture and managed Process files after the check is clean.
+It does not generate business adapters, outbox/inbox behavior, or registrar
+policy.
+
+## Migration and upgrade
+
+Run v0.2 migration with the newly installed skill copy so the v0.3 templates
+are available:
+
+```bash
+python3 <installed-skill>/scripts/modular.py migrate v0.2-to-v0.3 \
+  --project-dir . --modular-version v0.3.0 --diff
+python3 <installed-skill>/scripts/modular.py migrate v0.2-to-v0.3 \
+  --project-dir . --modular-version v0.3.0 --apply
+```
+
+Customized `internal/platform/wiring/business.go` stops automatic migration.
+So does a customized legacy `config/<svc>/config.go`; move its settings to
+`config/modules/<svc>/config.go` first. Align conflicting per-service resources
+before migrating a v0.2 single topology. Use `project upgrade --apply` for
+dependency/tool upgrades that do not change the architecture model.
+
+## Verification and safety
+
+All mutating commands accept `--dry-run` and `--diff`. Removal, extraction, and
+migration commands require `--apply`; their default mode is a preview.
+
+- `make scaffold-check`: self-check, strict framework doctor, placeholder scan,
+  and build.
+- `make contract-check`: Buf lint/generate, contract doctor, and build.
+- `make verify`: formatting, vet, build, tests, race tests, test-presence checks,
+  and zero unfinished markers.
+
+`.modular/architecture.yaml` is the user-maintained architecture source.
+`.modular/manifest.json` records generated ownership and hashes. Managed files
+are updated only from a known hash; scaffold-once files remain user-owned.
+`prune --apply` deletes only unchanged managed files. Writes are staged and
+rolled back when post-write verification fails.

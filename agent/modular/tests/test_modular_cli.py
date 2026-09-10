@@ -79,6 +79,17 @@ class ModularCliTest(unittest.TestCase):
         )
         return out / name
 
+    def init_v3_project(self, name: str = "demo") -> Path:
+        out = self.root / (name + "-v3-out")
+        self.run_cli(
+            "init",
+            name,
+            "--out",
+            str(out),
+            version="v0.3.0",
+        )
+        return out / name
+
     def project_cli(
         self,
         project: Path,
@@ -451,6 +462,383 @@ class ModularCliTest(unittest.TestCase):
         self.assertNotIn("replace github.com/wplbyx/modular", updated)
         manifest = json.loads((project / ".modular/manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["project"]["modular_version"], "v0.3.1")
+
+    def test_v3_init_and_headless_modules_share_process_runtime(self) -> None:
+        project = self.init_v3_project()
+        manifest = json.loads((project / ".modular/manifest.json").read_text(encoding="utf-8"))
+        architecture_path = project / ".modular/architecture.yaml"
+        architecture = json.loads(architecture_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["project"]["model"], "module-process")
+        self.assertNotIn("topology", manifest["project"])
+        self.assertEqual(architecture["processes"]["demo"]["transports"], ["http"])
+        self.assertEqual(architecture["modules"], {})
+        self.assertIn("PYTHON ?= python3", (project / "Makefile").read_text(encoding="utf-8"))
+        make_targets = (project / ".modular/make/modular.mk").read_text(encoding="utf-8")
+        self.assertIn("scaffold-module:", make_targets)
+        self.assertIn("scaffold-process:", make_targets)
+        self.assertIn("scaffold-extract-check:", make_targets)
+        profile = (project / ".modular/profile.toml").read_text(encoding="utf-8")
+        self.assertIn('"internal/modules/*/internal/**/*.go"', profile)
+
+        self.project_cli(project, "module", "add", "customer", version="v0.3.0")
+        self.project_cli(
+            project,
+            "module",
+            "add",
+            "order",
+            "--depends-on",
+            "customer",
+            version="v0.3.0",
+        )
+        self.project_cli(project, "transport", "add", "demo", "grpc", version="v0.3.0")
+        self.project_cli(
+            project,
+            "resource",
+            "add",
+            "db",
+            "--driver",
+            "bun",
+            version="v0.3.0",
+        )
+
+        architecture = json.loads(architecture_path.read_text(encoding="utf-8"))
+        self.assertEqual(architecture["modules"]["order"]["dependencies"], ["customer"])
+        self.assertEqual(architecture["processes"]["demo"]["modules"], ["customer", "order"])
+        self.assertFalse((project / "internal/modules/customer/internal").exists())
+        self.assertTrue((project / "config/modules/customer/config.go").is_file())
+
+        framework = (project / "cmd/demo/framework.gen.go").read_text(encoding="utf-8")
+        process_config = (project / "config/demo/config.gen.go").read_text(encoding="utf-8")
+        wiring = (project / "internal/platform/wiring/framework.gen.go").read_text(encoding="utf-8")
+        self.assertEqual(framework.count("httpserver.NewServer("), 1)
+        self.assertEqual(framework.count("rpcserver.NewServer("), 1)
+        self.assertEqual(framework.count("bunresource.NewResource("), 1)
+        self.assertRegex(process_config, r"Customer\s+customerconfig\.Config")
+        self.assertRegex(process_config, r"Order\s+orderconfig\.Config")
+        self.assertRegex(wiring, r"DB\s+\*bunresource\.Resource")
+        self.assertIn("WithHealthManager(healthManager)", framework)
+        self.assertIn("cfg.Application.InstanceID", framework)
+        self.assertIn("cfg.Application.Metadata", framework)
+        self.assertIn("app.WithRegistrar(contribution.Registrar)", framework)
+        self.assertIn("Registrar registry.Registrar", wiring)
+
+    def test_v3_module_dependency_cycle_is_rejected_without_writes(self) -> None:
+        project = self.init_v3_project()
+        self.project_cli(project, "module", "add", "customer", version="v0.3.0")
+        self.project_cli(
+            project,
+            "module",
+            "add",
+            "order",
+            "--depends-on",
+            "customer",
+            version="v0.3.0",
+        )
+        architecture_path = project / ".modular/architecture.yaml"
+        before = architecture_path.read_bytes()
+
+        completed = self.project_cli(
+            project,
+            "module",
+            "depend",
+            "add",
+            "customer",
+            "order",
+            version="v0.3.0",
+            expect_ok=False,
+        )
+
+        self.assertIn("module dependency cycle", completed.stderr)
+        self.assertEqual(before, architecture_path.read_bytes())
+
+    def test_v3_processes_keep_different_database_provider_types(self) -> None:
+        project = self.init_v3_project()
+        self.project_cli(project, "process", "add", "worker", version="v0.3.0")
+        self.project_cli(
+            project,
+            "resource",
+            "add",
+            "db",
+            "--process",
+            "demo",
+            "--driver",
+            "bun",
+            version="v0.3.0",
+        )
+        self.project_cli(
+            project,
+            "resource",
+            "add",
+            "db",
+            "--process",
+            "worker",
+            "--driver",
+            "gorm",
+            "--dialect",
+            "sqlite",
+            version="v0.3.0",
+        )
+
+        wiring = (project / "internal/platform/wiring/framework.gen.go").read_text(encoding="utf-8")
+        demo = (project / "cmd/demo/framework.gen.go").read_text(encoding="utf-8")
+        worker = (project / "cmd/worker/framework.gen.go").read_text(encoding="utf-8")
+        self.assertIn("type DemoResources struct", wiring)
+        self.assertIn("type WorkerResources struct", wiring)
+        self.assertRegex(wiring, r"DB\s+\*bunresource\.Resource")
+        self.assertRegex(wiring, r"DB\s+\*modulargorm\.Resource")
+        self.assertIn("platform.Resources.Demo.DB = dbResource", demo)
+        self.assertIn("platform.Resources.Worker.DB = dbResource", worker)
+
+        legacy = self.project_cli(
+            project,
+            "service",
+            "add",
+            "legacy",
+            "--transport",
+            "http",
+            version="v0.3.0",
+            expect_ok=False,
+        )
+        self.assertIn("service commands are v0.2-only", legacy.stderr)
+
+    def test_v3_doctor_enforces_declared_contract_only_imports(self) -> None:
+        project = self.init_v3_project()
+        self.project_cli(project, "module", "add", "customer", version="v0.3.0")
+        self.project_cli(project, "module", "add", "order", version="v0.3.0")
+        app_dir = project / "internal/modules/order/internal/app"
+        app_dir.mkdir(parents=True)
+        source = app_dir / "use_customer.go"
+        source.write_text(
+            'package app\n\nimport _ "demo/common/customer"\n',
+            encoding="utf-8",
+        )
+
+        undeclared = self.project_cli(
+            project,
+            "doctor",
+            version="v0.3.0",
+            expect_ok=False,
+        )
+        self.assertIn("imports undeclared dependency order -> customer", undeclared.stderr)
+
+        self.project_cli(
+            project,
+            "module",
+            "depend",
+            "add",
+            "order",
+            "customer",
+            version="v0.3.0",
+        )
+        source.write_text(
+            'package app\n\nimport _ "demo/internal/modules/customer/internal/app"\n',
+            encoding="utf-8",
+        )
+        implementation_import = self.project_cli(
+            project,
+            "doctor",
+            version="v0.3.0",
+            expect_ok=False,
+        )
+        self.assertIn("crosses into customer outside its contract", implementation_import.stderr)
+
+    def test_v3_extraction_reports_blockers_and_required_adapters(self) -> None:
+        project = self.init_v3_project()
+        self.project_cli(project, "module", "add", "inventory", version="v0.3.0")
+        self.project_cli(
+            project,
+            "module",
+            "add",
+            "order",
+            "--depends-on",
+            "inventory",
+            version="v0.3.0",
+        )
+        self.project_cli(
+            project,
+            "module",
+            "blocker",
+            "add",
+            "--module",
+            "order",
+            "--module",
+            "inventory",
+            "--kind",
+            "shared-transaction",
+            "--reason",
+            "reservation commits with order",
+            version="v0.3.0",
+        )
+        self.project_cli(project, "process", "add", "order_api", version="v0.3.0")
+
+        blocked = self.project_cli(
+            project,
+            "module",
+            "extract",
+            "order",
+            "--to-process",
+            "order_api",
+            "--check",
+            version="v0.3.0",
+            expect_ok=False,
+        )
+        self.assertIn("shared-transaction: reservation commits with order", blocked.stderr)
+        bypass = self.project_cli(
+            project,
+            "process",
+            "attach",
+            "order_api",
+            "order",
+            version="v0.3.0",
+            expect_ok=False,
+        )
+        self.assertIn("module cannot move across processes", bypass.stderr)
+
+        architecture_path = project / ".modular/architecture.yaml"
+        architecture = json.loads(architecture_path.read_text(encoding="utf-8"))
+        architecture["extraction_blockers"] = []
+        architecture_path.write_text(json.dumps(architecture, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        missing = self.project_cli(
+            project,
+            "module",
+            "extract",
+            "order",
+            "--to-process",
+            "order_api",
+            "--check",
+            version="v0.3.0",
+            expect_ok=False,
+        )
+        self.assertIn("missing protobuf contract for module inventory", missing.stderr)
+        self.assertIn("missing remote adapter for order -> inventory", missing.stderr)
+
+        proto_dir = project / "proto/inventory"
+        proto_dir.mkdir(parents=True)
+        (proto_dir / "inventory.proto").write_text('syntax = "proto3";\n', encoding="utf-8")
+        adapter_dir = project / "internal/modules/order/internal/adapters/remote/inventory"
+        adapter_dir.mkdir(parents=True)
+        (adapter_dir / "adapter.go").write_text("package inventory\n", encoding="utf-8")
+        ready = self.project_cli(
+            project,
+            "module",
+            "extract",
+            "order",
+            "--to-process",
+            "order_api",
+            "--check",
+            version="v0.3.0",
+        )
+        self.assertIn("module order is extractable", ready.stdout)
+
+        self.project_cli(
+            project,
+            "module",
+            "extract",
+            "order",
+            "--to-process",
+            "order_api",
+            "--apply",
+            version="v0.3.0",
+        )
+        architecture = json.loads(architecture_path.read_text(encoding="utf-8"))
+        self.assertEqual(architecture["processes"]["order_api"]["modules"], ["order"])
+        self.assertTrue((project / "cmd/order_api/framework.gen.go").is_file())
+
+    def test_v02_project_migrates_to_v3_and_creates_architecture(self) -> None:
+        project = self.init_project()
+        self.project_cli(project, "service", "add", "customer", "--transport", "http")
+        self.project_cli(project, "service", "add", "order", "--transport", "grpc")
+        self.project_cli(project, "resource", "add", "db", "--svc", "customer", "--driver", "bun")
+        go_mod = project / "go.mod"
+        go_mod.write_text(go_mod.read_text(encoding="utf-8") + "\nrequire example.com/keep v1.2.3\n", encoding="utf-8")
+        buf_gen = project / "buf.gen.yaml"
+        buf_gen.write_text(buf_gen.read_text(encoding="utf-8") + "# custom buf option\n", encoding="utf-8")
+        gitignore = project / ".gitignore"
+        gitignore.write_text(gitignore.read_text(encoding="utf-8") + "custom-output/\n", encoding="utf-8")
+
+        preview = self.project_cli(
+            project,
+            "migrate",
+            "v0.2-to-v0.3",
+            "--modular-version",
+            "v0.3.0",
+            version="v0.3.0",
+        )
+        self.assertIn("create .modular/architecture.yaml", preview.stdout)
+        self.assertFalse((project / ".modular/architecture.yaml").exists())
+
+        self.project_cli(
+            project,
+            "migrate",
+            "v0.2-to-v0.3",
+            "--modular-version",
+            "v0.3.0",
+            "--apply",
+            version="v0.3.0",
+        )
+        manifest = json.loads((project / ".modular/manifest.json").read_text(encoding="utf-8"))
+        architecture = json.loads((project / ".modular/architecture.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["project"]["model"], "module-process")
+        self.assertNotIn("topology", manifest["project"])
+        self.assertEqual(architecture["processes"]["demo"]["modules"], ["customer", "order"])
+        self.assertEqual(architecture["processes"]["demo"]["transports"], ["grpc", "http"])
+        self.assertEqual(architecture["processes"]["demo"]["resources"]["db"]["kind"], "db")
+        self.assertIn("type Contribution struct", (project / "internal/platform/wiring/framework.gen.go").read_text(encoding="utf-8"))
+        migrated_go_mod = go_mod.read_text(encoding="utf-8")
+        self.assertIn("github.com/wplbyx/modular v0.3.0", migrated_go_mod)
+        self.assertIn("example.com/keep v1.2.3", migrated_go_mod)
+        self.assertIn("local: protoc-gen-go-modular", buf_gen.read_text(encoding="utf-8"))
+        self.assertIn("# custom buf option", buf_gen.read_text(encoding="utf-8"))
+        self.assertIn("custom-output/", gitignore.read_text(encoding="utf-8"))
+        self.assertFalse((project / "config/customer/config.go").exists())
+        self.assertFalse((project / "config/order/config.go").exists())
+
+    def test_v02_migration_stops_for_customized_module_config_extension(self) -> None:
+        project = self.init_project()
+        self.project_cli(project, "service", "add", "customer", "--transport", "http")
+        extension = project / "config/customer/config.go"
+        extension.write_text(extension.read_text(encoding="utf-8") + "\n// customer setting\n", encoding="utf-8")
+
+        completed = self.project_cli(
+            project,
+            "migrate",
+            "v0.2-to-v0.3",
+            "--modular-version",
+            "v0.3.0",
+            "--apply",
+            version="v0.3.0",
+            expect_ok=False,
+        )
+
+        self.assertIn("move its module settings to config/modules/customer/config.go", completed.stderr)
+        self.assertFalse((project / ".modular/architecture.yaml").exists())
+        self.assertIn("// customer setting", extension.read_text(encoding="utf-8"))
+
+    def test_empty_v02_project_migrates_to_headless_v3_process(self) -> None:
+        project = self.init_project(topology="service")
+
+        self.project_cli(
+            project,
+            "migrate",
+            "v0.2-to-v0.3",
+            "--modular-version",
+            "v0.3.0",
+            "--apply",
+            version="v0.3.0",
+        )
+
+        architecture = json.loads((project / ".modular/architecture.yaml").read_text(encoding="utf-8"))
+        process = architecture["processes"]["demo"]
+        self.assertEqual(process["modules"], [])
+        self.assertEqual(process["transports"], [])
+        self.assertEqual(process["resources"], {})
+        framework = (project / "cmd/demo/framework.gen.go").read_text(encoding="utf-8")
+        self.assertIn("app.NewApplication", framework)
+        self.assertIn("endpoints := make([]core.Endpoint, 0)", framework)
+        self.assertIn("transports := make([]core.Transport, 0)", framework)
+        self.assertNotIn("httpserver.NewServer", framework)
+        self.assertNotIn("rpcserver.NewServer", framework)
 
 
 class ModularSkillContentTest(unittest.TestCase):

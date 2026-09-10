@@ -10,8 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/health"
 	modularlog "github.com/wplbyx/modular/packages/log"
 )
 
@@ -161,6 +165,15 @@ func (e *testEndpoint) Startup(ctx context.Context) error {
 	}
 }
 
+func (e *testEndpoint) Ready(ctx context.Context) error {
+	select {
+	case <-e.started:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (e *testEndpoint) Shutdown(context.Context) error {
 	e.stopCount++
 	return nil
@@ -172,6 +185,7 @@ type testRegistrar struct {
 	registerErr  error
 	registered   []*core.ServiceNode
 	unregistered []*core.ServiceNode
+	registeredCh chan struct{}
 }
 
 func (r *testRegistrar) Register(_ context.Context, node *core.ServiceNode) error {
@@ -179,6 +193,9 @@ func (r *testRegistrar) Register(_ context.Context, node *core.ServiceNode) erro
 		return r.registerErr
 	}
 	r.registered = append(r.registered, node)
+	if r.registeredCh != nil {
+		close(r.registeredCh)
+	}
 	return nil
 }
 
@@ -244,7 +261,7 @@ func TestApplicationRegistersServiceNode(t *testing.T) {
 		"holo", "v1.2.3",
 		core.Transport{Protocol: "http", Address: "127.0.0.1", Port: 8080, HealthPath: "/health"},
 	)
-	reg := &testRegistrar{}
+	reg := &testRegistrar{registeredCh: make(chan struct{})}
 
 	application, err := NewApplication(ctx, &configitem.Application{Name: "holo", Version: "v1.2.3"}, modularlog.Default(),
 		WithRegistrar(reg),
@@ -264,8 +281,10 @@ func TestApplicationRegistersServiceNode(t *testing.T) {
 		t.Fatal("endpoint did not start")
 	}
 
-	if len(reg.registered) != 1 {
-		t.Fatalf("registered = %d", len(reg.registered))
+	select {
+	case <-reg.registeredCh:
+	case <-time.After(time.Second):
+		t.Fatal("service node was not registered")
 	}
 	regNode := reg.registered[0]
 	if regNode.Name != "holo" || regNode.Version != "v1.2.3" {
@@ -286,7 +305,7 @@ func TestApplicationRegistersServiceNode(t *testing.T) {
 	}
 }
 
-func TestApplicationRegisterFailureDoesNotStartEndpoint(t *testing.T) {
+func TestApplicationRegisterFailureCleansUpStartedEndpoint(t *testing.T) {
 	ctx := context.Background()
 	endpoint := &testEndpoint{started: make(chan struct{})}
 	node := core.NewServiceNode(
@@ -309,8 +328,11 @@ func TestApplicationRegisterFailureDoesNotStartEndpoint(t *testing.T) {
 	}
 	select {
 	case <-endpoint.started:
-		t.Fatal("endpoint started after registration failure")
+		if endpoint.stopCount != 1 {
+			t.Fatalf("endpoint shutdown count = %d, want 1", endpoint.stopCount)
+		}
 	default:
+		t.Fatal("endpoint did not start before registration")
 	}
 }
 
@@ -381,11 +403,11 @@ func TestApplicationRunParallelStop(t *testing.T) {
 	}
 }
 
-func TestApplicationRunNoEndpointsExitsCleanly(t *testing.T) {
+func TestApplicationRunNoEndpointsWaitsAndManagesResources(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	res := &testResource{name: "only", initOrder: &[]string{}}
+	var order []string
+	res := &testResource{name: "only", initOrder: &order}
 
 	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
 		WithResource(res),
@@ -399,12 +421,129 @@ func TestApplicationRunNoEndpointsExitsCleanly(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Run() hung with no endpoints")
+		t.Fatalf("Run() returned before cancellation: %v", err)
+	case <-time.After(20 * time.Millisecond):
 	}
+	cancel()
+	require.NoError(t, <-errCh)
+	assert.Equal(t, []string{"only", "only"}, order)
+}
+
+func TestApplicationWaitsForEndpointReadinessBeforeRegister(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ready := make(chan struct{})
+	endpoint := &gatedReadyEndpoint{started: make(chan struct{}), ready: ready}
+	registered := make(chan struct{})
+	reg := &testRegistrar{registeredCh: registered}
+	node := core.NewServiceNode("test", "v1", core.Transport{Protocol: "http", Address: "127.0.0.1", Port: 8080})
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
+		WithEndpoint(endpoint), WithRegistrar(reg), WithServiceNode(node),
+	)
+	require.NoError(t, err)
+	errCh := make(chan error, 1)
+	go func() { errCh <- application.Run() }()
+	<-endpoint.started
+
+	select {
+	case <-registered:
+		t.Fatal("service node registered before endpoint readiness")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(ready)
+	select {
+	case <-registered:
+	case <-time.After(time.Second):
+		t.Fatal("service node was not registered after readiness")
+	}
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestApplicationHealthAndShutdownOrdering(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := &eventRecorder{}
+	ready := make(chan struct{})
+	endpoint := &orderedEndpoint{started: make(chan struct{}), ready: ready, events: events}
+	resource := &orderedResource{events: events}
+	manager := health.NewManager()
+	registrar := &orderedRegistrar{events: events, manager: manager, registered: make(chan struct{})}
+	node := core.NewServiceNode("test", "v1", core.Transport{Protocol: "http", Address: "127.0.0.1", Port: 8080})
+
+	application, err := NewApplication(ctx, &configitem.Application{Name: "test"}, modularlog.Default(),
+		WithResource(resource),
+		WithEndpoint(endpoint),
+		WithRegistrar(registrar),
+		WithServiceNode(node),
+		WithHealthManager(manager),
+	)
+	require.NoError(t, err)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- application.Run() }()
+	<-endpoint.started
+	assert.Equal(t, health.StateStarting, manager.State())
+	close(ready)
+	<-registrar.registered
+	require.Eventually(t, func() bool { return manager.State() == health.StateReady }, time.Second, time.Millisecond)
+	report := manager.DetailedReport(context.Background())
+	require.Len(t, report.Checks, 1)
+	assert.Equal(t, "ordered", report.Checks[0].Name)
+	assert.Equal(t, health.StatusOK, report.Checks[0].Status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+	assert.Equal(t, health.StateDraining, manager.State())
+	assert.Equal(t, []string{
+		"resource-setup",
+		"endpoint-startup",
+		"endpoint-ready",
+		"register-starting",
+		"unregister-draining",
+		"endpoint-shutdown",
+		"resource-close",
+	}, events.Values())
+}
+
+func TestApplicationShutdownTimeoutBoundsBlockingResource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	block := make(chan struct{})
+	closeStarted := make(chan struct{})
+	resource := core.NewManagedResource(
+		"blocking",
+		func(context.Context) (int, error) { return 1, nil },
+		func(context.Context, int) error {
+			close(closeStarted)
+			<-block
+			return nil
+		},
+	)
+	endpoint := &testEndpoint{started: make(chan struct{})}
+	application, err := NewApplication(
+		ctx,
+		&configitem.Application{Name: "test", ShutdownTimeout: 20 * time.Millisecond},
+		modularlog.Default(),
+		WithResource(resource),
+		WithEndpoint(endpoint),
+	)
+	require.NoError(t, err)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- application.Run() }()
+	<-endpoint.started
+	cancel()
+	<-closeStarted
+	select {
+	case runErr := <-errCh:
+		require.ErrorIs(t, runErr, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		t.Fatal("Run blocked past shutdown timeout")
+	}
+	close(block)
+	require.NoError(t, resource.Close(context.Background()))
 }
 
 func TestApplicationRunEndpointErrorPropagated(t *testing.T) {
@@ -578,6 +717,15 @@ func (e *slowEndpoint) Startup(ctx context.Context) error {
 	return ctx.Err()
 }
 
+func (e *slowEndpoint) Ready(ctx context.Context) error {
+	select {
+	case <-e.started:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (e *slowEndpoint) Shutdown(context.Context) error {
 	e.mu.Lock()
 	if e.stopped {
@@ -588,5 +736,102 @@ func (e *slowEndpoint) Shutdown(context.Context) error {
 	e.mu.Unlock()
 	time.Sleep(e.stopDelay)
 	atomic.AddInt64(e.count, 1)
+	return nil
+}
+
+type gatedReadyEndpoint struct {
+	started chan struct{}
+	ready   chan struct{}
+}
+
+func (e *gatedReadyEndpoint) Name() string { return "gated" }
+
+func (e *gatedReadyEndpoint) Startup(ctx context.Context) error {
+	close(e.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (e *gatedReadyEndpoint) Ready(ctx context.Context) error {
+	select {
+	case <-e.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *gatedReadyEndpoint) Shutdown(context.Context) error { return nil }
+
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (recorder *eventRecorder) Add(event string) {
+	recorder.mu.Lock()
+	recorder.events = append(recorder.events, event)
+	recorder.mu.Unlock()
+}
+
+func (recorder *eventRecorder) Values() []string {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return append([]string(nil), recorder.events...)
+}
+
+type orderedResource struct{ events *eventRecorder }
+
+func (resource *orderedResource) Name() string { return "ordered" }
+func (resource *orderedResource) Setup(context.Context) error {
+	resource.events.Add("resource-setup")
+	return nil
+}
+func (resource *orderedResource) Close(context.Context) error {
+	resource.events.Add("resource-close")
+	return nil
+}
+func (*orderedResource) Check(context.Context) error { return nil }
+
+type orderedEndpoint struct {
+	started chan struct{}
+	ready   chan struct{}
+	events  *eventRecorder
+}
+
+func (endpoint *orderedEndpoint) Name() string { return "ordered" }
+func (endpoint *orderedEndpoint) Startup(ctx context.Context) error {
+	endpoint.events.Add("endpoint-startup")
+	close(endpoint.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (endpoint *orderedEndpoint) Ready(ctx context.Context) error {
+	select {
+	case <-endpoint.ready:
+		endpoint.events.Add("endpoint-ready")
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (endpoint *orderedEndpoint) Shutdown(context.Context) error {
+	endpoint.events.Add("endpoint-shutdown")
+	return nil
+}
+
+type orderedRegistrar struct {
+	events     *eventRecorder
+	manager    *health.Manager
+	registered chan struct{}
+}
+
+func (registrar *orderedRegistrar) Register(context.Context, *core.ServiceNode) error {
+	registrar.events.Add("register-" + string(registrar.manager.State()))
+	close(registrar.registered)
+	return nil
+}
+func (registrar *orderedRegistrar) Unregister(context.Context, *core.ServiceNode) error {
+	registrar.events.Add("unregister-" + string(registrar.manager.State()))
 	return nil
 }

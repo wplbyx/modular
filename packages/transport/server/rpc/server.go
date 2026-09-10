@@ -25,7 +25,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var _ core.Endpoint = (*Server)(nil)
+var _ core.ReadyEndpoint = (*Server)(nil)
 
 // Server is a gRPC server implementation
 type Server struct {
@@ -41,6 +41,8 @@ type Server struct {
 	mu             sync.RWMutex
 	isRunning      bool
 	listenerClosed bool
+	ready          chan struct{}
+	readyOnce      sync.Once
 }
 
 // Option defines gRPC server configuration options
@@ -82,6 +84,7 @@ func NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Se
 		config:    cfg,
 		listener:  listener,
 		isRunning: false,
+		ready:     make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -140,7 +143,7 @@ func NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Se
 	}
 
 	grpc_health_v1.RegisterHealthServer(s.grpcServer, s.health)
-	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
 	return s, nil
 }
@@ -231,6 +234,8 @@ func (s *Server) Startup(ctx context.Context) error {
 	listener := s.listener
 	s.isRunning = true
 	s.mu.Unlock()
+	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	s.readyOnce.Do(func() { close(s.ready) })
 
 	s.policy.Logger().Info(ctx, "gRPC server listening", zap.Stringer("address", listener.Addr()))
 
@@ -244,6 +249,16 @@ func (s *Server) Startup(ctx context.Context) error {
 		return fmt.Errorf("gRPC server error: %w", err)
 	}
 	return nil
+}
+
+// Ready waits until the gRPC endpoint can accept traffic.
+func (s *Server) Ready(ctx context.Context) error {
+	select {
+	case <-s.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Shutdown gracefully stops the gRPC server

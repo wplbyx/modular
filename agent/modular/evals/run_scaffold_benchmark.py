@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run objective old-vs-v2 scaffold regression scenarios.
+"""Run objective baseline-vs-v0.3 scaffold regression scenarios.
 
 This complements the Agent prompts in evals.json. It deliberately measures only
 deterministic scaffold behavior; independent Agent runs remain the authority for
@@ -72,21 +72,33 @@ def run(
     return completed
 
 
-def testing_env() -> dict[str, str]:
+def testing_env(version: str = "v0.3.0") -> dict[str, str]:
     env = os.environ.copy()
     env["MODULAR_SCAFFOLD_TESTING"] = "1"
-    env["MODULAR_SCAFFOLD_TEST_VERSION"] = "v0.2.0"
+    env["MODULAR_SCAFFOLD_TEST_VERSION"] = version
     return env
 
 
 def new_project(root: Path, name: str, commands: list[str], errors: list[str]) -> Path:
     out = root / "out"
     run(
-        [sys.executable, str(CURRENT_CLI), "init", name, "--topology", "single", "--out", str(out)],
+        [sys.executable, str(CURRENT_CLI), "init", name, "--out", str(out)],
         cwd=root,
         commands=commands,
         errors=errors,
         env=testing_env(),
+    )
+    return out / name
+
+
+def new_v2_project(root: Path, name: str, commands: list[str], errors: list[str]) -> Path:
+    out = root / "out"
+    run(
+        [sys.executable, str(CURRENT_CLI), "init", name, "--topology", "single", "--out", str(out)],
+        cwd=root,
+        commands=commands,
+        errors=errors,
+        env=testing_env("v0.2.0"),
     )
     return out / name
 
@@ -192,8 +204,14 @@ def common_facts(project: Path) -> dict[str, bool | int | str]:
         "has_local_replace": "replace github.com/wplbyx/modular" in go_mod,
         "has_manifest": (project / ".modular/manifest.json").is_file(),
         "has_local_tool": (project / ".modular/tool/modular.py").is_file(),
-        "has_domain_shell": any(path.as_posix().startswith("internal/user/domain/") for path in files),
-        "has_repository_shell": any(path.as_posix().startswith("internal/user/repository/") for path in files),
+        "has_domain_shell": any(
+            path.as_posix().startswith(("internal/user/domain/", "internal/modules/user/internal/domain/"))
+            for path in files
+        ),
+        "has_repository_shell": any(
+            path.as_posix().startswith(("internal/user/repository/", "internal/modules/user/internal/repository/"))
+            for path in files
+        ),
         "bootstrap_order": -1 not in positions and positions == sorted(positions),
         "has_cmd_policy": any(path.as_posix().startswith("cmd/") and path.name == "policy.go" for path in files),
         "uses_removed_logger_api": any(symbol in source_text for symbol in ("log.GetLogger(", "log.Infof(", "log.Warnf(", "log.Errorf(")),
@@ -233,7 +251,7 @@ def run_new_framework(root: Path, commands: list[str], errors: list[str]) -> Run
     project = new_project(root, "frameworkdemo", commands, errors)
     cli = project / ".modular/tool/modular.py"
     run(
-        [sys.executable, str(cli), "service", "add", "user", "--transport", "http", "--project-dir", str(project)],
+        [sys.executable, str(cli), "module", "add", "user", "--project-dir", str(project)],
         cwd=root,
         commands=commands,
         errors=errors,
@@ -244,7 +262,7 @@ def run_new_framework(root: Path, commands: list[str], errors: list[str]) -> Run
     facts.update(
         {
             "http_only": "httpserver.NewServer" in framework and "rpcserver.NewServer" not in framework,
-            "build_passed": build_project(project, commands, errors, version="v0.2.0"),
+            "build_passed": build_project(project, commands, errors, version="v0.3.0"),
         }
     )
     return RunResult(facts, commands, errors, project)
@@ -274,9 +292,9 @@ def run_new_resources(root: Path, commands: list[str], errors: list[str]) -> Run
     project = new_project(root, "resourcedemo", commands, errors)
     cli = project / ".modular/tool/modular.py"
     base = [sys.executable, str(cli)]
-    run(base + ["service", "add", "user", "--transport", "http", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
+    run(base + ["module", "add", "user", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
     for resource in ["db", "redis", "storage", "telemetry"]:
-        args = base + ["resource", "add", resource, "--svc", "user", "--project-dir", str(project)]
+        args = base + ["resource", "add", resource, "--project-dir", str(project)]
         if resource == "db":
             args.extend(["--driver", "bun"])
         run(args, cwd=root, commands=commands, errors=errors, env=testing_env())
@@ -287,9 +305,9 @@ def run_new_resources(root: Path, commands: list[str], errors: list[str]) -> Run
     facts.update(
         {
             "all_resources_wired": all(token in cmd for token in ["bunresource.NewResource", "redisresource.NewResource", "storageresource.New", "telemetry.NewOpenTelemetry"]),
-            "typed_providers": all(token in wiring for token in ["UserDB", "*bunresource.Resource", "UserRedis", "*redisresource.Resource", "UserStorage", "*storageresource.Resource"]),
+            "typed_providers": all(token in wiring for token in ["type ResourcedemoResources struct", "*bunresource.Resource", "*redisresource.Resource", "*storageresource.Resource"]),
             "sync_idempotent": "no changes" in sync.stdout,
-            "build_passed": build_project(project, commands, errors, version="v0.2.0"),
+            "build_passed": build_project(project, commands, errors, version="v0.3.0"),
         }
     )
     return RunResult(facts, commands, errors, project)
@@ -318,27 +336,28 @@ def run_old_resources(root: Path, baseline: Path, commands: list[str], errors: l
 
 
 def run_new_migration(root: Path, commands: list[str], errors: list[str]) -> RunResult:
-    project = new_project(root, "migrationdemo", commands, errors)
+    project = new_v2_project(root, "migrationdemo", commands, errors)
     cli = project / ".modular/tool/modular.py"
     base = [sys.executable, str(cli)]
     for svc in ["user", "billing"]:
         run(base + ["service", "add", svc, "--transport", "http", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
-    business = project / "internal/platform/wiring/business.go"
-    business.write_text(business.read_text(encoding="utf-8") + "\n// user-owned wiring\n", encoding="utf-8")
+    business = project / "internal/user/custom.go"
+    business.parent.mkdir(parents=True, exist_ok=True)
+    business.write_text("package user\n\n// user-owned business\n", encoding="utf-8")
     before = hashlib.sha256(business.read_bytes()).hexdigest()
-    preview = run(base + ["migrate", "topology", "--to", "service", "--diff", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
-    preview_preserved = (project / "cmd/migrationdemo/main.go").is_file()
-    run(base + ["migrate", "topology", "--to", "service", "--apply", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
+    preview = run(base + ["migrate", "v0.2-to-v0.3", "--modular-version", "v0.3.0", "--diff", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
+    preview_preserved = not (project / ".modular/architecture.yaml").exists()
+    run(base + ["migrate", "v0.2-to-v0.3", "--modular-version", "v0.3.0", "--apply", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
     after = hashlib.sha256(business.read_bytes()).hexdigest()
     manifest = json.loads((project / ".modular/manifest.json").read_text(encoding="utf-8"))
     facts = common_facts(project)
     facts.update(
         {
             "migration_available": True,
-            "preview_no_write": preview_preserved and "delete cmd/migrationdemo/main.go" in preview.stdout,
+            "preview_no_write": preview_preserved and "create .modular/architecture.yaml" in preview.stdout,
             "business_preserved": before == after,
-            "topology_service": manifest["project"]["topology"] == "service" and (project / "cmd/user/framework.gen.go").is_file() and (project / "cmd/billing/framework.gen.go").is_file(),
-            "build_passed": build_project(project, commands, errors, version="v0.2.0"),
+            "topology_service": manifest["project"]["model"] == "module-process" and (project / ".modular/architecture.yaml").is_file(),
+            "build_passed": build_project(project, commands, errors, version="v0.3.0"),
         }
     )
     return RunResult(facts, commands, errors, project)
@@ -367,17 +386,11 @@ def run_new_operational(root: Path, commands: list[str], errors: list[str]) -> R
     project = new_project(root, "operationsdemo", commands, errors)
     cli = project / ".modular/tool/modular.py"
     base = [sys.executable, str(cli)]
-    for protocol in ["http", "grpc"]:
-        run(
-            base + ["service", "add", "orders", "--transport", protocol, "--project-dir", str(project)],
-            cwd=root,
-            commands=commands,
-            errors=errors,
-            env=testing_env(),
-        )
+    run(base + ["module", "add", "orders", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
+    run(base + ["transport", "add", "operationsdemo", "grpc", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
     for resource in ["telemetry", "eventbus"]:
         run(
-            base + ["resource", "add", resource, "--svc", "orders", "--project-dir", str(project)],
+            base + ["resource", "add", resource, "--project-dir", str(project)],
             cwd=root,
             commands=commands,
             errors=errors,
@@ -417,7 +430,7 @@ def run_new_operational(root: Path, commands: list[str], errors: list[str]) -> R
             "library_queue_ownership": "eventbus.New" in framework and not bool(facts["custom_ring_package"]),
             "strict_doctor": doctor.returncode == 0,
             "sync_idempotent": "no changes" in sync.stdout,
-            "build_passed": build_project(project, commands, errors, version="v0.2.0"),
+            "build_passed": build_project(project, commands, errors, version="v0.3.0"),
         }
     )
     return RunResult(facts, commands, errors, project)
@@ -459,8 +472,8 @@ def run_old_operational(root: Path, baseline: Path, commands: list[str], errors:
 SCENARIOS = [
     Scenario(
         1,
-        "framework-http-svc",
-        "Initialize a single-process project and add one HTTP-only user svc without business shells.",
+        "framework-http-module",
+        "Initialize one Process and add an HTTP-exposed user Business Module without business shells.",
         [
             "The project uses a concrete remote dependency without a local replace.",
             "The selected framework is HTTP-only.",
@@ -487,13 +500,13 @@ SCENARIOS = [
     ),
     Scenario(
         4,
-        "topology-migration",
-        "Preview and apply single-to-service topology migration while preserving user business wiring.",
+        "v02-module-process-migration",
+        "Preview and apply v0.2-to-v0.3 migration while preserving user business code.",
         [
-            "A deterministic topology migration command is available.",
+            "A deterministic v0.2-to-v0.3 migration command is available.",
             "The diff preview does not write files.",
             "User-owned business wiring is preserved byte-for-byte.",
-            "The manifest and managed cmd files switch to service topology.",
+            "The manifest and architecture switch to the Module/Process model.",
             "The migrated framework builds.",
         ],
         run_new_migration,
@@ -502,7 +515,7 @@ SCENARIOS = [
     Scenario(
         6,
         "operational-bootstrap-and-transport-policy",
-        "Initialize HTTP and gRPC orders transports with Telemetry and EventBus under cmd-owned policy.",
+        "Initialize one HTTP/gRPC Process with an orders module, Telemetry, and EventBus under cmd-owned policy.",
         [
             "Process config declares Logging and bootstrap order is config, logger, policy, resources/endpoints, Application.",
             "A scaffold-once cmd policy configures one shared HTTP and gRPC transport policy.",

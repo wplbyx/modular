@@ -39,17 +39,17 @@ Install the standalone generator once:
 go install github.com/wplbyx/modular/packages/generate/cmd/err_template_gen@latest
 ```
 
-For service topology, keep the catalog with that process configuration and scan only its business packages:
+For a Process hosting one module, keep the catalog with that Process and scan only the module's implementation:
 
 ```bash
 err_template_gen \
   --root . \
-  --packages ./internal/user/... \
-  --out ./config/user/locales \
+  --packages ./internal/modules/user/... \
+  --out ./config/user_api/locales \
   --languages zh-CN,en-US
 ```
 
-For single topology, generate one process catalog containing every included svc reason:
+For a Process hosting several modules, generate one catalog containing every hosted module reason:
 
 ```bash
 err_template_gen \
@@ -123,7 +123,7 @@ grpcServer, err := rpcserver.NewServer(
 )
 ```
 
-Use the locale directory for the current process topology. A single process with multiple svc modules still has one Catalog and one Handler; do not load locale files from business packages.
+Use the locale directory for the current Process. One Process has one Catalog and one Handler even when it hosts multiple Business Modules; do not load locale files from business packages.
 
 HTTP adapters return errors through `httpserver.Wrap` or `c.Error`. HTTP reads `Accept-Language`; gRPC reads `accept-language` metadata. The framework selects the locale and returns only `code`, `reason`, and localized `message`.
 

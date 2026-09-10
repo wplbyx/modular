@@ -12,7 +12,7 @@ import (
 	"github.com/wplbyx/modular/packages/core"
 )
 
-var _ core.Endpoint = (*Server)(nil)
+var _ core.ReadyEndpoint = (*Server)(nil)
 
 // Message 定义推送的消息结构。
 type Message struct {
@@ -36,6 +36,8 @@ type Server struct {
 	started    bool
 	cancel     context.CancelFunc
 	startupID  *struct{}
+	ready      chan struct{}
+	readyOnce  sync.Once
 }
 
 // NewServer 创建一个新的 SSE 服务实例。
@@ -47,6 +49,7 @@ func NewServer(bufferSize int) *Server {
 	return &Server{
 		clients:    make(map[string]*Client),
 		bufferSize: bufferSize,
+		ready:      make(chan struct{}),
 	}
 }
 
@@ -72,6 +75,7 @@ func (s *Server) Startup(ctx context.Context) error {
 	s.cancel = cancel
 	s.startupID = startupID
 	s.mu.Unlock()
+	s.readyOnce.Do(func() { close(s.ready) })
 
 	<-startupCtx.Done()
 
@@ -84,6 +88,16 @@ func (s *Server) Startup(ctx context.Context) error {
 	s.mu.Unlock()
 
 	return startupCtx.Err()
+}
+
+// Ready 等待 SSE Endpoint 完成启动。
+func (s *Server) Ready(ctx context.Context) error {
+	select {
+	case <-s.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Shutdown 关闭服务，清理所有连接。

@@ -1,35 +1,33 @@
-# AGENTS.md instructions for /Users/xinyue/code/modular
+# AGENTS.md instructions for /home/lbyx/code/modular
 
 # Repository Guidelines
 
 ## Design Philosophy
 
-`modular` 是一套 Go 基础设施积木库（module path: `github.com/wplbyx/modular`，Go 1.26+），目标是提供一套可复用的、符合 Go 惯用模式的基础设施方案，让业务项目依赖它来快速组建应用。
+`modular` 是一套模块化单体优先的 Go 应用积木库（module path: `github.com/wplbyx/modular`，Go 1.26+）。默认形态是一个 Process 承载多个 Business Module；需要时通过显式 extraction 把选定模块移到其他 Process。
 
 核心理念：
 
 - **积木式组装**：所有组件通过 `Option + 构造函数` 模式注入，业务侧零框架绑定。`Application` 只负责生命周期编排，不处理任何业务逻辑。
 - **两种资源类型**：`core.Endpoint`（接流量的服务对象：HTTP/gRPC/SSE/Pub-Sub）和 `core.Resource`（支撑性基础设施：DB/Redis/Cache/Storage/Telemetry）。Application 统一管理两者的生命周期。
 - **身份模型**：一个 Application 对应一个 `core.ServiceNode`，从启动配置构建。`ServiceNode` 是服务实例的完整元数据，用于服务注册与发现。`Endpoint.Name()` / `Resource.Name()` 仅用于日志区分组件模块，不是服务身份。
-- **proto 解耦**：业务层通过 proto 定义接口，生成 `_pb.go` Server/Client。模块间的依赖通过 proto 接口解耦，业务代码完全相同，只是 `cmd` 入口的注入方式不同。
-- **单体 <-> 微服务自由切换**：
-  - 单体架构：多个 pb server 共享同一个 `Application` 实例，进程内直接调用（`127.0.0.1`），不需要 `Registrar`。
-  - 微服务架构：每个 pb server 对应一个 `Application` 实例和一个 `cmd` 入口，通过 `Registrar` 做服务发现，跨进程调用。
-  - 切换方式：`cmd` 层注入不同的 Application 组装配置，internal 业务代码不变。
+- **模块与进程分离**：Business Module 是业务代码和数据写入边界；Process 是部署、配置、transport 和生命周期边界。一个 Process 共享一套 HTTP/gRPC Server、连接池、Telemetry、Health 和 EventBus。
+- **proto 契约**：外部和跨模块稳定接口使用 proto。生成的 unary `XxxServicePort` 在单体中直接注入实现，跨 Process 时注入标准 gRPC client 的 Remote Adapter；不承诺配置切换即可完成拆分。
+- **分级可提取**：默认模块为单体开发成本优化。共享事务等例外必须登记为 Extraction Blocker；候选模块通过 `module extract --check` 后再承担远程故障、幂等和可靠事件成本。
 - **谁最了解数据，谁负责生产数据**：Endpoint 不再向 Application 暴露裸 URL，也不做 ServiceNode 转换。ServiceNode 从配置构建，Application 只负责在 node 和 registrar 之间传值。
 
 ## Package Architecture
 
 ```
 packages/
-  core/           ← 零依赖核心抽象：Endpoint, Resource, ServiceNode, Transport
-  app/            ← Application 生命周期编排器 + Option 注入
+  core/           ← 零依赖核心抽象：Endpoint, Resource, ProcessIdentity, ServiceNode, Transport
+  app/            ← Application 生命周期编排器 + readiness + Option 注入
   config/         ← Viper 配置加载器 + 强类型配置结构体
   log/            ← Context 强制 Zap 日志 + cyub RingMPSC 异步分发
   metadata/       ← 不可变上下文元数据与安全传播策略
   eventbus/       ← 进程内有序 RingMPSC EventBus Resource
   errs/           ← 统一错误封装（支持错误链、堆栈、上下文字段）
-  generate/       ← 独立生成工具（错误语言模板生成与 CI 校验）
+  generate/       ← 错误语言模板与 protobuf Module Port 生成器
   util/           ← 通用工具（加密、随机、URL、请求）
   transport/
     server/       ← http, rpc, sse 服务器（实现 core.Endpoint）
@@ -52,7 +50,7 @@ packages/
 1. **core** — 零依赖，定义 Endpoint/Resource/ServiceNode 接口
 2. **config, errs, log, metadata, util** — 基础工具层，依赖标准库 + 少量第三方
 3. **transport, registry, infra, resilience, pool, patterns, auth, command, telemetry** — 功能层，依赖 core + 基础工具
-4. **app** — 编排层，依赖 core + config + registry + log
+4. **app** — 编排层，依赖 core + config + health + registry + log
 
 ## Build, Test, and Development Commands
 
@@ -110,14 +108,14 @@ chore: ignore packages/infra/storage/upload test artifact
 ### 生命周期契约（最重要的规则）
 
 - `core.Endpoint.Startup(ctx)` **必须阻塞**直到服务停止；`Application.Run` 把*任何*返回（nil 或 error）都当作退出信号。`Shutdown` 才是解除 `Startup` 阻塞的手段。见 `packages/core/adapter.go`。
-- `Application.Run` 内部顺序：`Resource.Setup`（FIFO）→ `registrar.Register(node)` → 全部 `Endpoint.Startup` **并行**（errgroup）→ 退出时：`Endpoint.Shutdown`（并行）→ `Unregister` → `Resource.Close`（LIFO）。Shutdown 由 `sync.Once` 保护，只执行一次，整体在单一 `shutdownTimeout` 预算内完成（默认 10s）。
-- **零 endpoint 的 `Application` 会打印 warning 并立即返回**（`application.go`），不要期望它会阻塞。
+- `Application.Run` 内部顺序：`Resource.Setup`（FIFO）→ 全部 `Endpoint.Startup/Ready` 并行 → `registrar.Register(node)` → Ready。退出时先 Draining/`Unregister` → `Endpoint.Shutdown`（并行）→ `Resource.Close`（LIFO）。
+- **零 endpoint 的 `Application` 会初始化 Resource 并等待 Context 取消**；一次性命令不要用 `Application.Run` 表达。
 - `Application` 是一次性的 `new -> running -> stopping -> stopped` 状态机；重复 `Run` 返回错误，Run 前 `Close` 不触发任何依赖生命周期。配置 Registrar 时必须同时配置 ServiceNode。
 - `app` 只**向下**导入（core + config + log + registry），**不导入 `transport`**——endpoint 永远以 `core.Endpoint` 接口注入。务必保持这条边界：不要让 app 反向依赖 transport/server。
 
-### Protobuf 只是设计目标，仓库里并不存在
+### Protobuf 契约生成
 
-- 尽管"proto 解耦"是设计哲学，仓库里**没有任何 `.proto` 文件、没有 `_pb.go`、没有 buf/protoc 工具链**。`grpc`/`protobuf` 依赖仅用于 gRPC transport server/client 与 registry resolver，并非本地代码生成。不要去找或期待已生成的服务代码。
+- 仓库本身不保存业务 `.proto` 或 `_pb.go`；下游项目通过 Buf 生成 `common/`。`protoc-gen-go-modular` 额外生成 unary Port 和 Remote Adapter，streaming 不做隐式本地适配。
 
 ### 错误处理与多语言
 

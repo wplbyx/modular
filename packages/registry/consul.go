@@ -46,7 +46,7 @@ func (c *Registry) Register(ctx context.Context, node *core.ServiceNode) error {
 
 	for _, t := range node.Transports {
 		reg := &api.AgentServiceRegistration{
-			ID:      transportID(node.ID, t.Protocol),
+			ID:      transportID(node.ID, t),
 			Name:    node.Name,
 			Address: t.Address,
 			Port:    t.Port,
@@ -75,7 +75,7 @@ func (c *Registry) Unregister(ctx context.Context, node *core.ServiceNode) error
 
 	var errs error
 	for _, t := range node.Transports {
-		id := transportID(node.ID, t.Protocol)
+		id := transportID(node.ID, t)
 		if err := c.client.Agent().ServiceDeregisterOpts(id, (&api.QueryOptions{}).WithContext(ctx)); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("deregister transport %s: %w", t.Protocol, err))
 		}
@@ -135,8 +135,8 @@ func (c *Registry) Watch(ctx context.Context, serviceName string) (<-chan []*cor
 }
 
 // transportID 涓哄崟涓?Transport 鐢熸垚 Consul 鏈嶅姟 ID
-func transportID(baseID, protocol string) string {
-	return fmt.Sprintf("%s-%s", baseID, protocol)
+func transportID(baseID string, transport core.Transport) string {
+	return core.GenerateID(baseID, transport.Protocol, transport.Address, fmt.Sprint(transport.Port))
 }
 
 // buildMeta 鍚堝苟 node.Metadata 涓?transport 绾у埆鐨?health_path

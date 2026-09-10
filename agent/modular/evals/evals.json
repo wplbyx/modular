@@ -3,89 +3,92 @@
   "evals": [
     {
       "id": 1,
-      "name": "simple-crud-without-domain-shell",
-      "prompt": "Create a single-process billingdemo project on modular v0.2.0. Add a billing svc exposed only over HTTP, then define a simple CRUD contract with CreateInvoice and ListInvoices. Stop at the contract phase: use explicit Unimplemented behavior where implementation is intentionally deferred, and do not invent business fields without deciding them first.",
-      "expected_output": "A compiling framework plus a complete CRUD contract under proto/app/api, with no domain or repository shell, no Example placeholders, HTTP-only framework imports, and a passing contract gate.",
+      "name": "simple-crud-in-one-process",
+      "prompt": "Create a modular v0.3.0 billingdemo project using the default single Process. Add a billing Business Module exposed only over HTTP, then define a protobuf CRUD contract with CreateInvoice and ListInvoices. Stop at the contract phase: use explicit Unimplemented behavior where implementation is intentionally deferred, and do not invent business fields without deciding them first.",
+      "expected_output": "A compiling modular-monolith framework plus a complete billing contract, with one Process-level HTTP server, no premature domain or repository shell, no Example placeholders, and a passing contract gate.",
       "files": [],
       "expectations": [
-        "go.mod contains a concrete github.com/wplbyx/modular v0.2.0 dependency and no local replace directive.",
-        "The framework selects HTTP explicitly and does not import or configure the gRPC server.",
-        "No internal/billing/domain or default repository package is created for the simple CRUD flow.",
+        "go.mod contains a concrete github.com/wplbyx/modular v0.3.0 dependency and no local replace directive.",
+        "The architecture assigns billing to the default Process, which owns one HTTP server and no gRPC server.",
+        "The contract is owned by billing under proto/billing, and generation includes the transport-independent unary Port.",
+        "No internal/modules/billing/internal/domain or default repository package is created for the simple CRUD flow.",
         "No ExampleDTO, fake repository result, or empty success response remains.",
-        "Deferred methods carry modular:contract-unimplemented and return an explicit Unimplemented error.",
-        "The framework and contract verification gates pass for their respective phases."
+        "Deferred methods carry modular:contract-unimplemented and return an explicit Unimplemented error, and the contract gate passes."
       ]
     },
     {
       "id": 2,
-      "name": "order-domain-with-stable-errors",
-      "prompt": "Model order cancellation for an order svc. Cancellation must enforce order status transitions, line-item consistency, and a payment-refund policy. Design the domain concepts and persistence ports, expose an admin CancelOrder contract, define ORDER_NOT_FOUND and ORDER_CANNOT_CANCEL as stable reasons, and add focused tests. Client messages must be localized only at the API edge.",
-      "expected_output": "A domain model split by meaningful concepts rather than one generic entity, language-free domain errors, API error mapping/localization, repository ports at the domain seam, and passing business verification with tests.",
+      "name": "module-local-order-transaction",
+      "prompt": "Model order cancellation inside an order Business Module. Cancellation must enforce order status transitions, line-item consistency, and a payment-refund policy in one module-local transaction. Design the domain concepts and the smallest Unit of Work port, expose an admin CancelOrder contract, define ORDER_NOT_FOUND and ORDER_CANNOT_CANCEL as stable reasons, and add focused tests. Client messages must be localized only at the API edge.",
+      "expected_output": "A cohesive order module with explicit invariants, a module-local Unit of Work boundary, language-free domain errors, API error mapping/localization, and focused passing tests without distributed-transaction infrastructure.",
       "files": [],
       "expectations": [
-        "The domain module exists because concrete invariants and policies justify it, and it is not split by API surface.",
-        "Order, line-item, status transition, and refund policy concepts are represented explicitly rather than as an ID-only entity.",
-        "Persistence tags stay outside domain entities and repository ports use the domain types.",
-        "ORDER_NOT_FOUND and ORDER_CANNOT_CANCEL remain stable machine-readable reasons without localized prose in the domain package.",
-        "Localization and public error mapping happen at the API/app edge through errs messages or a process-level Handler.",
-        "Focused tests cover allowed and rejected cancellation transitions, and complete verification passes."
+        "The domain exists because concrete invariants and policies justify it, and it remains owned by the order Business Module.",
+        "Order, line item, status transition, and refund policy concepts are represented explicitly rather than as an ID-only entity.",
+        "The use case depends on the smallest order-owned Unit of Work port needed to commit its changes atomically.",
+        "Persistence tags and database-library types stay outside domain entities and ports.",
+        "ORDER_NOT_FOUND and ORDER_CANNOT_CANCEL remain stable machine-readable reasons; localization happens at the API edge.",
+        "No saga, Outbox, Inbox, remote client, or cross-module transaction abstraction is added without a Process boundary."
       ]
     },
     {
       "id": 3,
-      "name": "resource-wiring-without-fake-repositories",
-      "prompt": "In an existing user svc, attach Bun/PostgreSQL, Redis, disk storage, and OpenTelemetry. Keep every dependency under Application lifecycle ownership and expose typed providers for later business adapters. Do not generate repository implementations because no business port has been selected yet.",
-      "expected_output": "Managed config and cmd wiring for the four library Resources, typed Providers at the business wiring seam, no fake repository package, and a passing framework gate.",
+      "name": "process-owned-resource-wiring",
+      "prompt": "In a modular v0.3.0 project, add user and billing Business Modules to the default Process. Attach Bun/PostgreSQL, Redis, disk storage, and OpenTelemetry once at the Process level. Keep every dependency under Application lifecycle ownership and expose typed providers for later module adapters. Do not generate repository implementations because no business port has been selected yet.",
+      "expected_output": "One Process owns the selected shared Resources and exposes typed providers to explicit business wiring, while both modules remain free of fabricated repository code.",
       "files": [],
       "expectations": [
-        "Bun, Redis, Storage, and Telemetry use the library Resource constructors and are appended to Application resources.",
-        "Database, Redis, and Storage are exposed through typed Provider fields without calling Value before Setup.",
-        "No repository implementation, Example data, or resource wrapper is generated without a selected business port.",
-        "The svc and process config aggregates contain only the selected transport and Resource fields.",
-        "A repeated sync produces no file changes, and framework verification passes."
+        "Bun, Redis, Storage, and Telemetry use library Resource constructors and are each appended once to the Process Application.",
+        "Database, Redis, and Storage are exposed through typed Process resource fields without calling Value before Setup.",
+        "Both Business Modules are assigned to the same Process and do not create duplicate HTTP, gRPC, logger, health, or telemetry runtimes.",
+        "No repository implementation, Example data, or Resource wrapper is generated without a selected business port.",
+        "Process config owns infrastructure while module configs contain only module-owned settings.",
+        "A repeated sync produces no file changes, strict doctor passes, and the generated project builds."
       ]
     },
     {
       "id": 4,
-      "name": "topology-migration-preserves-business",
-      "prompt": "Migrate a single-process project with user and billing svcs to one process per svc. The existing internal/platform/wiring/business.go and all proto/common/internal business packages contain user changes and must be preserved. Show the diff before applying and then verify the framework.",
-      "expected_output": "Only managed cmd/process-config files and manifest provenance change; user business wiring and business packages remain byte-for-byte unchanged.",
+      "name": "v02-to-v03-migration-preserves-business",
+      "prompt": "Migrate an existing modular v0.2 single-topology project with user and billing services to the v0.3 Business Module/Process model. The existing internal/platform/wiring/business.go and all proto/common/internal business packages contain user changes and must be preserved. Show the diff before applying, keep unrelated go.mod requirements and supported Buf/gitignore customizations, and then verify the framework.",
+      "expected_output": "A previewed, explicit migration to one Process hosting user and billing modules; user-owned code and unrelated dependencies remain unchanged while managed v0.3 composition files and architecture metadata are created.",
       "files": [],
       "expectations": [
-        "The migration is previewed with --diff or the scaffold-diff Make target before writing.",
-        "The old single-process cmd and process aggregate are removed only after --apply.",
-        "One managed cmd entrypoint is created per svc and each loads its svc config.",
-        "internal/platform/wiring/business.go and all proto/common/internal business files remain unchanged.",
-        "The manifest records service topology and framework verification passes."
+        "The v0.2-to-v0.3 migration is previewed with --diff before any write.",
+        "The architecture maps the former services to Business Modules hosted by the original single Process.",
+        "internal/platform/wiring/business.go and all proto/common/internal business files remain byte-for-byte unchanged or migration stops for manual wiring work.",
+        "Unrelated go.mod requirements and compatible Buf/gitignore customizations are preserved.",
+        "The manifest records the module-process model and no longer records service topology as the active architecture.",
+        "The migrated framework passes doctor and build verification."
       ]
     },
     {
       "id": 5,
-      "name": "ownership-conflict-and-safe-prune",
-      "prompt": "Audit a generated project after a developer edited config/user/config.gen.go and config/user/config.go. Explain which edit is allowed, preview a sync, and remove an obsolete generated file only if it is still unchanged. Do not damage user code.",
-      "expected_output": "The managed-file edit blocks sync before writes, the scaffold-once edit is preserved, prune requires apply and hash agreement, and doctor remains read-only.",
+      "name": "explicit-extraction-with-blockers",
+      "prompt": "In a v0.3 modular monolith, order depends on inventory through inventory's protobuf contract, but placing an order currently writes both modules' tables in one database transaction and publishes only a local notification. Evaluate extracting order into an order_api Process. Record the actual blocker, run extraction check, and describe the smallest changes needed before applying extraction. Do not claim configuration-only or behaviorally transparent migration.",
+      "expected_output": "Extraction remains blocked while the shared transaction exists; the report distinguishes local calls and notifications from remote contracts and durable integration, and identifies project-owned remote adapter and Outbox/Inbox work before the module can move.",
       "files": [],
       "expectations": [
-        "doctor and dry-run/diff checks do not mutate project files.",
-        "The modified managed config.gen.go produces a conflict before any other file or manifest write.",
-        "The scaffold-once config.go edit is preserved across sync and upgrades.",
-        "Prune previews deletion by default, requires --apply, and refuses to delete a modified managed file.",
-        "The report explains manifest ownership and hashes without treating manifest as an architecture specification."
+        "The order -> inventory dependency is declared and points only to inventory's contract or generated protobuf package.",
+        "The cross-module atomic write is recorded as a shared-transaction Extraction Blocker with a concrete reason.",
+        "module extract --check fails while the blocker remains and process attach cannot bypass the extraction guard.",
+        "The migration plan replaces the shared transaction with an explicit consistency policy rather than a generic distributed transaction abstraction.",
+        "A generated or explicit remote adapter is required for order -> inventory after the Process boundary.",
+        "The local notification is not treated as durable; Outbox/Inbox, retry, idempotency, and observability remain explicit project-owned extraction work."
       ]
     },
     {
       "id": 6,
-      "name": "operational-bootstrap-and-transport-policy",
-      "prompt": "Initialize a single-process modular project with an HTTP and gRPC orders svc plus OpenTelemetry. Keep cmd in full control of composition. Verify the exact bootstrap order, Context logging, Metadata propagation, default resilience middleware, and queue ownership. Do not implement a RingMPSC algorithm or create a domain shell.",
-      "expected_output": "A compiling framework whose managed cmd loads config before creating the logger, whose scaffold-once cmd policy controls transport behavior, and whose runtime uses modular Metadata/Aegis policy and cyub ringbuffer without custom algorithms or empty business layers.",
+      "name": "process-bootstrap-and-transport-policy",
+      "prompt": "Initialize a modular v0.3.0 project with one Process hosting orders and billing Business Modules, shared HTTP and gRPC transports, EventBus, and OpenTelemetry. Keep cmd in full control of composition. Verify the exact bootstrap order, Process identity, readiness before registration, Context logging, Metadata propagation, default resilience middleware, and queue ownership. Do not create empty business layers.",
+      "expected_output": "A compiling Process composition root with one shared server per protocol, explicit identity/readiness lifecycle, Process-owned policy and resources, and no runtime DI container or duplicate per-module infrastructure.",
       "files": [],
       "expectations": [
-        "Generated process config includes Logging and framework bootstrap order is config -> logger -> policy -> resources/endpoints -> Application.",
-        "cmd/<process>/policy.go is scaffold-once and is the only generated seam for logger outputs and Transport policy overrides.",
-        "HTTP and gRPC receive one shared policy providing Metadata, OpenTelemetry, access logging, and Aegis BBR/SRE protection.",
-        "Application and error handlers receive the explicit context-required log.Logger; removed GetLogger/Infof/Sugar APIs do not appear.",
-        "No custom RingMPSC package or algorithm is generated; queue ownership remains in the modular log/EventBus implementations backed by github.com/cyub/ringbuffer.",
-        "No domain or repository shell is created, strict doctor passes, repeated sync is idempotent, and the generated framework builds."
+        "Generated Process config includes Logging and framework bootstrap order is config -> logger -> policy -> resources/endpoints -> Application.",
+        "cmd/<process>/policy.go is scaffold-once and configures one policy shared by the HTTP and gRPC servers.",
+        "The Process creates one Application and one Service Node using name, version, instance ID, metadata, and all configured transports.",
+        "Registration occurs only after endpoints report ready; shutdown marks draining and unregisters before stopping endpoints and closing resources.",
+        "Application and error handlers receive the explicit Context logger, and Metadata propagation uses the Process policy.",
+        "EventBus and logging retain library queue ownership; strict doctor, idempotent sync, tests, and build pass without a runtime container or empty domain/repository shells."
       ]
     }
   ]

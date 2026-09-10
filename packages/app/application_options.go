@@ -2,6 +2,7 @@ package app
 
 import (
 	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/health"
 	"github.com/wplbyx/modular/packages/registry"
 )
 
@@ -10,6 +11,14 @@ import (
 func WithServiceNode(node *core.ServiceNode) Option {
 	return func(a *Application) {
 		a.node = node
+	}
+}
+
+// WithHealthManager 注入进程级 readiness 管理器。
+// Application 会自动注册实现 health.Checker 的 Resource。
+func WithHealthManager(manager *health.Manager) Option {
+	return func(a *Application) {
+		a.readiness = manager
 	}
 }
 

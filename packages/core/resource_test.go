@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -129,6 +130,53 @@ func TestManagedResource_SetupHonorsCanceledContext(t *testing.T) {
 
 	require.ErrorIs(t, resource.Setup(ctx), context.Canceled)
 	assert.False(t, called.Load())
+}
+
+func TestManagedResource_CheckDoesNotHoldStateLock(t *testing.T) {
+	var resource *ManagedResource[int]
+	resource = NewManagedResource(
+		"resource",
+		func(context.Context) (int, error) { return 42, nil },
+		func(context.Context, int) error { return nil },
+		WithResourceCheck(func(context.Context, int) error {
+			value, err := resource.Value()
+			require.NoError(t, err)
+			assert.Equal(t, 42, value)
+			return nil
+		}),
+	)
+	require.NoError(t, resource.Setup(context.Background()))
+
+	done := make(chan error, 1)
+	go func() { done <- resource.Check(context.Background()) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Check deadlocked while callback called Value")
+	}
+}
+
+func TestManagedResource_CloseWaitHonorsContext(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	resource := NewManagedResource(
+		"resource",
+		func(context.Context) (int, error) { return 1, nil },
+		func(context.Context, int) error {
+			close(started)
+			<-release
+			return nil
+		},
+	)
+	require.NoError(t, resource.Setup(context.Background()))
+	go func() { _ = resource.Close(context.Background()) }()
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, resource.Close(ctx), context.DeadlineExceeded)
+	close(release)
 }
 
 func TestFuncResource(t *testing.T) {

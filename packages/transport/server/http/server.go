@@ -25,7 +25,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var _ core.Endpoint = (*Server)(nil)
+var _ core.ReadyEndpoint = (*Server)(nil)
 
 // 默认超时与优雅关闭时长，在配置缺失（值为 0）时兜底使用。
 const (
@@ -65,6 +65,8 @@ type Server struct {
 	mu             sync.RWMutex
 	isRunning      bool
 	listenerClosed bool
+	ready          chan struct{}
+	readyOnce      sync.Once
 
 	// 由 option 写入、在 NewServer 各阶段消费的配置字段
 	mode             string
@@ -89,7 +91,7 @@ func NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error) {
 		cfg = &configitem.HTTP{}
 	}
 
-	srv := &Server{cfg: cfg}
+	srv := &Server{cfg: cfg, ready: make(chan struct{})}
 
 	// 1. 先应用 option（仅写入字段，不触碰 engine）
 	for _, opt := range opts {
@@ -206,6 +208,7 @@ func (s *Server) Startup(ctx context.Context) error {
 	}
 	s.isRunning = true
 	s.mu.Unlock()
+	s.readyOnce.Do(func() { close(s.ready) })
 
 	s.logger.Info(ctx, "HTTP server listening", zap.String("address", s.server.Addr))
 
@@ -224,6 +227,16 @@ func (s *Server) Startup(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// Ready 等待 HTTP Endpoint 进入可接流量状态。
+func (s *Server) Ready(ctx context.Context) error {
+	select {
+	case <-s.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Shutdown 优雅关闭服务。

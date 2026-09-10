@@ -1,7 +1,8 @@
 // Code scaffolded by modular. This file is user-maintained.
 package wiring
 
-func WireBusiness(process string, hooks *BusinessHooks, providers Providers) error {
+func WireBusiness(process string, platform Platform) (Contribution, error) {
+	contribution := Contribution{}
 {{BUSINESS_WIRING}}
-	return nil
+	return contribution, nil
 }

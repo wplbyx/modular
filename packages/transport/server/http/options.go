@@ -89,6 +89,18 @@ func WithReadiness(path string, checkers ...health.Checker) ServerOption {
 	}
 }
 
+// WithHealthManager 使用进程级健康管理器提供 readiness。
+func WithHealthManager(path string, manager *health.Manager) ServerOption {
+	return func(server *Server) {
+		if manager == nil {
+			return
+		}
+		server.readinessEnabled = true
+		server.readinessPath = path
+		server.readinessHandler = manager.Handler()
+	}
+}
+
 // WithTLS 启用 TLS 并指定证书 / 私钥路径，覆盖配置中的 TLS 字段。
 func WithTLS(certFile, keyFile string) ServerOption {
 	return func(s *Server) {

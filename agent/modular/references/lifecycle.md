@@ -1,95 +1,73 @@
 # Lifecycle
 
-The framework-layer lifecycle contract. Read when wiring `cmd/` or debugging startup/shutdown.
+Read when wiring a Process or diagnosing startup/shutdown. Source:
+`packages/core`, `packages/app`, and `packages/health`.
 
-## Table of contents
+## Contracts
 
-- [The two interfaces](#the-two-interfaces)
-- [Application.Run order](#applicationrun-order)
-- [Assembly in cmd/main.go](#assembly-in-cmdmaingo)
-- [Shutdown](#shutdown)
-- [Signals and zero-endpoint](#signals-and-zero-endpoint)
+`core.Resource` represents supporting infrastructure:
 
-## The two interfaces
+- `Setup(ctx)` completes when usable.
+- `Close(ctx)` releases it.
+- `Name()` is a log/check label, not identity.
 
-Both live in `packages/core/adapter.go`.
+Use `core.ManagedResource[T]` for infrastructure exposing a typed value. It
+implements `core.Resource`, `core.Provider[T]`, and structurally
+`health.Checker`. It runs callbacks outside its state mutex, permits a failed
+Setup to retry, and caches the first completed Close result.
 
-`Resource` (infrastructure: DB, Redis, storage, telemetry):
+`core.Endpoint` represents an inbound transport:
 
-- `Name() string` - log label only.
-- `Setup(ctx context.Context) error` - non-blocking; returns when ready.
-- `Close(ctx context.Context) error` - non-blocking; tears down.
+- `Startup(ctx)` blocks until the endpoint stops; any early nil/error return is
+  an Application exit signal.
+- `Shutdown(ctx)` is the normal mechanism that releases Startup.
+- `core.ReadyEndpoint.Ready(ctx)` optionally reports when Startup can accept
+  work. Custom Endpoints without it are considered ready once Startup begins.
 
-`core.ManagedResource[T]` is the preferred adapter for infrastructure that exposes a value. It implements Resource, `core.Provider[T]`, and the structural health Checker interface. Use `core.NewFuncResource` for migrations, warmups, and other setup/close functions without adding lifecycle phases.
+Every callback must honor context cancellation. A Go caller cannot forcibly
+stop a callback that ignores its context.
 
-`Endpoint` (transport: HTTP, gRPC, SSE, pub/sub subscriber):
+## Application order
 
-- `Name() string` - log label only.
-- `Startup(ctx context.Context) error` - MUST BLOCK until the service is no longer running. Returning (nil or error) signals exit.
-- `Shutdown(ctx context.Context) error` - the ONLY thing that may unblock `Startup`.
+```text
+Resource.Setup FIFO
+  -> Endpoint.Startup concurrently
+  -> ReadyEndpoint.Ready concurrently
+  -> Registrar.Register(Process ServiceNode)
+  -> health.Manager Ready
+  -> wait for cancellation or Endpoint exit
+  -> health.Manager Draining
+  -> Registrar.Unregister
+  -> Endpoint.Shutdown concurrently
+  -> Resource.Close LIFO
+```
 
-`Startup` must not return early on its own. `Application.Run` treats ANY `Startup` return as an exit signal. `Shutdown` is the mechanism that brings `Startup` down (e.g. `http.Server.Shutdown`, `grpc.Server.GracefulStop`, cancelling the subscriber context).
+Only successfully set-up Resources and started Endpoints are cleaned up. Run
+and manual Close share one `sync.Once`. Application is single-use; Close before
+Run moves it to stopped without invoking dependencies. A Registrar requires a
+ServiceNode. A zero-Endpoint Application sets up Resources and waits for its
+context, which supports worker-only Processes.
 
-## Application.Run order
+Run-triggered shutdown uses one timeout budget, defaulting to 10 seconds or
+`configitem.Application.ShutdownTimeout`. Unregister happens before server
+shutdown so discovery stops directing new work before connections drain.
 
-From `packages/app/application.go`:
+## Process assembly
 
-1. `Resource.Setup` for each resource, FIFO (registration order). First failure stops and triggers cleanup of only the resources whose `Setup` already succeeded.
-2. `registrar.Register(node)` if both a Registrar and ServiceNode are set (pass-through; app does not interpret registration details).
-3. All `Endpoint.Startup` run in parallel via errgroup, each blocking.
-4. Run state: waits until any endpoint exits or the context is cancelled.
-5. On exit: `Endpoint.Shutdown` (parallel) then `Unregister(node)` then `Resource.Close` (LIFO, reverse registration order).
+Generated bootstrap order is fixed:
 
-Shutdown is guarded by an Application-level `sync.Once`, shared by `Run` and manual `Close(ctx)`. It runs entirely within one `shutdownTimeout` budget when triggered by `Run` (default 10s; configurable via `configitem.Application.ShutdownTimeout`).
+1. `config.NewRootCommand` loads the Process config.
+2. `newLoggerManager` creates and installs the context-required logger.
+3. `newTransportPolicy` and `health.NewManager` create Process policy/state.
+4. cmd constructs shared Resources and a typed `wiring.Platform`.
+5. `WireBusiness(process, platform)` returns module `Contribution` values.
+6. cmd builds one HTTP and/or one gRPC server and registers all contributions.
+7. cmd creates `core.ProcessIdentity`, `core.ServiceNode`, and Application.
 
-Application is single-use and transitions through new/running/stopping/stopped. Duplicate Run calls fail. Close before Run moves directly to stopped without invoking any dependency. A configured Registrar requires a ServiceNode at construction time.
+Application does not own the logger. The composition root closes it after Run.
+HTTP readiness should use `httpserver.WithHealthManager`; gRPC exposes its
+standard health service. Build ServiceNode transports from each server's
+`Transport()` so pre-bound `Port=0` values are preserved.
 
-## Assembly in cmd/main.go
-
-Generated entrypoints first create a Cobra root command with `config.NewRootCommand`, attach the signal context with `SetContext`, then build and inject inside the `Run` callback. Option order does not affect execution - resources are always FIFO up / LIFO down, endpoints always last:
-
-    command := config.NewRootCommand[projectconfig.Config](config.CommandOptions[projectconfig.Config]{
-        DefaultFile: "./config/user/config.yaml",
-        EnvPrefix:   "USER",
-        Run:         run,
-    })
-    command.SetContext(signalCtx)
-    err := command.Execute()
-
-Inside `run(ctx, cfg)`:
-
-    application, err := app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(),
-        app.WithResource(db),
-        app.WithResource(cache),
-        app.WithEndpoint(httpServer),
-        app.WithServiceNode(node),
-        // app.WithRegistrar(consul),  // only when registering
-    )
-    application.Run()
-
-Before this call, `config.NewRootCommand` must have loaded config and cmd must create
-`LoggerManager` second. Application does not own the logger; cmd closes it only
-after `Application.Run` returns. The four `With...` options are
-`WithResource(core.Resource)`, `WithEndpoint(core.Endpoint)`,
-`WithServiceNode(*core.ServiceNode)`, and `WithRegistrar(registry.Registrar)`.
-
-A real cmd builds transports (which are already `core.Endpoint`), resources, the pb service impl, then registers:
-
-- HTTP: `httpserver.NewServer(cfg, httpserver.WithPolicy(policy))` returns an Endpoint; `server.RegisterRoute(api.HTTPRoutes(...))` attaches routes.
-- gRPC: `rpcserver.NewServer(cfg, api.RegisterGRPC, rpcserver.WithPolicy(policy))` wires generated service registration.
-- SSE: `sse.NewServer(bufSize)` is an Endpoint; mount its `Connect()` handler on the HTTP server's routes.
-- Pub/sub: wrap a `pubsub.MessageHandler` from `api/<surface>/event.go` with `pubsub.NewSubscriberEndpoint(name, subscriber, topic, handler, opts...)`.
-
-Build the ServiceNode with `httpServer.Transport()` and `grpcServer.Transport()`. Each server reports its actual pre-bound port and normalized address together with protocol-specific metadata such as the HTTP protocol and health path; do not reconstruct transport metadata from config fields.
-
-## Shutdown
-
-Graceful shutdown on `SIGINT`/`SIGTERM`: build the root context with `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`. `Application.Run`'s errgroup cancels on context cancellation and triggers shutdown once. `Application.Close(ctx)` is the manual trigger if needed.
-
-Each endpoint's `Shutdown` honors its own timeout: HTTP server uses `configitem.HTTP.ShutdownTimeout` (default 5s), gRPC uses `configitem.GRPC.ShutdownTimeout` (default 5s, then force-stop).
-
-## Signals and zero-endpoint
-
-- An Application with zero endpoints logs a warning and `Run` returns `nil` immediately. It does NOT block. Always register at least one endpoint for a long-running service.
-- `Shutdown` is idempotent (sync.Once). Calling `Run` shutdown and `Application.Close(ctx)` concurrently is safe; endpoints/resources are closed once.
-- `errors.Join` aggregates shutdown errors; `Run` returns `errors.Join(runErr, shutdownErr)`.
+Use `signal.NotifyContext` for `SIGINT`/`SIGTERM`. HTTP and gRPC also apply their
+own graceful-stop timeouts before forced closure.

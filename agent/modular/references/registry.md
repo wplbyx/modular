@@ -1,47 +1,49 @@
-# Registry & Discovery
+# Registry and discovery
 
-Service registration and discovery. Read when wiring service discovery or planning a single-to-micro topology migration. Source: `packages/registry/`.
+Read when wiring Process discovery or extracting a module. Source:
+`packages/core/node.go` and `packages/registry`.
 
-## Table of contents
+## Identity
 
-- [ServiceNode](#servicenode)
-- [Registrar and Discovery](#registrar-and-discovery)
-- [Consul registry](#consul-registry)
-- [K8s registry](#k8s-registry)
-- [gRPC resolver](#grpc-resolver)
+`core.ProcessIdentity` is immutable-by-construction Process metadata: Name,
+Version, optional InstanceID, and copied Metadata. Business Modules do not own
+runtime identities. `core.NewServiceNodeFromProcess(identity, transports...)`
+creates the registration node and uses InstanceID when supplied; otherwise it
+derives a stable ID from Process name plus transports.
 
-## ServiceNode
+Generated config maps these values from `Application.InstanceID` and
+`Application.Metadata`. Set a unique InstanceID for each replica; transport-
+derived IDs are suitable only when one instance owns a given address/port.
 
-`core.ServiceNode` (`packages/core/node.go`): `Name`, `Version`, `ID` (auto-generated), `Transports []Transport`, `Metadata`. `core.Transport`: `Protocol`, `Address`, `Port`, `HealthPath`. One Application = one ServiceNode.
+One node may publish HTTP and gRPC together. Always take transport values from
+constructed servers because they pre-bind and may resolve `Port=0`.
 
-`core.NewServiceNode(name, version, transports...)` builds a node and auto-generates a deterministic `ID` from name + transports. Prefer `httpServer.Transport()` / `grpcServer.Transport()` because the servers bind during construction and may resolve `Port=0`. `core.NormalizeHost(host)` is available when manually building metadata for a custom endpoint. `core.GenerateID(parts...)` is exposed for custom IDs.
+## Registration
 
-A node may carry multiple transports (e.g. HTTP + gRPC) - this is how a single node publishes both protocols.
+`registry.Registrar` registers/unregisters a `*core.ServiceNode`.
+`registry.Discovery` gets and watches nodes by Process name. Application passes
+the node through unchanged and requires a node when Registrar is configured.
+It registers only after Endpoint readiness and unregisters before Endpoint
+shutdown.
 
-## Registrar and Discovery
+`wiring.Contribution.Registrar` is the scaffold-once composition seam. Leave it
+nil for a local monolith. An extracted Process may return a configured Consul
+Registrar without editing managed cmd code.
 
-Two interfaces in `packages/registry/adapter.go`:
+Consul writes one record per transport. Its record ID includes base node ID,
+protocol, address, and port, preventing collisions between same-protocol
+listeners. Health path is transport-specific. K8s implements Discovery only;
+Deployment and Service resources own registration.
 
-- `Registrar`: `Register(ctx, *core.ServiceNode) error` / `Unregister(ctx, *core.ServiceNode) error`.
-- `Discovery`: `GetService(ctx, serviceName) ([]*core.ServiceNode, error)` / `Watch(ctx, serviceName) (<-chan []*core.ServiceNode, error)`.
+## gRPC targets
 
-Application passes the node to the registrar verbatim - it does not transform or interpret it. Both are optional: pass them via `app.WithServiceNode(node)` and `app.WithRegistrar(reg)`. If either is nil, registration is skipped.
+Register `registry.NewGRPCResolverBuilder(discovery)` and dial
+`registry.BuildConsulTarget(processName)`, which returns
+`consul:///processName`. The resolver publishes only `protocol == "grpc"`
+addresses. Use `NewGRPCResolverBuilderWithScheme` for non-Consul schemes.
 
-## Consul registry
-
-`registry.NewConsulRegistry(addr string) (*Registry, error)` - implements BOTH `Registrar` and `Discovery`. Registers ONE Consul record per Transport: the ID gets a protocol suffix (`transportID(node.ID, t.Protocol)`). So a single node with HTTP+gRPC produces two Consul entries, both under `Name` = node.Name, tagged `version=...` and `protocol=...`, each with its own health check derived from `Transport.HealthPath`. Register, unregister, service lookup, and watch calls pass the caller context into the Consul SDK; watch backs off on errors and exits promptly on context cancellation.
-
-## K8s registry
-
-`packages/registry/registry_k8s.go` implements `Discovery` only. `Register`/`Unregister` are no-ops: in K8s, the Deployment+Service does registration; discovery reads via SharedInformerFactory. `Watch` removes its event handler on context cancellation before closing the channel. Endpoints without `TargetRef` are supported; node IDs fall back to `serviceName-IP-port`.
-
-## gRPC resolver
-
-`registry.NewGRPCResolverBuilder(discovery Discovery) resolver.Builder` - register it with `grpc/resolver` so `grpc.Dial` can resolve service names. The default scheme is `"consul"`; use `registry.NewGRPCResolverBuilderWithScheme("k8s", discovery)` for another discovery backend. It watches the discovery channel and updates addresses, filtering transports to `protocol == "grpc"` only.
-
-Target format: build a target string so the resolver picks the right service. Use `registry.BuildTarget(scheme, serviceName)` or `registry.BuildConsulTarget(serviceName)`. `BuildConsulTarget("svc")` returns `consul:///svc` (the resolver reads `target.URL.Host` or `.Path` as the service name). Dialing that target with the resolver registered yields gRPC addresses for all `grpc` transports of that service.
-
-## Wiring for single vs micro
-
-- **Single topology**: no Registrar. One process config under `config/<project>` supplies all svc endpoints; cross-svc gRPC clients dial `127.0.0.1:<port>` directly.
-- **Micro topology**: each service registers via Consul (or relies on K8s Discovery). Cross-domain gRPC clients dial `consul:///<serviceName>` with `registry.NewGRPCResolverBuilder(consulRegistry)` registered, or a custom scheme from `NewGRPCResolverBuilderWithScheme`. Build the ServiceNode from server-reported transports; the Registrar handles per-transport records automatically.
+Local module wiring injects a generated Port implementation directly and uses
+no Registrar. After extraction, the consumer owns a Remote Adapter around the
+standard generated gRPC client and resolves the provider Process. Registrar,
+timeouts, retries, and resilience policy are explicit Process concerns; moving
+a module does not infer them from architecture configuration.

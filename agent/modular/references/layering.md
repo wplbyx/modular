@@ -1,46 +1,58 @@
 # Layering
 
-The README svc layout is authoritative. Read this after the workflow router
-selects CRUD, domain, resource, or migration work.
+Read this after the workflow router selects module, contract, resource, or
+extraction work. A Business Module is a code/data-write boundary; a Process is
+a deployment and lifecycle boundary.
 
 ## Framework paths
 
-- `config/<svc>/config.gen.go` is managed transport/Resource configuration.
-- `config/<svc>/config.go` is a scaffold-once extension owned by the user.
-- `config/<svc>/config.yaml` is a managed svc configuration fragment.
-- `config/<project>/...` is the managed single-topology process aggregate.
-- `cmd/<process>/main.go|framework.gen.go` is managed Application wiring.
-- `cmd/<process>/policy.go` is scaffold-once process policy owned by the user.
-- `internal/platform/wiring/framework.gen.go` is the managed hook/provider seam.
-- `internal/platform/wiring/business.go` is scaffold-once business registration.
+- `.modular/architecture.yaml`: user-maintained modules, dependencies,
+  assignments, Process capabilities, and extraction blockers.
+- `.modular/manifest.json`: generated ownership and replay hashes only.
+- `config/modules/<module>/config.go`: scaffold-once business configuration.
+- `config/<process>/config.gen.go|config.yaml`: managed Process aggregate.
+- `cmd/<process>/main.go|framework.gen.go`: managed Process bootstrap.
+- `cmd/<process>/policy.go`: scaffold-once transport policy.
+- `internal/platform/wiring/framework.gen.go`: typed `Platform`, module configs,
+  per-Process resource groups, and `Contribution` types.
+- `internal/platform/wiring/business.go`: scaffold-once composition root.
 
-`service add <svc> --transport ...` creates only these framework paths. It does
-not create proto, API, app, domain, repository, event, or Example shells.
+`module add` creates module configuration and updates Process aggregates. It
+does not create proto, API, app, domain, repository, event, or fake business
+packages. `transport` and `resource` commands target Processes.
 
 ## Business paths
 
-- `proto/<svc>/<surface>.proto` contains source interface contracts.
-- `common/<svc>/...` contains buf output only.
-- `internal/<svc>/api/<surface>/...` contains selected inbound adapters.
-- `internal/<svc>/app/<surface>/...` contains use cases and simple ports.
-- `internal/<svc>/domain/...` exists only for real domain concepts and rules.
-- `internal/<svc>/repository/...` contains adapters for selected ports.
+- `proto/<module>/<surface>.proto`: source contracts.
+- `common/<module>/...`: Buf-generated protobuf, gRPC, Port, and Remote Adapter
+  output only.
+- `internal/modules/<module>/module.go`: public module constructor/capabilities.
+- `internal/modules/<module>/contract`: narrow hand-written contracts when a
+  generated Port is not the right abstraction.
+- `internal/modules/<module>/internal/api/<surface>`: inbound adapters.
+- `internal/modules/<module>/internal/app`: use cases and simple ports.
+- `internal/modules/<module>/internal/domain`: real aggregates and policies.
+- `internal/modules/<module>/internal/repository`: outbound adapters.
+- `internal/modules/<consumer>/internal/adapters/remote/<provider>`:
+  cross-Process adapter owned and encapsulated by the consumer.
 
-For simple CRUD, place ports in `app/<surface>` and omit domain. Create a
-domain module only when aggregates, invariants, policies, transactions, or
-domain services provide real leverage. Do not split domain by API surface.
+Sibling modules import only a provider's `contract` or `common/<provider>`.
+The extra `internal` directory lets the Go compiler reject implementation
+imports from siblings. Dependencies must also be declared in architecture.
 
-## Topology
+For CRUD, keep ports in app and omit domain. Add domain only for real
+invariants, policies, aggregate coordination, or transaction rules. Module
+construction never depends on `app.Application` or a runtime DI container.
 
-Single topology has one `cmd/<project>` process and one generated process config
-containing nested svc configs. Service topology has one `cmd/<svc>` per svc and
-loads `config/<svc>.Config` directly.
+## Process grouping
 
-Both topologies use the same bootstrap contract: `config.NewRootCommand` loads config,
-then `newLoggerManager` creates logging, then `newTransportPolicy` defines
-Metadata/tracing/access/protection, and only then does cmd construct Resources,
-Endpoints, and `Application`. `cmd` is the only composition root.
+One Process hosts any number of modules and shares one logger, health manager,
+transport policy, Resource set, and server per protocol. Typed resources are
+available as `Platform.Resources.<Process>.<Resource>`, so different Processes
+may choose different database adapters. `process attach` and
+`module extract --check` validate blockers, contracts, and remote adapters
+before creating a Process boundary.
 
-Use `migrate topology --to single|service --apply`. It changes only managed
-process cmd/config files. Proto, common output, business packages, and
-`internal/platform/wiring/business.go` must remain unchanged.
+The v0.2 `internal/<svc>`, per-service transport, and `single|service` topology
+layout is compatibility input for `migrate v0.2-to-v0.3`; do not use it for new
+projects.

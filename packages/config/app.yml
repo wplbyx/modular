@@ -2,6 +2,8 @@ Application:
   Name: "custom-modular-monolith"
   Mode: "prod"
   Version: "v1.0.0"
+  InstanceID: ""
+  Metadata: {}
   ShutdownTimeout: "10s"
 
 Logging:

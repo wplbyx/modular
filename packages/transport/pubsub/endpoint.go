@@ -56,6 +56,8 @@ type SubscriberEndpoint struct {
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
+	ready  chan struct{}
+	once   sync.Once
 }
 
 // SubscriberOption configures a SubscriberEndpoint.
@@ -92,6 +94,7 @@ func NewSubscriberEndpoint(name string, sub Subscriber, topic string, handler Me
 		topic:      topic,
 		handler:    handler,
 		propagator: defaultMetadataPropagator,
+		ready:      make(chan struct{}),
 	}
 	if connector, ok := sub.(Connector); ok {
 		e.onStart = connector.Connect
@@ -107,7 +110,7 @@ func NewSubscriberEndpoint(name string, sub Subscriber, topic string, handler Me
 	return e
 }
 
-var _ core.Endpoint = (*SubscriberEndpoint)(nil)
+var _ core.ReadyEndpoint = (*SubscriberEndpoint)(nil)
 
 // Name returns the endpoint label for logging.
 func (e *SubscriberEndpoint) Name() string { return e.name }
@@ -140,9 +143,20 @@ func (e *SubscriberEndpoint) Startup(ctx context.Context) error {
 		cancel()
 		return fmt.Errorf("subscribe %s: %w", e.topic, err)
 	}
+	e.once.Do(func() { close(e.ready) })
 
 	<-subCtx.Done()
 	return nil
+}
+
+// Ready waits until the subscription has been established.
+func (e *SubscriberEndpoint) Ready(ctx context.Context) error {
+	select {
+	case <-e.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Shutdown cancels the subscription loop, calls the optional disconnect

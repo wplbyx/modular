@@ -12,6 +12,7 @@ import (
 
 	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/core"
+	"github.com/wplbyx/modular/packages/health"
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/registry"
 )
@@ -37,9 +38,9 @@ const (
 
 // Application 是应用程序生命周期编排器，不处理业务逻辑。
 //
-// 生命周期顺序：Resource.Setup（FIFO）-> 注册 ServiceNode ->
-// Endpoint.Startup（并行阻塞）-> Endpoint.Shutdown（并行）->
-// 反注册 ServiceNode -> Resource.Close（LIFO）。
+// 生命周期顺序：Resource.Setup（FIFO）-> Endpoint.Startup/Ready（并行）->
+// 注册 ServiceNode -> 进入 Ready。关闭时先进入 Draining 并反注册 ServiceNode，
+// 再 Endpoint.Shutdown（并行）-> Resource.Close（LIFO）。
 type Application struct {
 	ctx context.Context
 	cfg *configitem.Application
@@ -49,6 +50,7 @@ type Application struct {
 	endpoints  []core.Endpoint
 	resources  []core.Resource
 	logger     log.Logger
+	readiness  *health.Manager
 	registered bool
 
 	// lifecycleLock 防止启动准备和关闭过程交错修改生命周期集合。
@@ -101,6 +103,17 @@ func NewApplication(ctx context.Context, cfg *configitem.Application, logger log
 	if application.registrar != nil && application.node == nil {
 		return nil, errors.New("service node is required when registrar is configured")
 	}
+	if application.readiness != nil {
+		for _, resource := range application.resources {
+			checker, ok := resource.(health.Checker)
+			if !ok {
+				continue
+			}
+			if err := application.readiness.Register(checker); err != nil {
+				return nil, fmt.Errorf("register resource readiness %s: %w", resource.Name(), err)
+			}
+		}
+	}
 
 	return application, nil
 }
@@ -116,11 +129,6 @@ func (application *Application) Run() error {
 		application.finishRun()
 	}()
 
-	if len(application.endpoints) == 0 {
-		application.logger.Warn(runCtx, "application has no endpoints; Run will exit immediately")
-		return nil
-	}
-
 	application.logger.Info(runCtx, "application starting", zap.String("name", application.cfg.Name))
 
 	triggerShutdown := func() {
@@ -133,19 +141,39 @@ func (application *Application) Run() error {
 	application.lifecycleLock.Lock()
 	prepareErr := application.setupResources(groupCtx)
 	if prepareErr == nil {
-		prepareErr = application.registerNode(groupCtx)
+		application.startEndpoints(group, groupCtx)
+	}
+	application.lifecycleLock.Unlock()
+	if prepareErr == nil {
+		prepareErr = application.waitEndpointsReady(groupCtx)
 	}
 	if prepareErr == nil {
 		prepareErr = groupCtx.Err()
 	}
 	if prepareErr == nil {
-		application.startEndpoints(group, groupCtx, cancel)
+		prepareErr = application.registerNode(groupCtx)
 	}
-	application.lifecycleLock.Unlock()
+	if prepareErr == nil && application.readiness != nil {
+		application.readiness.SetReady()
+	}
 
 	if prepareErr != nil {
 		triggerShutdown()
-		return errors.Join(prepareErr, application.shutdownErr)
+		groupErr := group.Wait()
+		if runCtx.Err() != nil && errors.Is(prepareErr, runCtx.Err()) {
+			prepareErr = nil
+		}
+		if runCtx.Err() != nil && errors.Is(groupErr, runCtx.Err()) {
+			groupErr = nil
+		}
+		return errors.Join(prepareErr, groupErr, application.shutdownErr)
+	}
+
+	if len(application.endpoints) == 0 {
+		application.logger.Warn(runCtx, "application has no endpoints; waiting for cancellation")
+		<-runCtx.Done()
+		triggerShutdown()
+		return application.shutdownErr
 	}
 
 	go func() {
@@ -217,11 +245,15 @@ func (application *Application) shutdown(ctx context.Context) error {
 	application.lifecycleLock.Lock()
 	defer application.lifecycleLock.Unlock()
 
-	return errors.Join(
-		application.shutdownEndpoints(ctx),
-		application.unregisterNode(ctx),
-		application.closeResources(ctx),
-	)
+	if application.readiness != nil {
+		application.readiness.SetDraining()
+	}
+	unregisterErr := application.unregisterNode(ctx)
+	endpointErr := application.shutdownEndpoints(ctx)
+	if ctx.Err() != nil {
+		return errors.Join(unregisterErr, endpointErr, ctx.Err())
+	}
+	return errors.Join(unregisterErr, endpointErr, application.closeResources(ctx))
 }
 
 func (application *Application) setupResources(ctx context.Context) error {
@@ -238,9 +270,12 @@ func (application *Application) setupResources(ctx context.Context) error {
 func (application *Application) closeResources(ctx context.Context) error {
 	var errs error
 	for i := len(application.readyResources) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(errs, err)
+		}
 		resource := application.readyResources[i]
 		application.logger.Info(ctx, "resource closing", zap.String("resource", resource.Name()))
-		if err := resource.Close(ctx); err != nil {
+		if err := callWithContext(ctx, func() error { return resource.Close(ctx) }); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("close resource %s: %w", resource.Name(), err))
 		}
 	}
@@ -264,7 +299,9 @@ func (application *Application) unregisterNode(ctx context.Context) error {
 		return nil
 	}
 	application.registered = false
-	if err := application.registrar.Unregister(ctx, application.node); err != nil {
+	if err := callWithContext(ctx, func() error {
+		return application.registrar.Unregister(ctx, application.node)
+	}); err != nil {
 		return fmt.Errorf("unregister service node %s: %w", application.node.ID, err)
 	}
 	application.logger.Info(ctx, "service node unregistered", zap.String("node", application.node.ID))
@@ -274,7 +311,6 @@ func (application *Application) unregisterNode(ctx context.Context) error {
 func (application *Application) startEndpoints(
 	group *errgroup.Group,
 	ctx context.Context,
-	cancel context.CancelFunc,
 ) {
 	for _, endpoint := range application.endpoints {
 		application.activeEndpoints = append(application.activeEndpoints, endpoint)
@@ -284,13 +320,32 @@ func (application *Application) startEndpoints(
 			}
 			application.logger.Info(ctx, "endpoint starting", zap.String("endpoint", endpoint.Name()))
 			err := endpoint.Startup(ctx)
-			cancel()
-			if err != nil && !errors.Is(err, context.Canceled) {
+			if err == nil && ctx.Err() == nil {
+				return fmt.Errorf("endpoint %s exited unexpectedly", endpoint.Name())
+			}
+			if err != nil && ctx.Err() == nil {
 				return fmt.Errorf("endpoint %s exited unexpectedly: %w", endpoint.Name(), err)
 			}
 			return nil
 		})
 	}
+}
+
+func (application *Application) waitEndpointsReady(ctx context.Context) error {
+	group, readyCtx := errgroup.WithContext(ctx)
+	for _, endpoint := range application.activeEndpoints {
+		readyEndpoint, ok := endpoint.(core.ReadyEndpoint)
+		if !ok {
+			continue
+		}
+		group.Go(func() error {
+			if err := readyEndpoint.Ready(readyCtx); err != nil {
+				return fmt.Errorf("endpoint %s readiness: %w", endpoint.Name(), err)
+			}
+			return nil
+		})
+	}
+	return group.Wait()
 }
 
 func (application *Application) shutdownEndpoints(ctx context.Context) error {
@@ -313,6 +368,36 @@ func (application *Application) shutdownEndpoints(ctx context.Context) error {
 		}()
 	}
 
-	wait.Wait()
-	return errs
+	done := make(chan struct{})
+	go func() {
+		wait.Wait()
+		close(done)
+	}()
+	snapshotErrors := func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		return errs
+	}
+	select {
+	case <-done:
+		return snapshotErrors()
+	case <-ctx.Done():
+		return errors.Join(snapshotErrors(), fmt.Errorf("shutdown endpoints: %w", ctx.Err()))
+	}
+}
+
+// callWithContext bounds lifecycle callbacks that fail to return after ctx is done.
+// The callback still owns the responsibility to observe ctx and release its goroutine.
+func callWithContext(ctx context.Context, call func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- call() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

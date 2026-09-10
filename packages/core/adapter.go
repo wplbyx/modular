@@ -34,3 +34,13 @@ type Endpoint interface {
 	Startup(context.Context) error
 	Shutdown(context.Context) error
 }
+
+// ReadyEndpoint 是可以显式报告接流量就绪状态的 Endpoint。
+//
+// Application 会在 Startup 开始后调用 Ready，并只在所有 Endpoint
+// 就绪后注册 ServiceNode。不实现该接口的 Endpoint 在 Startup 已进入后
+// 视为就绪，以保持自定义 Endpoint 的兼容性。
+type ReadyEndpoint interface {
+	Endpoint
+	Ready(context.Context) error
+}
