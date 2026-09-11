@@ -1,14 +1,15 @@
 # CRUD contract workflow
 
-Use for simple CRUD or MVC-style behavior. Read [layering](../layering.md),
-[repository placement](../repository.md), and [errors](../errors.md).
+Use for straightforward query and mutation behavior without rich domain rules.
+Read [layering](../layering.md), [repository placement](../repository.md), and
+[errors](../errors.md).
 
-1. Put the stable interface in `proto/<module>/<surface>.proto` and simple
-   use-case ports under `internal/modules/<module>/internal/app`.
-2. Keep domain absent when it would only pass data through.
-3. Complete request/response fields and repository signatures before applying
-   contract templates.
-4. Let `protoc-gen-go-modular` generate unary Ports and Remote Adapters. API
-   mappings may temporarily carry `modular:contract-unimplemented`, but must
-   return an explicit Unimplemented result.
-5. Run `make contract-check`, implement behavior and tests, then `make verify`.
+1. Name the owning bounded context and the use case in business language.
+2. If another module calls it, define the smallest public Go interface and
+   Command/Query/Result types under the provider's `contract` package.
+3. Keep simple use cases and their outbound ports under the module's app layer;
+   do not generate an empty domain layer.
+4. Map HTTP/gRPC/message DTOs in inbound adapters instead of exposing them to
+   module contracts.
+5. Add stable reasons, focused tests, and explicit wiring.
+6. Run `make contract-check`, implement behavior, then run `make verify`.

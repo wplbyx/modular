@@ -1,57 +1,56 @@
 ---
 name: modular
-description: Scaffold, wire, audit, and evolve modular-monolith-first Go projects built on github.com/wplbyx/modular. Use when initializing a project, adding Business Modules or Processes, declaring module dependencies or extraction blockers, wiring process transports/resources, designing contracts and adapters, checking extraction readiness, migrating v0.2 projects, or running scaffold/contract/business verification. Route architectural decisions through the Agent and deterministic framework files through the repository-local CLI.
+description: Scaffold, wire, audit, and evolve modular monolith Go projects built on github.com/wplbyx/modular. Use when initializing a project, adding bounded-context Business Modules, declaring module dependencies, wiring shared transports/resources, designing Go contracts, migrating v0.3 projects, or running scaffold/contract/business verification.
 ---
 
 # Modular skill
 
-This skill has two cooperating interfaces:
-
-- The skill guides Business Module boundaries, contracts, and extraction.
-- `.modular/tool/modular.py` deterministically owns framework files and is
-  called by the generated Makefile.
+This skill designs and maintains one deployable Application composed of
+bounded-context Business Modules. `.modular/tool/modular.py` deterministically
+owns framework files; the Agent owns module contracts and business behavior.
 
 ## Route first
 
 | Intent | Read first | CLI action |
 | --- | --- | --- |
-| New project or module grouping | [init](references/workflows/init.md) | `init`, `module`, `process` |
+| New project or Business Module | [init](references/workflows/init.md) | `init`, `module` |
 | Simple CRUD contract | [crud](references/workflows/crud.md) | Agent edits + `contract-check` |
 | Aggregate or transaction rules | [domain](references/workflows/domain.md) | Agent edits + `contract-check` |
 | DB/Redis/Storage/Telemetry/EventBus | [resource](references/workflows/resource.md) | `resource add/remove` |
-| Extraction or v0.2 upgrade | [migration](references/workflows/migration.md) | `module extract`, `migrate` |
+| v0.3 upgrade | [migration](references/workflows/migration.md) | `migrate v0.3-to-v0.4` |
 | Convention or release audit | [audit](references/workflows/audit.md) | `self-check`, `doctor`, `verify` |
 
-Read only the technical references selected by that workflow. Keep universal
-rules here and project-specific policy in `.modular/profile.toml`.
+Read only the references selected by that workflow. Keep universal rules here
+and project-specific policy in `.modular/profile.toml`.
 
 ## Architecture contract
 
-- A Business Module owns cohesive behavior and data writes. A Process owns
-  deployment, one Application lifecycle, shared infrastructure, and at most one
-  HTTP and one gRPC server.
-- `.modular/architecture.yaml` declares modules, dependencies, Process
-  assignment, capabilities, and extraction blockers. The manifest records only
-  generation ownership and replay state.
-- Other modules import only `internal/modules/<provider>/contract` or
-  `common/<provider>`. Imports across another module's implementation boundary
-  are invalid even while both modules share a Process.
-- Protobuf defines external and stable cross-module contracts. Generated unary
-  `XxxServicePort` has no `grpc.CallOption`; local wiring injects an
-  implementation and remote wiring injects its standard gRPC client adapter.
-- Transactions stop at a module by default. A necessary shared transaction is
-  a declared `shared-transaction` blocker, not hidden portability.
-- EventBus carries best-effort Local Notifications. A Process boundary needs a
-  durable Integration Event adapter with outbox/inbox, retry, and idempotency.
+- A project has one Application lifecycle and deployment unit. It owns shared
+  transports, infrastructure, configuration, logging, health, and telemetry.
+- A Business Module normally represents one bounded context. It owns cohesive
+  business behavior, use cases, data writes, and its public Go contract.
+- `.modular/architecture.yaml` declares the Application capabilities, modules,
+  and an acyclic module dependency graph. The manifest records generated-file
+  ownership and replay state only.
+- Other modules import only `internal/modules/<provider>/contract`; imports
+  across another module's implementation boundary are invalid.
+- Module contracts use hand-written Go interfaces and Command/Query/Result
+  types. Protobuf and other wire formats belong only to optional external
+  adapters and are not scaffold concerns.
+- Cross-module ACID transactions are allowed when one initiating module owns
+  the workflow and calls only public contracts. Define the narrow transaction
+  interface in that use case; do not add a framework-wide UoW.
+- Local EventBus notifications are process-local. Use explicit durable delivery
+  when the Application communicates with an external system that requires it.
 
 ## Three phases
 
-1. **Framework** creates compiling Process config, shared transports/resources,
-   and typed `wiring.Platform`/`Contribution` seams. It creates no fake business
-   packages or repositories.
-2. **Contract** is Agent-led. Write complete protobuf fields, generated or
-   hand-written module ports, stable reasons, and API mappings. Temporary
-   methods carry `modular:contract-unimplemented` and return Unimplemented.
+1. **Framework** creates one compiling Application, shared resources and
+   transports, typed `wiring.Platform`, and an `Assembly` seam. It creates no
+   fake business packages or repositories.
+2. **Contract** is Agent-led. Write narrow Go contracts, stable reasons, use-case
+   inputs/outputs, and edge mappings. Temporary work may carry
+   `modular:contract-unimplemented`.
 3. **Business** implements use cases, domain rules, adapters, and focused tests.
    Remove scaffold markers before `make verify`.
 
@@ -60,35 +59,33 @@ rules here and project-specific policy in `.modular/profile.toml`.
 Managed files are replaced only when their manifest hash is unchanged.
 Scaffold-once files become user-owned after creation. A conflict is a stop
 condition: inspect `--diff`, move extensions to the intended seam, or perform a
-deliberate migration. Mutating commands support `--dry-run` and `--diff`;
-destructive commands require `--apply`.
+deliberate migration. Destructive commands preview by default and require
+`--apply`.
 
-Keep `cmd/<process>/framework.gen.go` managed and `policy.go` scaffold-once.
-Each Process loads config, creates and installs its logger, builds one transport
-policy and health manager, constructs Resources, wires modules, then constructs
-shared Endpoints and Application. Application sets up Resources, starts and
-waits for Endpoints, registers the Process node, then marks readiness. Shutdown
-marks draining, unregisters, stops Endpoints, and closes Resources.
+Keep `cmd/<application>/framework.gen.go` managed and `policy.go`
+scaffold-once. The Application loads config, installs logging, creates shared
+resources, calls `WireApplication(platform)`, builds shared endpoints, then
+runs the `app.Application` lifecycle.
 
 ## Completion gates
 
-- `make scaffold-check`: strict framework doctor, placeholders, and build.
-- `make contract-check`: Buf lint/generate, contract doctor, and build;
-  explicitly marked Unimplemented seams are allowed.
+- `make scaffold-check`: framework doctor, placeholders, and build.
+- `make contract-check`: Go contract doctor and build; explicitly marked
+  unfinished contracts are allowed.
 - `make verify`: format, vet, build, tests, race tests, test-presence checks,
   and no unfinished markers.
 
 Do not report completion until the gate for the current phase passes. Keep
-domain errors language-free and localize stable error messages at each Process
-edge. Logger/EventBus queue data remains directly in
+domain errors language-free and localize stable errors at Application edges.
+Logger/EventBus queue data remains directly in
 `github.com/cyub/ringbuffer.MpscRingBuffer`.
 
 ## Tool invocation
 
-For a new v0.3 project, use the installed tool:
+For a new v0.4 project, use the installed tool:
 
 ```bash
-python3 scripts/modular.py init myapp --modular-version v0.3.0
+python3 scripts/modular.py init myapp --modular-version v0.4.0
 ```
 
 For an existing project, use its local copy:
@@ -96,9 +93,6 @@ For an existing project, use its local copy:
 ```bash
 make scaffold-module MODULE=user
 make scaffold-module MODULE=order DEPENDS_ON=user
-make scaffold-resource RESOURCE=db PROCESS=myapp DRIVER=bun
+make scaffold-resource RESOURCE=db DRIVER=bun
 make scaffold-check
 ```
-
-Initialization resolves a published version and writes no local `replace`.
-The legacy `--topology` flag exists only to create v0.2-compatible projects.

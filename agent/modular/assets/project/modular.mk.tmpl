@@ -1,25 +1,18 @@
-.PHONY: scaffold-module scaffold-module-depend scaffold-process scaffold-process-attach scaffold-resource
-.PHONY: scaffold-service scaffold-sync scaffold-diff scaffold-doctor scaffold-prune scaffold-migrate scaffold-extract-check
-.PHONY: gen build test test-race coverage scaffold-check contract-check verify
+.PHONY: scaffold-module scaffold-module-depend scaffold-resource scaffold-transport
+.PHONY: scaffold-sync scaffold-diff scaffold-doctor scaffold-prune scaffold-migrate
+.PHONY: build test test-race coverage scaffold-check contract-check verify
 
 scaffold-module:
-	$(PYTHON) $(MODULAR_TOOL) module add $(MODULE) $(if $(PROCESS),--process $(PROCESS),) $(foreach dependency,$(DEPENDS_ON),--depends-on $(dependency))
+	$(PYTHON) $(MODULAR_TOOL) module add $(MODULE) $(foreach dependency,$(DEPENDS_ON),--depends-on $(dependency))
 
 scaffold-module-depend:
 	$(PYTHON) $(MODULAR_TOOL) module depend add $(MODULE) $(DEPENDENCY)
 
-scaffold-process:
-	$(PYTHON) $(MODULAR_TOOL) process add $(PROCESS) $(foreach transport,$(TRANSPORTS),--transport $(transport))
-
-scaffold-process-attach:
-	$(PYTHON) $(MODULAR_TOOL) process attach $(PROCESS) $(MODULE)
-
-# v0.2 compatibility only. New projects use scaffold-module/process.
-scaffold-service:
-	$(PYTHON) $(MODULAR_TOOL) service add $(SVC) $(foreach transport,$(TRANSPORTS),--transport $(transport))
-
 scaffold-resource:
-	$(PYTHON) $(MODULAR_TOOL) resource add $(RESOURCE) $(if $(PROCESS),--process $(PROCESS),) $(if $(SVC),--svc $(SVC),) $(if $(DRIVER),--driver $(DRIVER),) $(if $(DIALECT),--dialect $(DIALECT),)
+	$(PYTHON) $(MODULAR_TOOL) resource add $(RESOURCE) $(if $(DRIVER),--driver $(DRIVER),) $(if $(DIALECT),--dialect $(DIALECT),)
+
+scaffold-transport:
+	$(PYTHON) $(MODULAR_TOOL) transport add $(TRANSPORT)
 
 scaffold-sync:
 	$(PYTHON) $(MODULAR_TOOL) sync
@@ -34,13 +27,7 @@ scaffold-prune:
 	$(PYTHON) $(MODULAR_TOOL) prune $(if $(APPLY),--apply,) $(ARGS)
 
 scaffold-migrate:
-	$(if $(TOPOLOGY),$(PYTHON) $(MODULAR_TOOL) migrate topology --to $(TOPOLOGY) $(if $(APPLY),--apply,),$(PYTHON) $(MODULAR_TOOL) migrate v0.2-to-v0.3 $(if $(VERSION),--modular-version $(VERSION),) $(if $(APPLY),--apply,))
-
-scaffold-extract-check:
-	$(PYTHON) $(MODULAR_TOOL) module extract $(MODULE) --to-process $(PROCESS) --check
-
-gen:
-	$(PYTHON) $(MODULAR_TOOL) gen
+	$(PYTHON) $(MODULAR_TOOL) migrate v0.3-to-v0.4 $(if $(VERSION),--modular-version $(VERSION),) $(if $(APPLY),--apply,)
 
 build:
 	go build ./...

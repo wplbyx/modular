@@ -1,18 +1,17 @@
 # Resource workflow
 
-Use for DB, Redis, Storage, Telemetry, or Local EventBus. Read
-[infrastructure](../infra.md), [config](../config.md), and
-[lifecycle](../lifecycle.md).
+Use when adding DB, Redis, Storage, Telemetry, or EventBus. Read
+[commands](../commands.md), [config](../config.md), [infrastructure](../infra.md),
+and [lifecycle](../lifecycle.md).
 
-1. Select the owning Process. Omit `--process` only when exactly one exists.
-2. Choose the library constructor: Bun, GORM+dialect, Mongo, Redis, Storage,
-   OpenTelemetry, or EventBus.
-3. Review `resource add ... --diff`. Confirm Process config has one resource
-   field and typed `wiring.Platform` exposes its provider to hosted modules.
-4. Keep Application lifecycle order and inject providers into repositories;
-   resolve `Value()` only after Setup.
-5. Run `make scaffold-check` and focused adapter tests. Use
-   `resource remove ... --apply` only after reviewing dependents.
+1. Identify the real module use case and the narrow dependency it needs.
+2. Select the Application-owned Resource and driver/dialect.
+3. Review `resource add ... --diff` and apply.
+4. Keep generated Resource construction in managed bootstrap code.
+5. Inject the typed Provider or a narrower project adapter into the owning
+   module in `WireApplication`; never use package globals.
+6. Call `Value()` only while handling work after Application Setup.
+7. Run `make scaffold-check`, then add repository behavior and tests.
 
-EventBus is a best-effort Local Notification Resource. It does not create
-events or handlers and is not a reliable cross-Process integration mechanism.
+EventBus is a best-effort process-local notification Resource. It does not
+replace durable delivery to external systems.

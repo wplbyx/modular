@@ -1,19 +1,19 @@
 # modular
 
-`modular` 是一套模块化单体优先的 Go 应用积木库（module path: `github.com/wplbyx/modular`，Go 1.26+）。它提供基础设施、生命周期、protobuf 契约和项目装配能力，但不接管业务代码，也不使用运行时依赖容器。
+`modular` 是一套模块化单体 Go 应用积木库（module path: `github.com/wplbyx/modular`，Go 1.26+）。它提供基础设施、生命周期和项目装配能力，但不接管业务代码，也不使用运行时依赖容器。
 
-默认形态是一个 `Process` 承载多个 `Business Module`。当某个模块确实需要独立扩缩容或隔离时，通过显式 extraction 检查并替换跨进程 adapter；项目不承诺“修改配置即可无感切成微服务”。
+一个项目固定生成一个 `Application` 和一个部署单元，并按 DDD 限界上下文纵向划分 `Business Module`。模块化边界用于保护业务模型、接口与数据写入所有权，不模拟网络边界，也不提供模块到微服务的透明提取。
 
 核心目标：
 
-- `Business Module` 是业务规则与数据写入边界，`Process` 是部署和生命周期边界。
-- 一个 Process 只有一个 `Application`、进程身份、Logger、Telemetry、Health、EventBus，以及每种协议一个共享 Server。
+- `Business Module` 默认对应一个限界上下文，拥有业务规则、用例、公开 Go contract 与数据写入。
+- 一个项目只有一个 `Application`、运行时身份、Logger、Telemetry、Health、EventBus，以及每种协议一个共享 Server。
 - `Application` 只负责编排生命周期，不处理业务逻辑，也不知道 Business Module。
 - `core.Endpoint` 表示接收流量或事件的入口，例如 HTTP、gRPC、SSE、消息订阅。
 - `core.Resource` 表示支撑性基础设施，例如 DB、Redis、Storage、Telemetry。
 - `core.ServiceNode` 表示服务实例身份，用于注册与发现；`Endpoint.Name()` / `Resource.Name()` 只作为日志标签。
-- 外部和跨模块稳定契约使用 proto；单体调用生成的 unary Port，跨进程调用标准 gRPC client 的 Remote Adapter。
-- 事务默认止于模块；少数共享事务必须登记为 extraction blocker。
+- 模块之间只依赖 provider 的手写 Go contract，不依赖其实现或传输 DTO。
+- 跨模块 ACID 事务可以由发起方模块显式编排；事务接口由具体项目按用例定义。
 
 ## 核心模型
 
@@ -21,11 +21,11 @@
 | --- | --- | --- |
 | `core.Resource` | `packages/core` | 基础设施生命周期：`Setup(ctx)` / `Close(ctx)`，不阻塞，不接流量。 |
 | `core.Endpoint` | `packages/core` | 服务入口生命周期：`Startup(ctx)` / `Shutdown(ctx)`；`Startup` 必须阻塞到服务停止。 |
-| `core.ProcessIdentity` | `packages/core` | Process 名称、版本、实例 ID 和注册 metadata 的值对象。 |
+| `core.ProcessIdentity` | `packages/core` | Application 运行实例的名称、版本、实例 ID 和注册 metadata 值对象。 |
 | `core.ServiceNode` | `packages/core` | 一个 `Application` 对应一个进程节点，由 ProcessIdentity 和多个 transport 构建。 |
 | `registry.Registrar` | `packages/registry` | 将 `ServiceNode` 注册到 Consul 等注册中心。 |
 | `registry.Discovery` | `packages/registry` | 按服务名发现实例，或 watch 实例变化。 |
-| `health.Manager` | `packages/health` | 管理 Process 的 starting/ready/draining 状态和有界依赖检查。 |
+| `health.Manager` | `packages/health` | 管理 Application 的 starting/ready/draining 状态和有界依赖检查。 |
 | `app.Application` | `packages/app` | 统一管理 Resource、Endpoint、readiness、Registrar 和 ServiceNode 的启动与关闭顺序。 |
 
 `Application.Run` 的顺序固定：
@@ -54,7 +54,7 @@ Resource.Setup() FIFO
 | `packages/metadata` | 不可变、分 scope 的上下文元数据，统一 HTTP/gRPC/消息 Header 与 OTel trace context 穿透。 |
 | `packages/eventbus` | 进程内有序 EventBus Resource；队列数据直接存放在 `cyub/ringbuffer.MpscRingBuffer`。 |
 | `packages/errs` | Kratos 风格统一错误、多语言 YAML Catalog、错误链/堆栈诊断与客户端/日志分流。 |
-| `packages/generate` | 可安装的代码生成工具；包含错误 Catalog 生成器和 `protoc-gen-go-modular` Module Port 插件。 |
+| `packages/generate` | 可安装的错误 Catalog 生成工具。 |
 | `packages/util` | AES/RSA/ECC、随机字符串、URL、HTTP 请求和 context 工具。 |
 | `packages/transport/server/http` | 基于 Gin 的 HTTP endpoint，支持中间件、健康检查、TLS、h2c；构造时即监听端口。 |
 | `packages/transport/server/rpc` | gRPC endpoint，支持健康检查、拦截器和 mTLS。 |
@@ -73,7 +73,7 @@ Resource.Setup() FIFO
 
 ## 典型使用方式
 
-下游项目在 `internal/platform/wiring` 里显式构造模块，生成的 `cmd/<process>` 只负责共享基础设施和生命周期。模块实现位于 `internal/modules/<name>/internal`；其他模块只能导入其 `contract` 或 `common/<name>` protobuf 包。
+下游项目在 `internal/platform/wiring` 里显式构造模块，生成的 `cmd/<application>` 只负责共享基础设施和生命周期。模块实现位于 `internal/modules/<name>/internal`；其他模块只能导入其手写 `contract` 包。
 
 异步任务池需要显式注入并交给 Application 管理：
 
@@ -316,78 +316,64 @@ GORM 方言由 `cmd` 装配层通过子包选择。SQLite 子包使用纯 Go 驱
 
 ### 健康检查与 HTTP client
 
-HTTP server 默认 `/health` 只表示进程存活。生成的 Process 使用 `httpserver.WithHealthManager(path, manager)` 暴露 starting/ready/draining 和依赖检查；独立使用时也可通过 `WithReadiness(path, checkers...)` 注入检查。就绪接口返回 200/503，且 `Transport.HealthPath` 指向 readiness 路径。流式响应可将 `WriteTimeout` 设为 `httpserver.NoWriteTimeout`。
+HTTP server 默认 `/health` 只表示进程存活。生成的 Application 使用 `httpserver.WithHealthManager(path, manager)` 暴露 starting/ready/draining 和依赖检查；独立使用时也可通过 `WithReadiness(path, checkers...)` 注入检查。就绪接口返回 200/503，且 `Transport.HealthPath` 指向 readiness 路径。流式响应可将 `WriteTimeout` 设为 `httpserver.NoWriteTimeout`。
 
 HTTP client 是显式构造的 `*httpclient.Client`，主接口为 `Do(*http.Request)`。重试仅适用于可重放的幂等请求；POST/PATCH 需要 `Idempotency-Key` 或自定义 `RetryPolicy`。
 
 ## 推荐项目分层
 
-v0.3 脚手架把 Business Module 和 Process 分开。CLI 管理确定性的进程、配置和共享基础设施；Agent/用户在 typed composition root 中构造模块。
+v0.4 脚手架生成一个 Application，并按限界上下文维护 Business Module。CLI 管理确定性的配置和共享基础设施；Agent/用户在 typed composition root 中构造模块。
 
 ```text
 <project>/
   .modular/
-    architecture.yaml        # 模块依赖、进程分组和 extraction blocker
+    architecture.yaml        # Application 能力和模块依赖 DAG
     manifest.json            # 文件所有权、生成哈希、模板版本和最小生成来源
     profile.toml             # 当前项目的附加检查策略
     make/modular.mk          # 受管 Make 目标
     tool/                    # 项目内可迁移的脚手架及模板
   cmd/
-    <process>/main.go        # 受管入口
-    <process>/framework.gen.go
+    <application>/main.go    # 唯一受管入口
+    <application>/framework.gen.go
   config/
-    <process>/               # 进程 identity、transport、共享 Resource 与模块配置聚合
+    <application>/           # identity、transport、共享 Resource 与模块配置聚合
       config.gen.go
       config.yaml
     modules/<module>/
       config.go              # 模块业务配置，用户维护
-  common/                    # protoc 生成物，不手写；目录结构镜像 proto/
-    <module>/
-      <surface>.pb.go
-      <surface>_grpc.pb.go
-      <surface>_modular.pb.go # unary Port + 标准 gRPC client Remote Adapter
   internal/
     platform/wiring/
-      framework.gen.go       # transport hook 和 Resource Provider 类型
+      framework.gen.go       # typed Platform、Resources 和 Assembly
       business.go            # 一次性 wiring 接缝，由 Agent/用户维护
     modules/<module>/
       module.go              # 模块构造与导出能力
-      contract/              # 手写的窄模块接口；可直接使用生成 Port
+      contract/              # 手写的窄 Go 接口和 Command/Query/Result
       internal/              # Go 编译器阻止兄弟模块穿透
-        api/<surface>/       # HTTP/gRPC/event 入站适配器
+        api/<surface>/       # HTTP/gRPC/event DTO 映射与入站适配器
         app/                 # 用例编排
-        adapters/remote/     # consumer-owned 跨 Process adapter
         domain/              # 仅在有聚合、不变量或策略时创建
         repository/          # DB/Redis/client/storage 出站适配器
-  proto/
-    <module>/
-      <surface>.proto        # 可选：admin / management / platform 等接口面      
   go.mod    
 
 ```
 
 约束：
 
-- `module add` 不要求 transport；transport 和 Resource 属于 Process。
-- 一个 Process 对每种启用协议只构造一个共享 Server，模块通过 `wiring.Contribution` 贡献 route/register/checker/lifecycle。
-- 不同 Process 的强类型资源位于 `Platform.Resources.<Process>.<Resource>`，因此可以选择不同 DB adapter，不会退化成运行时容器。
-- 单体的 `Contribution.Registrar` 保持 nil；提取后的 Process 可在 scaffold-once wiring 中注入 Registrar，并通过 `Application.InstanceID/Metadata` 配置实例身份，无需修改 managed cmd。
+- `module add` 不要求 transport；transport 和 Resource 属于唯一 Application。
+- Application 对每种启用协议只构造一个共享 Server，`wiring.Assembly` 聚合 route/register/checker/lifecycle。
+- 强类型资源直接位于 `Platform.Resources.<Resource>`；模块只接收实际需要的 Provider 或窄接口。
+- `Assembly.Registrar` 默认 nil；需要注册 Application 实例时在 scaffold-once wiring 中显式注入。
 - `managed` 文件只有在当前哈希与 manifest 一致时才更新；`scaffold-once` 文件创建后归用户和 Agent 维护。
 - `.modular/architecture.yaml` 是架构来源；`.modular/manifest.json` 只负责生成重放与所有权。
-- 跨模块调用依赖生成的 `XxxServicePort` 或 provider 的 `contract`，不导入其他模块的 `internal/`。
-- `proto/` 和 `common/` 都按 Business Module 分包。
-- 一个业务模块可以有多个接口面（surface），例如 `admin`、`management`、`platform`、`openapi`。接口面是外部契约维度，不是领域模型维度。
-- `surface` 名称也是 Go 包名，使用 lower_snake_case，不使用连字符，默认不带版本后缀。
-- 多接口面默认按 `proto/<module>/<surface>.proto`、`common/<module>/<surface>.pb.go`、`internal/modules/<module>/internal/api/<surface>` 对齐。
-- 需要版本化时使用 `proto/<module>/<surface>/v1`，并镜像到 `common/<module>/<surface>/v1`。
-- `common/` 是生成目录，不手写 `.pb.go` 或 `_grpc.pb.go`。
+- 跨模块调用只依赖 provider 的 `contract`，同步依赖必须形成 DAG，不导入其他模块的 `internal/`。
+- proto、Buf 和 wire codegen 不属于模块架构；启用 gRPC 的项目自行维护外部协议并在 adapter 中映射。
 - `api` 只做入口映射；简单用例留在 app，只有真实领域复杂度才创建 domain。
 - 业务代码不依赖 `app.Application`，也不从全局容器查依赖。
-- 事务默认由模块自己的 UoW 管理。跨模块共享事务必须记录为 `shared-transaction` blocker。
-- EventBus 只承诺 best-effort Local Notification；跨 Process 的可靠 Integration Event 需要项目显式实现 Outbox/Inbox，脚手架不会自动生成分布式一致性逻辑。
+- 跨模块 ACID 流程由发起方模块拥有，只调用公开 contract；项目按用例定义最小事务接口，modular 不提供通用 UoW。
+- EventBus 只承诺 best-effort 进程内通知；与外部系统的可靠事件由项目显式实现。
 - `cmd` 可以依赖 `github.com/wplbyx/modular/packages/*`，负责把资源、endpoint 和业务实现接起来。
 - 未实现的契约必须显式返回 Unimplemented 并携带 `modular:contract-unimplemented`，不能返回空成功响应。
-- 框架阶段通过 `make scaffold-check`，契约阶段通过 `make contract-check`，业务完成后通过 `make verify`；覆盖率只报告，不设通用数值门槛。
+- 框架阶段通过 `make scaffold-check`，Go 契约阶段通过 `make contract-check`，业务完成后通过 `make verify`；覆盖率只报告，不设通用数值门槛。
 
 ## Agent 使用方式
 
@@ -414,24 +400,22 @@ v0.3 脚手架把 Business Module 和 Process 分开。CLI 管理确定性的进
 使用 modular skill 为订单聚合设计领域对象、端口和稳定错误码
 使用 modular skill 给项目接入 redis resource
 使用 modular skill 审计当前项目结构
-使用 modular skill 检查 billing 模块是否可以提取到独立进程
+使用 modular skill 把 v0.3 单 Process 项目迁移到 v0.4
 ```
 
 确定性命令：
 
 | 命令 | 用途 |
 | --- | --- |
-| `init <project>` | 创建默认单体 Process、architecture、项目内工具和可编译框架。 |
+| `init <project>` | 创建唯一 Application、architecture、项目内工具和可编译框架。 |
 | `module add/remove/depend` | 管理 Business Module 与显式依赖。 |
-| `process add/remove/attach` | 管理任意模块分组的部署 Process。 |
-| `module extract --check` | 报告共享事务、远程 adapter 和 protobuf 契约等提取阻塞项。 |
-| `transport add/remove` | 修改 Process 的 HTTP/gRPC 能力。 |
-| `resource add/remove --process` | 管理进程共享 DB、Redis、Storage、Telemetry 和 EventBus。 |
+| `transport add/remove` | 修改 Application 的 HTTP/gRPC 能力。 |
+| `resource add/remove` | 管理 Application 共享 DB、Redis、Storage、Telemetry 和 EventBus。 |
 | `sync` / `prune` | 幂等同步受管文件，或安全删除不再需要且未被修改的受管文件。 |
-| `migrate v0.2-to-v0.3` | 将旧拓扑迁移到 Module/Process 架构；修改过的业务 wiring 会停止自动迁移。 |
+| `migrate v0.3-to-v0.4` | 将单 Process v0.3 项目迁移到纯模块化单体模型。 |
 | `project upgrade` | 更新项目内工具和已发布的 modular 依赖版本。 |
 | `doctor` / `verify` | 执行只读审计和 framework/contract/complete 阶段门禁。 |
-| `gen` / `coverage` | 运行 buf 生成和无数值门槛的覆盖率报告。 |
+| `coverage` | 运行无数值门槛的覆盖率报告。 |
 
 Agent 处理这些任务时会按需读取 `agent/modular/references/`：
 
@@ -463,7 +447,7 @@ go generate ./packages/config/...
 
 ## 重要现实情况
 
-- 仓库自身没有业务 `.proto` 或 `_pb.go`；下游项目通过 Buf、标准 Go 插件和 `protoc-gen-go-modular` 生成契约代码。
+- proto 和 Buf 不属于 modular 架构或脚手架；使用外部 gRPC 的项目自行维护标准协议与生成流程。
 - `app` 不导入 `transport`，只接收 `core.Endpoint` 和 `core.Resource`。
 - 请求边缘和需要稳定业务 reason 的错误使用 `packages/errs`；生命周期初始化/关闭错误仍使用 `fmt.Errorf("...: %w", err)` 和 `errors.Join`。
 - 所有日志方法强制接收 `context.Context`；`log.Default()` 未安装时为 no-op。进程必须在配置加载后第二步创建 `LoggerManager`，再由 `cmd` 显式安装默认 logger。

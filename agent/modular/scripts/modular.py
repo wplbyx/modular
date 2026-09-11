@@ -26,12 +26,10 @@ from typing import Any, Callable, Iterable
 from _vendor import tomli
 
 
-TOOL_VERSION = "3.0.0"
+TOOL_VERSION = "4.0.0"
 MANIFEST_SCHEMA = 1
-MIN_MODULAR_VERSION = (0, 2, 0)
-MIN_V3_MODULAR_VERSION = (0, 3, 0)
+MIN_V4_MODULAR_VERSION = (0, 4, 0)
 DEFAULT_GO_VERSION = "1.26.0"
-VALID_TOPOLOGIES = {"single", "service"}
 VALID_TRANSPORTS = {"http", "grpc"}
 VALID_RESOURCES = {"db", "eventbus", "redis", "storage", "telemetry"}
 VALID_DB_DRIVERS = {"bun", "gorm", "mongo"}
@@ -162,9 +160,9 @@ def resolve_modular_version(requested: str | None) -> str:
             version = str(json.loads(completed.stdout)["Version"])
         except (KeyError, TypeError, json.JSONDecodeError) as error:
             raise ScaffoldError("go list did not return a modular version") from error
-    if parse_semver(version) < MIN_MODULAR_VERSION:
-        minimum = "v" + ".".join(str(part) for part in MIN_MODULAR_VERSION)
-        raise ScaffoldError(f"modular {version} is unsupported; v2 scaffolds require {minimum} or newer")
+    if parse_semver(version) < MIN_V4_MODULAR_VERSION:
+        minimum = "v" + ".".join(str(part) for part in MIN_V4_MODULAR_VERSION)
+        raise ScaffoldError(f"modular {version} is unsupported; v0.4 scaffolds require {minimum} or newer")
     return version
 
 
@@ -195,33 +193,14 @@ def read_module(project: Path) -> str:
     raise ScaffoldError(f"go.mod in {project} has no module directive")
 
 
-def project_name(project: Path) -> str:
-    return read_module(project).split("/")[-1]
-
-
-def empty_manifest(*, module: str, topology: str, modular_version: str) -> dict[str, Any]:
+def empty_v4_manifest(*, module: str, modular_version: str) -> dict[str, Any]:
     return {
         "schema": MANIFEST_SCHEMA,
         "tool_version": TOOL_VERSION,
         "project": {
             "module": module,
             "name": module.split("/")[-1],
-            "topology": topology,
-            "modular_version": modular_version,
-        },
-        "features": {},
-        "files": {},
-    }
-
-
-def empty_v3_manifest(*, module: str, modular_version: str) -> dict[str, Any]:
-    return {
-        "schema": MANIFEST_SCHEMA,
-        "tool_version": TOOL_VERSION,
-        "project": {
-            "module": module,
-            "name": module.split("/")[-1],
-            "model": "module-process",
+            "model": "modular-monolith",
             "modular_version": modular_version,
         },
         "features": {},
@@ -233,6 +212,10 @@ def is_module_process(manifest: dict[str, Any]) -> bool:
     return manifest.get("project", {}).get("model") == "module-process"
 
 
+def is_modular_monolith(manifest: dict[str, Any]) -> bool:
+    return manifest.get("project", {}).get("model") == "modular-monolith"
+
+
 def empty_architecture(project: str, transports: list[str]) -> dict[str, Any]:
     ports: dict[str, int] = {}
     if "http" in transports:
@@ -240,17 +223,14 @@ def empty_architecture(project: str, transports: list[str]) -> dict[str, Any]:
     if "grpc" in transports:
         ports["grpc"] = 19090
     return {
-        "schema": 1,
-        "modules": {},
-        "processes": {
-            project: {
-                "modules": [],
-                "transports": sorted(set(transports)),
-                "ports": ports,
-                "resources": {},
-            }
+        "schema": 2,
+        "application": {
+            "name": project,
+            "transports": sorted(set(transports)),
+            "ports": ports,
+            "resources": {},
         },
-        "extraction_blockers": [],
+        "modules": {},
     }
 
 
@@ -262,7 +242,7 @@ def architecture_content(architecture: dict[str, Any]) -> str:
 def load_architecture(project: Path) -> dict[str, Any]:
     path = project / ARCHITECTURE_PATH
     if not path.is_file():
-        raise ScaffoldError(f"missing {ARCHITECTURE_PATH}; run migrate v0.2-to-v0.3")
+        raise ScaffoldError(f"missing {ARCHITECTURE_PATH}; initialize or migrate the project with modular v0.4")
     try:
         architecture = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
@@ -274,6 +254,126 @@ def load_architecture(project: Path) -> dict[str, Any]:
 
 
 def validate_architecture(architecture: dict[str, Any]) -> None:
+    if not isinstance(architecture, dict):
+        raise ScaffoldError("architecture root must be an object")
+    if architecture.get("schema") != 2:
+        raise ScaffoldError(f"unsupported architecture schema {architecture.get('schema')!r}; run migrate v0.3-to-v0.4")
+    required_root_fields = {"schema", "application", "modules"}
+    if set(architecture) != required_root_fields:
+        missing = sorted(required_root_fields - set(architecture))
+        unsupported = sorted(set(architecture) - required_root_fields)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if unsupported:
+            details.append(f"unsupported {', '.join(unsupported)}")
+        raise ScaffoldError(f"architecture fields are invalid: {'; '.join(details)}")
+    application = architecture.get("application")
+    modules = architecture.get("modules")
+    if not isinstance(application, dict) or not isinstance(modules, dict):
+        raise ScaffoldError("architecture application/modules have invalid types")
+    required_application_fields = {"name", "transports", "ports", "resources"}
+    if set(application) != required_application_fields:
+        missing = sorted(required_application_fields - set(application))
+        unsupported = sorted(set(application) - required_application_fields)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if unsupported:
+            details.append(f"unsupported {', '.join(unsupported)}")
+        raise ScaffoldError(f"application fields are invalid: {'; '.join(details)}")
+    name = application.get("name")
+    if not isinstance(name, str) or validate_name(name, "application") != name:
+        raise ScaffoldError(f"application name must be canonical lower_snake_case: {name!r}")
+    transports = application.get("transports", [])
+    ports = application.get("ports", {})
+    resources = application.get("resources", {})
+    if not isinstance(transports, list) or not all(isinstance(value, str) for value in transports):
+        raise ScaffoldError("application transports must be a list of strings")
+    if len(transports) != len(set(transports)) or not set(transports).issubset(VALID_TRANSPORTS):
+        raise ScaffoldError("application has duplicate or unsupported transports")
+    if not isinstance(ports, dict) or not isinstance(resources, dict):
+        raise ScaffoldError("application ports/resources have invalid types")
+    if set(ports) != set(transports):
+        raise ScaffoldError("application ports must match its transports")
+    for transport in transports:
+        port = ports.get(transport)
+        if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535:
+            raise ScaffoldError(f"application has invalid {transport} port")
+    validate_resources(resources, "application")
+    validate_modules(modules)
+
+
+def validate_modules(modules: dict[str, Any]) -> None:
+    for name, module in modules.items():
+        if not isinstance(name, str) or validate_name(name, "module") != name:
+            raise ScaffoldError(f"module name must be canonical lower_snake_case: {name!r}")
+        if not isinstance(module, dict) or not isinstance(module.get("dependencies", []), list):
+            raise ScaffoldError(f"module {name!r} has invalid dependencies")
+        if set(module) != {"dependencies"}:
+            raise ScaffoldError(f"module {name!r} contains unsupported fields")
+        dependencies = module.get("dependencies", [])
+        for dependency in dependencies:
+            if not isinstance(dependency, str) or validate_name(dependency, "module dependency") != dependency:
+                raise ScaffoldError(f"module {name!r} has invalid dependency {dependency!r}")
+            if dependency not in modules:
+                raise ScaffoldError(f"module {name!r} depends on unknown module {dependency!r}")
+        if len(dependencies) != len(set(dependencies)):
+            raise ScaffoldError(f"module {name!r} contains duplicate dependencies")
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            raise ScaffoldError(f"module dependency cycle includes {name!r}")
+        if name in visited:
+            return
+        visiting.add(name)
+        for dependency in modules[name].get("dependencies", []):
+            visit(str(dependency))
+        visiting.remove(name)
+        visited.add(name)
+
+    for name in modules:
+        visit(str(name))
+
+
+def validate_resources(resources: dict[str, Any], owner: str) -> None:
+    unknown_resources = sorted(set(resources) - VALID_RESOURCES)
+    if unknown_resources:
+        raise ScaffoldError(f"{owner} has unsupported resources: {', '.join(unknown_resources)}")
+    for kind, definition in resources.items():
+        if not isinstance(definition, dict):
+            raise ScaffoldError(f"{owner} resource {kind!r} must be an object")
+        if definition.get("kind", kind) != kind:
+            raise ScaffoldError(f"{owner} resource {kind!r} has mismatched kind")
+        if kind != "db":
+            continue
+        driver = definition.get("driver", "bun")
+        dialect = definition.get("dialect", "postgres")
+        if driver not in VALID_DB_DRIVERS:
+            raise ScaffoldError(f"{owner} has unsupported database driver {driver!r}")
+        if driver == "gorm" and dialect not in VALID_GORM_DIALECTS:
+            raise ScaffoldError(f"{owner} has unsupported GORM dialect {dialect!r}")
+        if driver == "bun" and dialect != "postgres":
+            raise ScaffoldError(f"{owner} Bun database requires postgres dialect")
+
+
+def load_v3_architecture(project: Path) -> dict[str, Any]:
+    path = project / ARCHITECTURE_PATH
+    if not path.is_file():
+        raise ScaffoldError(f"missing {ARCHITECTURE_PATH}; the project is not a v0.3 module/process project")
+    try:
+        architecture = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ScaffoldError(f"invalid {ARCHITECTURE_PATH}: {error}") from error
+    validate_v3_architecture(architecture)
+    return architecture
+
+
+def validate_v3_architecture(architecture: dict[str, Any]) -> None:
+    if not isinstance(architecture, dict):
+        raise ScaffoldError("v0.3 architecture root must be an object")
     if architecture.get("schema") != 1:
         raise ScaffoldError(f"unsupported architecture schema {architecture.get('schema')!r}")
     modules = architecture.get("modules")
@@ -384,7 +484,7 @@ def validate_architecture(architecture: dict[str, Any]) -> None:
 def load_manifest(project: Path) -> dict[str, Any]:
     path = project / MANIFEST_PATH
     if not path.is_file():
-        raise ScaffoldError(f"missing {MANIFEST_PATH}; run the v2 project migration first")
+        raise ScaffoldError(f"missing {MANIFEST_PATH}; initialize the project or migrate it with the installed tool")
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
@@ -461,23 +561,6 @@ def runtime_outputs() -> list[OutputFile]:
     return outputs
 
 
-def services_from(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    services: dict[str, dict[str, Any]] = {}
-    for key, feature in manifest["features"].items():
-        if key.startswith("service:") and isinstance(feature, dict):
-            services[key.split(":", 1)[1]] = feature
-    return dict(sorted(services.items()))
-
-
-def resources_for(manifest: dict[str, Any], svc: str) -> dict[str, dict[str, Any]]:
-    resources: dict[str, dict[str, Any]] = {}
-    prefix = f"resource:{svc}:"
-    for key, feature in manifest["features"].items():
-        if key.startswith(prefix) and isinstance(feature, dict):
-            resources[key[len(prefix):]] = feature
-    return dict(sorted(resources.items()))
-
-
 def unique_imports(imports: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(imports))
 
@@ -494,168 +577,6 @@ def format_go_content(content: str, path: Path) -> str:
     if completed.returncode != 0:
         raise ScaffoldError(f"gofmt rejected generated {path}: {completed.stderr.strip()}")
     return completed.stdout
-
-
-def render_svc_generated_config(
-    svc: str,
-    feature: dict[str, Any],
-    resources: dict[str, dict[str, Any]],
-    *,
-    include_logging: bool,
-) -> str:
-    fields = ["\tApplication configitem.Application `mapstructure:\"Application\"`"]
-    if include_logging:
-        fields.append("\tLogging configitem.Logging `mapstructure:\"Logging\"`")
-    transports = set(feature.get("transports", []))
-    if "http" in transports:
-        fields.append("\tHTTP configitem.HTTP `mapstructure:\"HTTP\"`")
-    if "grpc" in transports:
-        fields.append("\tGRPC configitem.GRPC `mapstructure:\"GRPC\"`")
-    db = resources.get("db")
-    if db and db.get("driver") == "mongo":
-        fields.append("\tMongo configitem.Mongo `mapstructure:\"Mongo\"`")
-    elif db:
-        fields.append("\tDatabase configitem.Database `mapstructure:\"Database\"`")
-    if "redis" in resources:
-        fields.append("\tRedis configitem.Redis `mapstructure:\"Redis\"`")
-    if "storage" in resources:
-        fields.append("\tStorage configitem.Storage `mapstructure:\"Storage\"`")
-    if "telemetry" in resources:
-        fields.append("\tTelemetry configitem.Telemetry `mapstructure:\"Telemetry\"`")
-    if "eventbus" in resources:
-        fields.append("\tEventBus configitem.EventBus `mapstructure:\"EventBus\"`")
-    return (
-        "// Code generated by modular scaffold. DO NOT EDIT.\n\n"
-        "package config\n\n"
-        'import "github.com/wplbyx/modular/packages/config/configitem"\n\n'
-        "type Generated struct {\n"
-        + "\n".join(fields)
-        + "\n}\n"
-    )
-
-
-def render_svc_config_scaffold() -> str:
-    return (
-        "// Code scaffolded by modular. This file is user-maintained.\n\n"
-        "package config\n\n"
-        'import modularconfig "github.com/wplbyx/modular/packages/config"\n\n'
-        "type Config struct {\n"
-        "\tGenerated `mapstructure:\",squash\"`\n"
-        "}\n\n"
-        "func (Config) Flags(prefix string) []modularconfig.FlagSpec {\n"
-        "\treturn modularconfig.GetConfigFlagSpecsWithPrefix[Generated](prefix)\n"
-        "}\n"
-    )
-
-
-def render_svc_yaml(
-    svc: str,
-    feature: dict[str, Any],
-    resources: dict[str, dict[str, Any]],
-    *,
-    include_logging: bool,
-) -> str:
-    lines = [
-        "# Code generated by modular scaffold. DO NOT EDIT.",
-        "Application:",
-        f"  Name: {svc}",
-        "  Mode: dev",
-        "  Version: v0.1.0",
-        "  ShutdownTimeout: 10s",
-    ]
-    if include_logging:
-        lines.extend([
-            "",
-            "Logging:",
-            "  Level: info",
-            "  Output: [console]",
-            "  Async:",
-            "    Enabled: true",
-            "    Capacity: 8192",
-            "    ErrorTimeout: 50ms",
-            "    FlushTimeout: 5s",
-        ])
-    ports = feature.get("ports", {})
-    if "http" in feature.get("transports", []):
-        lines.extend(["", "HTTP:", '  Host: "0.0.0.0"', f"  Port: {ports.get('http', 18080)}"])
-    if "grpc" in feature.get("transports", []):
-        lines.extend(["", "GRPC:", '  Host: "0.0.0.0"', f"  Port: {ports.get('grpc', 19090)}"])
-    db = resources.get("db")
-    if db:
-        driver = db.get("driver", "bun")
-        dialect = db.get("dialect", "postgres")
-        if driver == "mongo":
-            lines.extend(["", "Mongo:", '  URI: "mongodb://127.0.0.1:27017"', "  Database: app"])
-        else:
-            dsn = {
-                "postgres": "postgres://app:app@127.0.0.1:5432/app?sslmode=disable",
-                "mysql": "app:app@tcp(127.0.0.1:3306)/app?charset=utf8mb4&parseTime=True&loc=Local",
-                "sqlite": "app.db",
-                "clickhouse": "tcp://127.0.0.1:9000?database=app&username=default&password=",
-            }[dialect]
-            lines.extend(["", "Database:", f'  DSN: "{dsn}"', "  MaxOpenConn: 25", "  MaxIdleConn: 5"])
-    if "redis" in resources:
-        lines.extend(["", "Redis:", '  Host: "127.0.0.1"', "  Port: 6379"])
-    if "storage" in resources:
-        lines.extend(["", "Storage:", "  Type: disk", "  Disk:", "    RootDir: storage/upload", "    BaseUrl: /upload"])
-    if "telemetry" in resources:
-        lines.extend(["", "Telemetry:", '  Tracer: ""', '  Metric: ""', '  Logger: ""'])
-    if "eventbus" in resources:
-        lines.extend(["", "EventBus:", f"  Name: {svc}-events", "  Capacity: 8192"])
-    return "\n".join(lines) + "\n"
-
-
-def render_process_config(module: str, process: str, services: dict[str, dict[str, Any]]) -> str:
-    imports = [f'\t{lower_camel(svc)}config "{module}/config/{svc}"' for svc in services]
-    fields = [f'\t{pascal_case(svc)} {lower_camel(svc)}config.Config `mapstructure:"{pascal_case(svc)}"`' for svc in services]
-    import_block = "\n".join(imports)
-    if import_block:
-        import_block = "\n\n" + import_block
-    field_block = "\n".join(fields)
-    if field_block:
-        field_block = "\n" + field_block
-    return (
-        "// Code generated by modular scaffold. DO NOT EDIT.\n\n"
-        "package config\n\n"
-        "import (\n"
-        '\t"github.com/wplbyx/modular/packages/config/configitem"'
-        + import_block
-        + "\n)\n\n"
-        "type Config struct {\n"
-        '\tApplication configitem.Application `mapstructure:"Application"`\n'
-        '\tLogging configitem.Logging `mapstructure:"Logging"`'
-        + field_block
-        + "\n}\n"
-    )
-
-
-def render_process_yaml(process: str, services: dict[str, dict[str, Any]], manifest: dict[str, Any]) -> str:
-    lines = [
-        "# Code generated by modular scaffold. DO NOT EDIT.",
-        "Application:",
-        f"  Name: {process}",
-        "  Mode: dev",
-        "  Version: v0.1.0",
-        "  ShutdownTimeout: 10s",
-        "",
-        "Logging:",
-        "  Level: info",
-        "  Output: [console]",
-        "  Async:",
-        "    Enabled: true",
-        "    Capacity: 8192",
-        "    ErrorTimeout: 50ms",
-        "    FlushTimeout: 5s",
-    ]
-    for svc, feature in services.items():
-        body = render_svc_yaml(
-            svc,
-            feature,
-            resources_for(manifest, svc),
-            include_logging=False,
-        ).splitlines()[1:]
-        lines.extend(["", f"{pascal_case(svc)}:", *["  " + line if line else "" for line in body]])
-    return "\n".join(lines) + "\n"
 
 
 def render_main_scaffold() -> str:
@@ -700,352 +621,10 @@ def render_cmd_policy_scaffold() -> str:
         "\t}\n"
         "\treturn modularlog.NewLoggerManager(cfg, options...)\n"
         "}\n\n"
-        "func newTransportPolicy(process string, logger modularlog.Logger) *modulartransport.Policy {\n"
-        "\treturn modulartransport.NewPolicy(process, modulartransport.WithLogger(logger))\n"
+        "func newTransportPolicy(application string, logger modularlog.Logger) *modulartransport.Policy {\n"
+        "\treturn modulartransport.NewPolicy(application, modulartransport.WithLogger(logger))\n"
         "}\n"
     )
-
-
-def render_business_scaffold() -> str:
-    return (
-        "// Code scaffolded by modular. This file is user-maintained.\n\n"
-        "package wiring\n\n"
-        "func WireBusiness(process string, hooks *BusinessHooks, providers Providers) error {\n"
-        "\t// modular:business-unwired - remove this marker after contracts are registered.\n"
-        "\t_ = process\n"
-        "\t_ = hooks\n"
-        "\t_ = providers\n"
-        "\treturn nil\n"
-        "}\n"
-    )
-
-
-def provider_specs(manifest: dict[str, Any], services: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
-    specs: list[dict[str, str]] = []
-    for svc in services:
-        prefix = pascal_case(svc)
-        variable = lower_camel(svc)
-        resources = resources_for(manifest, svc)
-        db = resources.get("db")
-        if db:
-            driver = str(db.get("driver", "bun"))
-            if driver == "bun":
-                specs.append({
-                    "field": prefix + "DB",
-                    "variable": variable + "DBResource",
-                    "type": "*bunresource.Resource",
-                    "type_import": 'bunresource "github.com/wplbyx/modular/packages/infra/database/bun"',
-                    "ctor_import": 'bunresource "github.com/wplbyx/modular/packages/infra/database/bun"',
-                    "ctor": f"bunresource.NewResource(&{variable}Cfg.Database)",
-                    "svc": svc,
-                })
-            elif driver == "gorm":
-                dialect = str(db.get("dialect", "postgres"))
-                specs.append({
-                    "field": prefix + "DB",
-                    "variable": variable + "DBResource",
-                    "type": "*modulargorm.Resource",
-                    "type_import": 'modulargorm "github.com/wplbyx/modular/packages/infra/database/gorm"',
-                    "ctor_import": f'gormresource "github.com/wplbyx/modular/packages/infra/database/gorm/{dialect}"',
-                    "ctor": f"gormresource.NewResource(&{variable}Cfg.Database)",
-                    "svc": svc,
-                })
-            else:
-                specs.append({
-                    "field": prefix + "DB",
-                    "variable": variable + "DBResource",
-                    "type": "*mongoresource.Resource",
-                    "type_import": 'mongoresource "github.com/wplbyx/modular/packages/infra/database/mongo"',
-                    "ctor_import": 'mongoresource "github.com/wplbyx/modular/packages/infra/database/mongo"',
-                    "ctor": f"mongoresource.NewResource(&{variable}Cfg.Mongo)",
-                    "svc": svc,
-                })
-        if "redis" in resources:
-            specs.append({
-                "field": prefix + "Redis",
-                "variable": variable + "RedisResource",
-                "type": "*redisresource.Resource",
-                "type_import": 'redisresource "github.com/wplbyx/modular/packages/infra/cache/redis"',
-                "ctor_import": 'redisresource "github.com/wplbyx/modular/packages/infra/cache/redis"',
-                "ctor": f"redisresource.NewResource(&{variable}Cfg.Redis)",
-                "svc": svc,
-            })
-        if "storage" in resources:
-            specs.append({
-                "field": prefix + "Storage",
-                "variable": variable + "StorageResource",
-                "type": "*storageresource.Resource",
-                "type_import": 'storageresource "github.com/wplbyx/modular/packages/infra/storage/resource"',
-                "ctor_import": 'storageresource "github.com/wplbyx/modular/packages/infra/storage/resource"',
-                "ctor": f"storageresource.New(&{variable}Cfg.Storage)",
-                "svc": svc,
-            })
-        if "telemetry" in resources:
-            specs.append({
-                "field": prefix + "Telemetry",
-                "variable": variable + "TelemetryResource",
-                "type": "*telemetry.OpenTelemetry",
-                "type_import": '"github.com/wplbyx/modular/packages/telemetry"',
-                "ctor_import": '"github.com/wplbyx/modular/packages/telemetry"',
-                "ctor": "",
-                "svc": svc,
-            })
-        if "eventbus" in resources:
-            specs.append({
-                "field": prefix + "EventBus",
-                "variable": variable + "EventBusResource",
-                "type": "*eventbus.Bus",
-                "type_import": '"github.com/wplbyx/modular/packages/eventbus"',
-                "ctor_import": '"github.com/wplbyx/modular/packages/eventbus"',
-                "ctor": f"eventbus.New({variable}Cfg.EventBus, loggerManager.Logger())",
-                "svc": svc,
-            })
-    return specs
-
-
-def render_wiring_framework(manifest: dict[str, Any], services: dict[str, dict[str, Any]]) -> str:
-    providers = provider_specs(manifest, services)
-    transports = {
-        transport
-        for feature in services.values()
-        for transport in feature.get("transports", [])
-    }
-    imports: list[str] = []
-    if any("core." in spec["type"] for spec in providers):
-        imports.append('"github.com/wplbyx/modular/packages/core"')
-    if "http" in transports:
-        imports.append('httpserver "github.com/wplbyx/modular/packages/transport/server/http"')
-    if "grpc" in transports:
-        imports.append('rpcserver "github.com/wplbyx/modular/packages/transport/server/rpc"')
-    imports.extend(spec["type_import"] for spec in providers)
-    lines = [
-        "// Code generated by modular scaffold. DO NOT EDIT.",
-        "",
-        "package wiring",
-        "",
-    ]
-    if imports:
-        lines.extend(["import (", *["\t" + item for item in unique_imports(imports)], ")", ""])
-    lines.append("type BusinessHooks struct {")
-    if "http" in transports:
-        lines.append("\thttp map[string][]httpserver.RegisterRouteFunc")
-    if "grpc" in transports:
-        lines.append("\tgrpc map[string][]rpcserver.RegisterFunc")
-    lines.extend([
-        "}",
-        "",
-        "func NewBusinessHooks() *BusinessHooks {",
-        "\treturn &BusinessHooks{",
-    ])
-    if "http" in transports:
-        lines.append("\t\thttp: make(map[string][]httpserver.RegisterRouteFunc),")
-    if "grpc" in transports:
-        lines.append("\t\tgrpc: make(map[string][]rpcserver.RegisterFunc),")
-    lines.extend(["\t}", "}", ""])
-    if "http" in transports:
-        lines.extend([
-            "func (h *BusinessHooks) AddHTTP(svc string, routes ...httpserver.RegisterRouteFunc) {",
-            "\th.http[svc] = append(h.http[svc], routes...)",
-            "}",
-            "",
-            "func (h *BusinessHooks) HTTP(svc string) []httpserver.RegisterRouteFunc {",
-            "\treturn append([]httpserver.RegisterRouteFunc(nil), h.http[svc]...)",
-            "}",
-            "",
-        ])
-    if "grpc" in transports:
-        lines.extend([
-            "func (h *BusinessHooks) AddGRPC(svc string, registers ...rpcserver.RegisterFunc) {",
-            "\th.grpc[svc] = append(h.grpc[svc], registers...)",
-            "}",
-            "",
-            "func (h *BusinessHooks) RegisterGRPC(svc string) rpcserver.RegisterFunc {",
-            "\treturn rpcserver.ChainRegister(h.grpc[svc]...)",
-            "}",
-            "",
-        ])
-    lines.append("type Providers struct {")
-    lines.extend(f"\t{spec['field']} {spec['type']}" for spec in providers)
-    lines.extend(["}", ""])
-    return "\n".join(lines)
-
-
-def render_framework(
-    manifest: dict[str, Any],
-    process: str,
-    services: dict[str, dict[str, Any]],
-    *,
-    aggregate: bool,
-) -> str:
-    module = str(manifest["project"]["module"])
-    config_name = process
-    providers = provider_specs(manifest, services)
-    standard_imports = [
-        '"context"',
-        '"errors"',
-        '"fmt"',
-        '"os"',
-        '"os/signal"',
-        '"syscall"',
-    ]
-    modular_imports = [
-        '"github.com/wplbyx/modular/packages/app"',
-        'modularconfig "github.com/wplbyx/modular/packages/config"',
-        '"github.com/wplbyx/modular/packages/core"',
-        'modularlog "github.com/wplbyx/modular/packages/log"',
-    ]
-    project_imports = [
-        f'projectconfig "{module}/config/{config_name}"',
-        f'wiring "{module}/internal/platform/wiring"',
-    ]
-    transports = {
-        transport
-        for feature in services.values()
-        for transport in feature.get("transports", [])
-    }
-    if "http" in transports:
-        modular_imports.append('httpserver "github.com/wplbyx/modular/packages/transport/server/http"')
-    if "grpc" in transports:
-        modular_imports.append('rpcserver "github.com/wplbyx/modular/packages/transport/server/rpc"')
-    modular_imports.extend(spec["ctor_import"] for spec in providers)
-    modular_imports = unique_imports(modular_imports)
-
-    lines = [
-        "// Code generated by modular scaffold. DO NOT EDIT.",
-        "",
-        "package main",
-        "",
-        "import (",
-        *["\t" + item for item in standard_imports],
-        "",
-        *["\t" + item for item in modular_imports],
-        "",
-        *["\t" + item for item in project_imports],
-        ")",
-        "",
-    ]
-    lines.extend([
-        "func execute() {",
-        "\tctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)",
-        "\tdefer cancel()",
-        "",
-        "\tcommand := modularconfig.NewRootCommand[projectconfig.Config](modularconfig.CommandOptions[projectconfig.Config]{",
-        f'\t\tName: "{process}",',
-        f'\t\tShort: "{process} service",',
-        f'\t\tDefaultFile: "./config/{config_name}/config.yaml",',
-        f'\t\tEnvPrefix: "{env_prefix(process)}",',
-        "\t\tRun: run,",
-        "\t})",
-        "\tcommand.SetContext(ctx)",
-        "\tcommand.SilenceErrors = true",
-        "\tcommand.SilenceUsage = true",
-        "\tif err := command.Execute(); err != nil {",
-        '\t\tfmt.Fprintf(os.Stderr, "application exited: %v\\n", err)',
-        "\t\tos.Exit(1)",
-        "\t}",
-        "}",
-        "",
-        "func run(ctx context.Context, cfg *projectconfig.Config) (runErr error) {",
-        "\t// Configuration is loaded by config.NewRootCommand before this callback.",
-        "\tloggerManager, err := newLoggerManager(ctx, &cfg.Logging)",
-        "\tif err != nil {",
-        '\t\treturn fmt.Errorf("create logger: %w", err)',
-        "\t}",
-        "\trestoreLogger := modularlog.SetDefault(loggerManager.Logger())",
-        "\tdefer restoreLogger()",
-        "\tdefer func() {",
-        "\t\trunErr = errors.Join(runErr, loggerManager.Close(context.WithoutCancel(ctx)))",
-        "\t}()",
-        "\tpolicy := newTransportPolicy(cfg.Application.Name, loggerManager.Logger())",
-        "",
-        "\tendpoints := make([]core.Endpoint, 0)",
-        "\tresources := make([]core.Resource, 0)",
-        "\ttransports := make([]core.Transport, 0)",
-        "\tproviders := wiring.Providers{}",
-        "",
-    ])
-
-    for svc in services:
-        cfg_var = lower_camel(svc) + "Cfg"
-        cfg_expr = f"&cfg.{pascal_case(svc)}" if aggregate else "cfg"
-        lines.extend([f"\t{cfg_var} := {cfg_expr}", ""])
-        for spec in [item for item in providers if item["svc"] == svc]:
-            variable = spec["variable"]
-            if spec["field"].endswith("Telemetry"):
-                lines.extend([
-                    f"\t{variable}, err := telemetry.NewOpenTelemetry(ctx, {cfg_var}.Application.Name, {cfg_var}.Application.Version, &{cfg_var}.Telemetry, telemetry.WithLoggerManager(loggerManager))",
-                    "\tif err != nil {",
-                    f'\t\treturn fmt.Errorf("create {svc} telemetry: %w", err)',
-                    "\t}",
-                ])
-            elif spec["field"].endswith("EventBus"):
-                lines.extend([
-                    f"\t{variable}, err := {spec['ctor']}",
-                    "\tif err != nil {",
-                    f'\t\treturn fmt.Errorf("create {svc} event bus: %w", err)',
-                    "\t}",
-                ])
-            else:
-                lines.append(f"\t{variable} := {spec['ctor']}")
-            lines.extend([
-                f"\tproviders.{spec['field']} = {variable}",
-                f"\tresources = append(resources, {variable})",
-            ])
-        if any(item["svc"] == svc for item in providers):
-            lines.append("")
-
-    lines.extend([
-        "\thooks := wiring.NewBusinessHooks()",
-        f'\tif err := wiring.WireBusiness("{process}", hooks, providers); err != nil {{',
-        '\t\treturn fmt.Errorf("wire business contracts: %w", err)',
-        "\t}",
-        "",
-    ])
-
-    for svc, feature in services.items():
-        cfg_var = lower_camel(svc) + "Cfg"
-        if "http" in feature.get("transports", []):
-            server = lower_camel(svc) + "HTTPServer"
-            lines.extend([
-                f"\t{server}, err := httpserver.NewServer(&{cfg_var}.HTTP, httpserver.WithPolicy(policy))",
-                "\tif err != nil {",
-                f'\t\treturn fmt.Errorf("create {svc} http server: %w", err)',
-                "\t}",
-                f"\t{server}.RegisterRoute(hooks.HTTP(\"{svc}\")...)",
-                f"\tendpoints = append(endpoints, {server})",
-                f"\ttransports = append(transports, {server}.Transport())",
-                "",
-            ])
-        if "grpc" in feature.get("transports", []):
-            server = lower_camel(svc) + "GRPCServer"
-            lines.extend([
-                f"\t{server}, err := rpcserver.NewServer(&{cfg_var}.GRPC, hooks.RegisterGRPC(\"{svc}\"), rpcserver.WithPolicy(policy))",
-                "\tif err != nil {",
-                f'\t\treturn fmt.Errorf("create {svc} grpc server: %w", err)',
-                "\t}",
-                f"\tendpoints = append(endpoints, {server})",
-                f"\ttransports = append(transports, {server}.Transport())",
-                "",
-            ])
-
-    lines.extend([
-        "\tnode := core.NewServiceNode(cfg.Application.Name, cfg.Application.Version, transports...)",
-        "\toptions := []app.Option{app.WithServiceNode(node)}",
-        "\tfor _, endpoint := range endpoints {",
-        "\t\toptions = append(options, app.WithEndpoint(endpoint))",
-        "\t}",
-        "\tfor _, resource := range resources {",
-        "\t\toptions = append(options, app.WithResource(resource))",
-        "\t}",
-        "\tapplication, err := app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)",
-        "\tif err != nil {",
-        '\t\treturn fmt.Errorf("create application: %w", err)',
-        "\t}",
-        "\treturn application.Run()",
-        "}",
-        "",
-    ])
-    return "\n".join(lines)
 
 
 def render_module_config_scaffold() -> str:
@@ -1058,8 +637,8 @@ def render_module_config_scaffold() -> str:
     )
 
 
-def process_resource_specs(process: dict[str, Any]) -> list[dict[str, str]]:
-    resources = process.get("resources", {})
+def application_resource_specs(application: dict[str, Any]) -> list[dict[str, str]]:
+    resources = application.get("resources", {})
     specs: list[dict[str, str]] = []
     db = resources.get("db")
     if db:
@@ -1138,8 +717,8 @@ def process_resource_specs(process: dict[str, Any]) -> list[dict[str, str]]:
     return specs
 
 
-def render_v3_process_config(module: str, process: dict[str, Any]) -> str:
-    modules = list(process.get("modules", []))
+def render_application_config(module: str, application: dict[str, Any]) -> str:
+    modules = list(application.get("modules", []))
     project_imports = [
         f'\t{lower_camel(name)}config "{module}/config/modules/{name}"'
         for name in modules
@@ -1151,12 +730,12 @@ def render_v3_process_config(module: str, process: dict[str, Any]) -> str:
         '\tApplication configitem.Application `mapstructure:"Application"`',
         '\tLogging configitem.Logging `mapstructure:"Logging"`',
     ]
-    transports = set(process.get("transports", []))
+    transports = set(application.get("transports", []))
     if "http" in transports:
         fields.append('\tHTTP configitem.HTTP `mapstructure:"HTTP"`')
     if "grpc" in transports:
         fields.append('\tGRPC configitem.GRPC `mapstructure:"GRPC"`')
-    resources = process.get("resources", {})
+    resources = application.get("resources", {})
     db = resources.get("db")
     if db and db.get("driver") == "mongo":
         fields.append('\tMongo configitem.Mongo `mapstructure:"Mongo"`')
@@ -1182,13 +761,13 @@ def render_v3_process_config(module: str, process: dict[str, Any]) -> str:
     )
 
 
-def render_v3_process_yaml(name: str, process: dict[str, Any]) -> str:
+def render_application_yaml(name: str, application: dict[str, Any]) -> str:
     lines = [
         "# Code generated by modular scaffold. DO NOT EDIT.",
         "Application:",
         f"  Name: {name}",
         "  Mode: dev",
-        "  Version: v0.3.0",
+        "  Version: v0.4.0",
         '  InstanceID: ""',
         "  Metadata: {}",
         "  ShutdownTimeout: 10s",
@@ -1202,12 +781,12 @@ def render_v3_process_yaml(name: str, process: dict[str, Any]) -> str:
         "    ErrorTimeout: 50ms",
         "    FlushTimeout: 5s",
     ]
-    ports = process.get("ports", {})
-    if "http" in process.get("transports", []):
+    ports = application.get("ports", {})
+    if "http" in application.get("transports", []):
         lines.extend(["", "HTTP:", '  Host: "0.0.0.0"', f"  Port: {ports.get('http', 18080)}"])
-    if "grpc" in process.get("transports", []):
+    if "grpc" in application.get("transports", []):
         lines.extend(["", "GRPC:", '  Host: "0.0.0.0"', f"  Port: {ports.get('grpc', 19090)}"])
-    resources = process.get("resources", {})
+    resources = application.get("resources", {})
     db = resources.get("db")
     if db:
         driver = db.get("driver", "bun")
@@ -1230,29 +809,29 @@ def render_v3_process_yaml(name: str, process: dict[str, Any]) -> str:
         lines.extend(["", "Telemetry:", '  Tracer: ""', '  Metric: ""', '  Logger: ""'])
     if "eventbus" in resources:
         lines.extend(["", "EventBus:", f"  Name: {name}-events", "  Capacity: 8192"])
-    for module in process.get("modules", []):
+    for module in application.get("modules", []):
         lines.extend(["", f"{pascal_case(module)}: {{}}"])
     return "\n".join(lines) + "\n"
 
 
-def render_v3_wiring(module_path: str, architecture: dict[str, Any]) -> str:
+def render_v4_wiring(module_path: str, architecture: dict[str, Any]) -> str:
     modules = sorted(architecture["modules"])
-    process_specs = {
-        name: process_resource_specs(process)
-        for name, process in sorted(architecture["processes"].items())
-    }
+    application = architecture["application"]
+    resource_specs = application_resource_specs(application)
+    transports = set(application.get("transports", []))
     imports = [
         '"github.com/wplbyx/modular/packages/core"',
         '"github.com/wplbyx/modular/packages/health"',
         'modularlog "github.com/wplbyx/modular/packages/log"',
         '"github.com/wplbyx/modular/packages/registry"',
-        'httpserver "github.com/wplbyx/modular/packages/transport/server/http"',
-        'rpcserver "github.com/wplbyx/modular/packages/transport/server/rpc"',
     ]
+    if "http" in transports:
+        imports.append('httpserver "github.com/wplbyx/modular/packages/transport/server/http"')
+    if "grpc" in transports:
+        imports.append('rpcserver "github.com/wplbyx/modular/packages/transport/server/rpc"')
     imports.extend(
         spec["type_import"]
-        for specs in process_specs.values()
-        for spec in specs
+        for spec in resource_specs
     )
     project_imports = [
         f'{lower_camel(name)}config "{module_path}/config/modules/{name}"'
@@ -1265,7 +844,7 @@ def render_v3_wiring(module_path: str, architecture: dict[str, Any]) -> str:
         "",
         "import (",
         *["\t" + item for item in unique_imports(imports)],
-        *( [""] if project_imports else [] ),
+        *([""] if project_imports else []),
         *["\t" + item for item in project_imports],
         ")",
         "",
@@ -1273,62 +852,59 @@ def render_v3_wiring(module_path: str, architecture: dict[str, Any]) -> str:
         *[f"\t{pascal_case(name)} {lower_camel(name)}config.Config" for name in modules],
         "}",
         "",
-        *[
-            line
-            for name, specs in process_specs.items()
-            for line in [
-                f"type {pascal_case(name)}Resources struct {{",
-                *[f"\t{spec['field']} {spec['type']}" for spec in specs],
-                "}",
-                "",
-            ]
-        ],
-        "type ProcessResources struct {",
-        *[f"\t{pascal_case(name)} {pascal_case(name)}Resources" for name in process_specs],
+        "type Resources struct {",
+        *[f"\t{spec['field']} {spec['type']}" for spec in resource_specs],
         "}",
         "",
         "type Platform struct {",
         "\tLogger    modularlog.Logger",
         "\tHealth    *health.Manager",
         "\tModules   ModuleConfigs",
-        "\tResources ProcessResources",
+        "\tResources Resources",
         "}",
         "",
-        "type Contribution struct {",
-        "\tHTTP      []httpserver.RegisterRouteFunc",
-        "\tGRPC      []rpcserver.RegisterFunc",
+        "type Assembly struct {",
+    ]
+    if "http" in transports:
+        lines.append("\tHTTP      []httpserver.RegisterRouteFunc")
+    if "grpc" in transports:
+        lines.append("\tGRPC      []rpcserver.RegisterFunc")
+    lines.extend([
         "\tResources []core.Resource",
         "\tEndpoints []core.Endpoint",
         "\tChecks    []health.Checker",
         "\tRegistrar registry.Registrar",
         "}",
         "",
-        "func (c *Contribution) AddHTTP(routes ...httpserver.RegisterRouteFunc) { c.HTTP = append(c.HTTP, routes...) }",
-        "func (c *Contribution) AddGRPC(registers ...rpcserver.RegisterFunc) { c.GRPC = append(c.GRPC, registers...) }",
-        "func (c *Contribution) AddResource(resources ...core.Resource) { c.Resources = append(c.Resources, resources...) }",
-        "func (c *Contribution) AddEndpoint(endpoints ...core.Endpoint) { c.Endpoints = append(c.Endpoints, endpoints...) }",
-        "func (c *Contribution) AddChecker(checkers ...health.Checker) { c.Checks = append(c.Checks, checkers...) }",
+    ])
+    if "http" in transports:
+        lines.append("func (a *Assembly) AddHTTP(routes ...httpserver.RegisterRouteFunc) { a.HTTP = append(a.HTTP, routes...) }")
+    if "grpc" in transports:
+        lines.append("func (a *Assembly) AddGRPC(registers ...rpcserver.RegisterFunc) { a.GRPC = append(a.GRPC, registers...) }")
+    lines.extend([
+        "func (a *Assembly) AddResource(resources ...core.Resource) { a.Resources = append(a.Resources, resources...) }",
+        "func (a *Assembly) AddEndpoint(endpoints ...core.Endpoint) { a.Endpoints = append(a.Endpoints, endpoints...) }",
+        "func (a *Assembly) AddChecker(checkers ...health.Checker) { a.Checks = append(a.Checks, checkers...) }",
         "",
-    ]
+    ])
     return "\n".join(lines)
 
 
-def render_v3_business_scaffold() -> str:
+def render_v4_business_scaffold() -> str:
     return (
         "// Code scaffolded by modular. This file is user-maintained.\n\n"
         "package wiring\n\n"
-        "func WireBusiness(process string, platform Platform) (Contribution, error) {\n"
+        "func WireApplication(platform Platform) (Assembly, error) {\n"
         "\t// modular:business-unwired - assemble typed modules in dependency order.\n"
-        "\t_ = process\n"
         "\t_ = platform\n"
-        "\treturn Contribution{}, nil\n"
+        "\treturn Assembly{}, nil\n"
         "}\n"
     )
 
 
-def render_v3_framework(manifest: dict[str, Any], process_name: str, process: dict[str, Any]) -> str:
+def render_v4_framework(manifest: dict[str, Any], application_name: str, application: dict[str, Any]) -> str:
     module_path = str(manifest["project"]["module"])
-    specs = process_resource_specs(process)
+    specs = application_resource_specs(application)
     standard_imports = ['"context"', '"errors"', '"fmt"', '"os"', '"os/signal"', '"syscall"']
     modular_imports = [
         '"github.com/wplbyx/modular/packages/app"',
@@ -1337,7 +913,7 @@ def render_v3_framework(manifest: dict[str, Any], process_name: str, process: di
         '"github.com/wplbyx/modular/packages/health"',
         'modularlog "github.com/wplbyx/modular/packages/log"',
     ]
-    transports = set(process.get("transports", []))
+    transports = set(application.get("transports", []))
     if "http" in transports:
         modular_imports.append('httpserver "github.com/wplbyx/modular/packages/transport/server/http"')
     if "grpc" in transports:
@@ -1347,15 +923,15 @@ def render_v3_framework(manifest: dict[str, Any], process_name: str, process: di
         "// Code generated by modular scaffold. DO NOT EDIT.", "", "package main", "", "import (",
         *["\t" + item for item in standard_imports], "",
         *["\t" + item for item in unique_imports(modular_imports)], "",
-        f'\tprojectconfig "{module_path}/config/{process_name}"',
+        f'\tprojectconfig "{module_path}/config/{application_name}"',
         f'\twiring "{module_path}/internal/platform/wiring"',
         ")", "",
         "func execute() {",
         "\tctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)",
         "\tdefer cancel()", "",
         f"\tcommand := modularconfig.NewRootCommand[projectconfig.Config](modularconfig.CommandOptions[projectconfig.Config]{{",
-        f'\t\tName: "{process_name}",', f'\t\tShort: "{process_name} process",',
-        f'\t\tDefaultFile: "./config/{process_name}/config.yaml",', f'\t\tEnvPrefix: "{env_prefix(process_name)}",',
+        f'\t\tName: "{application_name}",', f'\t\tShort: "{application_name} application",',
+        f'\t\tDefaultFile: "./config/{application_name}/config.yaml",', f'\t\tEnvPrefix: "{env_prefix(application_name)}",',
         "\t\tRun: run,", "\t})", "\tcommand.SetContext(ctx)",
         "\tcommand.SilenceErrors = true", "\tcommand.SilenceUsage = true",
         "\tif err := command.Execute(); err != nil {", '\t\tfmt.Fprintf(os.Stderr, "application exited: %v\\n", err)',
@@ -1365,13 +941,13 @@ def render_v3_framework(manifest: dict[str, Any], process_name: str, process: di
         '\t\treturn fmt.Errorf("create logger: %w", err)', "\t}",
         "\trestoreLogger := modularlog.SetDefault(loggerManager.Logger())", "\tdefer restoreLogger()",
         "\tdefer func() { runErr = errors.Join(runErr, loggerManager.Close(context.WithoutCancel(ctx))) }()",
-        "\tpolicy := newTransportPolicy(cfg.Application.Name, loggerManager.Logger())",
+        *(["\tpolicy := newTransportPolicy(cfg.Application.Name, loggerManager.Logger())"] if transports else []),
         "\thealthManager := health.NewManager()",
         "\tresources := make([]core.Resource, 0)", "\tendpoints := make([]core.Endpoint, 0)",
         "\ttransports := make([]core.Transport, 0)",
         "\tplatform := wiring.Platform{Logger: loggerManager.Logger(), Health: healthManager}",
         "\tplatform.Modules = wiring.ModuleConfigs{",
-        *[f"\t\t{pascal_case(name)}: cfg.{pascal_case(name)}," for name in process.get("modules", [])],
+        *[f"\t\t{pascal_case(name)}: cfg.{pascal_case(name)}," for name in application.get("modules", [])],
         "\t}", "",
     ]
     for spec in specs:
@@ -1389,27 +965,27 @@ def render_v3_framework(manifest: dict[str, Any], process_name: str, process: di
         else:
             lines.append(f"\t{variable} := {spec['ctor']}")
         lines.extend([
-            f"\tplatform.Resources.{pascal_case(process_name)}.{spec['field']} = {variable}",
+            f"\tplatform.Resources.{spec['field']} = {variable}",
             f"\tresources = append(resources, {variable})",
         ])
     lines.extend([
-        "", f'\tcontribution, err := wiring.WireBusiness("{process_name}", platform)', "\tif err != nil {",
-        '\t\treturn fmt.Errorf("wire business modules: %w", err)', "\t}",
-        "\tif err := healthManager.Register(contribution.Checks...); err != nil {",
+        "", "\tassembly, err := wiring.WireApplication(platform)", "\tif err != nil {",
+        '\t\treturn fmt.Errorf("wire application: %w", err)', "\t}",
+        "\tif err := healthManager.Register(assembly.Checks...); err != nil {",
         '\t\treturn fmt.Errorf("register module health checks: %w", err)', "\t}",
-        "\tresources = append(resources, contribution.Resources...)",
-        "\tendpoints = append(endpoints, contribution.Endpoints...)", "",
+        "\tresources = append(resources, assembly.Resources...)",
+        "\tendpoints = append(endpoints, assembly.Endpoints...)", "",
     ])
     if "http" in transports:
         lines.extend([
             "\thttpServer, err := httpserver.NewServer(&cfg.HTTP, httpserver.WithPolicy(policy), httpserver.WithHealthManager(\"\", healthManager))",
             "\tif err != nil {", '\t\treturn fmt.Errorf("create HTTP server: %w", err)', "\t}",
-            "\thttpServer.RegisterRoute(contribution.HTTP...)", "\tendpoints = append(endpoints, httpServer)",
+            "\thttpServer.RegisterRoute(assembly.HTTP...)", "\tendpoints = append(endpoints, httpServer)",
             "\ttransports = append(transports, httpServer.Transport())", "",
         ])
     if "grpc" in transports:
         lines.extend([
-            "\tgrpcServer, err := rpcserver.NewServer(&cfg.GRPC, rpcserver.ChainRegister(contribution.GRPC...), rpcserver.WithPolicy(policy))",
+            "\tgrpcServer, err := rpcserver.NewServer(&cfg.GRPC, rpcserver.ChainRegister(assembly.GRPC...), rpcserver.WithPolicy(policy))",
             "\tif err != nil {", '\t\treturn fmt.Errorf("create gRPC server: %w", err)', "\t}",
             "\tendpoints = append(endpoints, grpcServer)", "\ttransports = append(transports, grpcServer.Transport())", "",
         ])
@@ -1418,7 +994,7 @@ def render_v3_framework(manifest: dict[str, Any], process_name: str, process: di
         "\tif err != nil {", '\t\treturn fmt.Errorf("create process identity: %w", err)', "\t}",
         "\tnode := core.NewServiceNodeFromProcess(identity, transports...)",
         "\toptions := []app.Option{app.WithServiceNode(node), app.WithHealthManager(healthManager)}",
-        "\tif contribution.Registrar != nil { options = append(options, app.WithRegistrar(contribution.Registrar)) }",
+        "\tif assembly.Registrar != nil { options = append(options, app.WithRegistrar(assembly.Registrar)) }",
         "\tfor _, resource := range resources { options = append(options, app.WithResource(resource)) }",
         "\tfor _, endpoint := range endpoints { options = append(options, app.WithEndpoint(endpoint)) }",
         "\tapplication, err := app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)",
@@ -1428,7 +1004,7 @@ def render_v3_framework(manifest: dict[str, Any], process_name: str, process: di
     return "\n".join(lines)
 
 
-def render_v3_outputs(project: Path, manifest: dict[str, Any], architecture: dict[str, Any]) -> dict[Path, OutputFile]:
+def render_v4_outputs(project: Path, manifest: dict[str, Any], architecture: dict[str, Any]) -> dict[Path, OutputFile]:
     validate_architecture(architecture)
     meta = manifest["project"]
     module_path = str(meta["module"])
@@ -1439,18 +1015,14 @@ def render_v3_outputs(project: Path, manifest: dict[str, Any], architecture: dic
     }
     outputs: list[OutputFile] = [
         output("go.mod", render_template("project/go.mod.tmpl", values), owner=OWNER_SCAFFOLD, template="project/go.mod"),
-        output("buf.yaml", template_text("project/buf.yaml.tmpl"), owner=OWNER_SCAFFOLD, template="project/buf.yaml"),
-        output("buf.gen.yaml", template_text("project/buf.gen.yaml.tmpl"), owner=OWNER_SCAFFOLD, template="project/buf.gen.yaml"),
         output("Makefile", template_text("project/Makefile.tmpl"), owner=OWNER_SCAFFOLD, template="project/Makefile"),
         output(".gitignore", template_text("project/gitignore.tmpl"), owner=OWNER_SCAFFOLD, template="project/gitignore"),
         output(PROFILE_PATH, template_text("project/profile.toml.tmpl"), owner=OWNER_SCAFFOLD, template="project/profile"),
         output(ARCHITECTURE_PATH, architecture_content(architecture), owner=OWNER_SCAFFOLD, template="architecture/source"),
         output(".modular/make/modular.mk", template_text("project/modular.mk.tmpl"), template="project/modular.mk"),
-        output("proto/.gitkeep", "", template="directory/proto"),
-        output("common/.gitkeep", "", template="directory/common"),
         output("internal/.gitkeep", "", template="directory/internal"),
-        output("internal/platform/wiring/framework.gen.go", render_v3_wiring(module_path, architecture), template="wiring/framework-v3"),
-        output("internal/platform/wiring/business.go", render_v3_business_scaffold(), owner=OWNER_SCAFFOLD, template="wiring/business-v3"),
+        output("internal/platform/wiring/framework.gen.go", render_v4_wiring(module_path, architecture), template="wiring/framework-v4"),
+        output("internal/platform/wiring/business.go", render_v4_business_scaffold(), owner=OWNER_SCAFFOLD, template="wiring/business-v4"),
     ]
     outputs.extend(runtime_outputs())
     for module in sorted(architecture["modules"]):
@@ -1458,14 +1030,15 @@ def render_v3_outputs(project: Path, manifest: dict[str, Any], architecture: dic
             f"config/modules/{module}/config.go", render_module_config_scaffold(), owner=OWNER_SCAFFOLD,
             template="config/module", provenance={"module": module},
         ))
-    for name, process in sorted(architecture["processes"].items()):
-        outputs.extend([
-            output(f"config/{name}/config.gen.go", render_v3_process_config(module_path, process), template="config/process-generated-v3", provenance={"process": name}),
-            output(f"config/{name}/config.yaml", render_v3_process_yaml(name, process), template="config/process-yaml-v3", provenance={"process": name}),
-            output(f"cmd/{name}/main.go", render_main_scaffold(), template="cmd/main", provenance={"process": name}),
-            output(f"cmd/{name}/policy.go", render_cmd_policy_scaffold(), owner=OWNER_SCAFFOLD, template="cmd/policy", provenance={"process": name}),
-            output(f"cmd/{name}/framework.gen.go", render_v3_framework(manifest, name, process), template="cmd/framework-v3", provenance={"process": name}),
-        ])
+    application = {**architecture["application"], "modules": sorted(architecture["modules"])}
+    name = str(application["name"])
+    outputs.extend([
+        output(f"config/{name}/config.gen.go", render_application_config(module_path, application), template="config/application-generated-v4", provenance={"application": name}),
+        output(f"config/{name}/config.yaml", render_application_yaml(name, application), template="config/application-yaml-v4", provenance={"application": name}),
+        output(f"cmd/{name}/main.go", render_main_scaffold(), template="cmd/main", provenance={"application": name}),
+        output(f"cmd/{name}/policy.go", render_cmd_policy_scaffold(), owner=OWNER_SCAFFOLD, template="cmd/policy", provenance={"application": name}),
+        output(f"cmd/{name}/framework.gen.go", render_v4_framework(manifest, name, application), template="cmd/framework-v4", provenance={"application": name}),
+    ])
     formatted = [
         OutputFile(item.path, format_go_content(item.content, item.path), item.owner, item.template, item.provenance)
         for item in outputs
@@ -1478,129 +1051,8 @@ def render_outputs(
     manifest: dict[str, Any],
     architecture: dict[str, Any] | None = None,
 ) -> dict[Path, OutputFile]:
-    if is_module_process(manifest):
-        return render_v3_outputs(project, manifest, architecture or load_architecture(project))
-    meta = manifest["project"]
-    module = str(meta["module"])
-    name = str(meta["name"])
-    topology = str(meta["topology"])
-    services = services_from(manifest)
-    values = {
-        "PROJECT": module,
-        "GO_VERSION": DEFAULT_GO_VERSION,
-        "MODULAR_VERSION": str(meta["modular_version"]),
-    }
-    outputs: list[OutputFile] = [
-        output("go.mod", render_template("project/go.mod.tmpl", values), owner=OWNER_SCAFFOLD, template="project/go.mod"),
-        output("buf.yaml", template_text("project/buf.yaml.tmpl"), owner=OWNER_SCAFFOLD, template="project/buf.yaml"),
-        output("buf.gen.yaml", template_text("project/buf.gen.yaml.tmpl"), owner=OWNER_SCAFFOLD, template="project/buf.gen.yaml"),
-        output("Makefile", template_text("project/Makefile.tmpl"), owner=OWNER_SCAFFOLD, template="project/Makefile"),
-        output(".gitignore", template_text("project/gitignore.tmpl"), owner=OWNER_SCAFFOLD, template="project/gitignore"),
-        output(PROFILE_PATH, template_text("project/profile.toml.tmpl"), owner=OWNER_SCAFFOLD, template="project/profile"),
-        output(".modular/make/modular.mk", template_text("project/modular.mk.tmpl"), template="project/modular.mk"),
-        output("proto/.gitkeep", "", template="directory/proto"),
-        output("common/.gitkeep", "", template="directory/common"),
-        output("internal/.gitkeep", "", template="directory/internal"),
-    ]
-    outputs.extend(runtime_outputs())
-
-    outputs.extend([
-        output(
-            "internal/platform/wiring/framework.gen.go",
-            render_wiring_framework(manifest, services),
-            template="wiring/framework",
-        ),
-        output(
-            "internal/platform/wiring/business.go",
-            render_business_scaffold(),
-            owner=OWNER_SCAFFOLD,
-            template="wiring/business",
-        ),
-    ])
-
-    for svc, feature in services.items():
-        resources = resources_for(manifest, svc)
-        provenance = {"feature": f"service:{svc}"}
-        outputs.extend([
-            output(
-                f"config/{svc}/config.gen.go",
-                render_svc_generated_config(
-                    svc,
-                    feature,
-                    resources,
-                    include_logging=topology == "service",
-                ),
-                template="config/svc-generated",
-                provenance=provenance,
-            ),
-            output(
-                f"config/{svc}/config.go",
-                render_svc_config_scaffold(),
-                owner=OWNER_SCAFFOLD,
-                template="config/svc-extension",
-                provenance=provenance,
-            ),
-            output(
-                f"config/{svc}/config.yaml",
-                render_svc_yaml(
-                    svc,
-                    feature,
-                    resources,
-                    include_logging=topology == "service",
-                ),
-                template="config/svc-yaml",
-                provenance=provenance,
-            ),
-        ])
-
-    if topology == "single":
-        process = name
-        outputs.extend([
-            output(
-                f"config/{process}/config.gen.go",
-                render_process_config(module, process, services),
-                template="config/process-generated",
-            ),
-            output(
-                f"config/{process}/config.yaml",
-                render_process_yaml(process, services, manifest),
-                template="config/process-yaml",
-            ),
-            output(f"cmd/{process}/main.go", render_main_scaffold(), template="cmd/main"),
-            output(
-                f"cmd/{process}/policy.go",
-                render_cmd_policy_scaffold(),
-                owner=OWNER_SCAFFOLD,
-                template="cmd/policy",
-            ),
-            output(
-                f"cmd/{process}/framework.gen.go",
-                render_framework(manifest, process, services, aggregate=True),
-                template="cmd/framework",
-            ),
-        ])
-    else:
-        for svc, feature in services.items():
-            one = {svc: feature}
-            outputs.extend([
-                output(f"cmd/{svc}/main.go", render_main_scaffold(), template="cmd/main"),
-                output(
-                    f"cmd/{svc}/policy.go",
-                    render_cmd_policy_scaffold(),
-                    owner=OWNER_SCAFFOLD,
-                    template="cmd/policy",
-                ),
-                output(
-                    f"cmd/{svc}/framework.gen.go",
-                    render_framework(manifest, svc, one, aggregate=False),
-                    template="cmd/framework",
-                ),
-            ])
-    formatted = [
-        OutputFile(item.path, format_go_content(item.content, item.path), item.owner, item.template, item.provenance)
-        for item in outputs
-    ]
-    return {item.path: item for item in formatted}
+    require_v4(manifest)
+    return render_v4_outputs(project, manifest, architecture or load_architecture(project))
 
 
 def file_record(item: OutputFile, content_hash: str) -> dict[str, Any]:
@@ -1884,7 +1336,7 @@ def profile_business_globs(project: Path) -> list[str]:
 
 
 def all_go_files(project: Path) -> Iterable[Path]:
-    ignored = {".git", ".modular", "common"}
+    ignored = {".git", ".modular"}
     for path in project.rglob("*.go"):
         if any(part in ignored for part in path.parts):
             continue
@@ -1896,7 +1348,7 @@ def placeholder_check(project: Path, *, allow_contract: bool, allow_unwired: boo
     for path in project.rglob("*"):
         if not path.is_file() or ".git" in path.parts or ".modular" in path.parts:
             continue
-        if path.suffix not in {".go", ".proto", ".yaml", ".toml", ".md"}:
+        if path.suffix not in {".go", ".yaml", ".toml", ".md"}:
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -1921,81 +1373,12 @@ def doctor_check(project: Path, *, phase: str, strict: bool) -> list[str]:
         module = read_module(project)
     except ScaffoldError as error:
         raise ScaffoldError(str(error)) from error
-    for required in ["go.mod", "buf.yaml", "buf.gen.yaml", "Makefile", ".modular/tool/modular.py"]:
+    for required in ["go.mod", "Makefile", ".modular/tool/modular.py"]:
         if not (project / required).exists():
             errors.append(f"missing {required}")
-    if is_module_process(manifest):
-        doctor_v3(project, manifest, module, phase, errors, warnings)
-        if strict:
-            errors.extend(warnings)
-            warnings = []
-        for warning in warnings:
-            warn(warning)
-        if errors:
-            raise ScaffoldError("doctor failed:\n" + "\n".join(f"- {item}" for item in errors))
-        return warnings
-    topology = manifest["project"].get("topology")
-    services = services_from(manifest)
-    if topology not in VALID_TOPOLOGIES:
-        errors.append(f"invalid topology in manifest: {topology}")
-    for svc, feature in services.items():
-        if not (project / f"config/{svc}/config.gen.go").is_file():
-            errors.append(f"missing generated config for svc {svc}")
-        if not (project / f"config/{svc}/config.yaml").is_file():
-            errors.append(f"missing config/{svc}/config.yaml")
-        transports = set(feature.get("transports", []))
-        if not transports.issubset(VALID_TRANSPORTS) or not transports:
-            errors.append(f"svc {svc} has invalid or empty transport selection")
-    if topology == "single":
-        process = str(manifest["project"]["name"])
-        main = project / f"cmd/{process}/framework.gen.go"
-        policy = project / f"cmd/{process}/policy.go"
-        if not main.is_file():
-            errors.append(f"missing cmd/{process}/framework.gen.go")
-        if not policy.is_file():
-            errors.append(f"missing cmd/{process}/policy.go")
-        if not (project / f"config/{process}/config.gen.go").is_file():
-            errors.append(f"missing config/{process}/config.gen.go")
-        if main.is_file():
-            check_bootstrap_contract(main, errors)
-        process_config = project / f"config/{process}/config.gen.go"
-        if process_config.is_file() and "configitem.Logging" not in process_config.read_text(encoding="utf-8"):
-            errors.append(f"config/{process}/config.gen.go does not declare process Logging")
-    else:
-        for svc in services:
-            main = project / f"cmd/{svc}/framework.gen.go"
-            policy = project / f"cmd/{svc}/policy.go"
-            if not main.is_file():
-                errors.append(f"missing cmd/{svc}/framework.gen.go")
-            else:
-                check_bootstrap_contract(main, errors)
-            if not policy.is_file():
-                errors.append(f"missing cmd/{svc}/policy.go")
-            service_config = project / f"config/{svc}/config.gen.go"
-            if service_config.is_file() and "configitem.Logging" not in service_config.read_text(encoding="utf-8"):
-                errors.append(f"config/{svc}/config.gen.go does not declare process Logging")
-
-    for path in (project / "common").rglob("*.go") if (project / "common").exists() else []:
-        if not path.name.endswith((".pb.go", "_grpc.pb.go")):
-            errors.append(f"common contains hand-written Go file: {path.relative_to(project)}")
-    for path in all_go_files(project):
-        relative = path.relative_to(project)
-        text = path.read_text(encoding="utf-8")
-        parts = relative.parts
-        if len(parts) >= 3 and parts[0] == "internal":
-            own = parts[1]
-            for svc in services:
-                if svc != own and f'"{module}/internal/{svc}/' in text:
-                    errors.append(f"{relative} imports another svc internal package: {svc}")
-        for symbol in ("log.GetLogger(", "log.Infof(", "log.Warnf(", "log.Errorf(", "log.Debugf("):
-            if symbol in text:
-                errors.append(f"{relative} uses removed logger API {symbol[:-1]}")
-    if phase == "complete":
-        business_files = [path for path in all_go_files(project) if any(path.match(pattern) for pattern in profile_business_globs(project))]
-        packages: set[Path] = {path.parent for path in business_files if not path.name.endswith("_test.go")}
-        for package in packages:
-            if not list(package.glob("*_test.go")):
-                errors.append(f"business package has no tests: {package.relative_to(project)}")
+    if not is_modular_monolith(manifest):
+        require_v4(manifest)
+    doctor_v4(project, module, phase, errors)
     if strict:
         errors.extend(warnings)
         warnings = []
@@ -2006,13 +1389,11 @@ def doctor_check(project: Path, *, phase: str, strict: bool) -> list[str]:
     return warnings
 
 
-def doctor_v3(
+def doctor_v4(
     project: Path,
-    manifest: dict[str, Any],
     module_path: str,
     phase: str,
     errors: list[str],
-    warnings: list[str],
 ) -> None:
     try:
         architecture = load_architecture(project)
@@ -2022,24 +1403,25 @@ def doctor_v3(
     for module in architecture["modules"]:
         if not (project / f"config/modules/{module}/config.go").is_file():
             errors.append(f"missing module config for {module}")
-    for process in architecture["processes"]:
-        framework = project / f"cmd/{process}/framework.gen.go"
-        for required in [
-            framework,
-            project / f"cmd/{process}/policy.go",
-            project / f"config/{process}/config.gen.go",
-            project / f"config/{process}/config.yaml",
-        ]:
-            if not required.is_file():
-                errors.append(f"missing process file: {required.relative_to(project)}")
-        if framework.is_file():
-            check_bootstrap_contract(framework, errors)
+    application = str(architecture["application"]["name"])
+    framework = project / f"cmd/{application}/framework.gen.go"
+    for required in [
+        framework,
+        project / f"cmd/{application}/policy.go",
+        project / f"config/{application}/config.gen.go",
+        project / f"config/{application}/config.yaml",
+    ]:
+        if not required.is_file():
+            errors.append(f"missing application file: {required.relative_to(project)}")
+    if framework.is_file():
+        check_bootstrap_contract(framework, errors)
 
     check_module_imports(project, module_path, architecture, errors)
     if phase == "complete":
+        patterns = profile_business_globs(project)
         business_files = [
             path for path in all_go_files(project)
-            if "internal/modules" in path.as_posix() and "/internal/" in path.as_posix()
+            if any(path.relative_to(project).match(pattern) for pattern in patterns)
         ]
         packages = {path.parent for path in business_files if not path.name.endswith("_test.go")}
         for package in packages:
@@ -2055,7 +1437,6 @@ def check_module_imports(
 ) -> None:
     modules = architecture["modules"]
     prefix = f"{module_path}/internal/modules/"
-    common_prefix = f"{module_path}/common/"
     import_pattern = re.compile(
         r'^\s*(?:import\s+)?(?:[A-Za-z_.][A-Za-z0-9_.]*\s+)?"([^"]+)"',
         re.MULTILINE,
@@ -2078,9 +1459,6 @@ def check_module_imports(
                 remainder = imported[len(prefix):]
                 provider, _, child = remainder.partition("/")
                 contract_import = child == "contract" or child.startswith("contract/")
-            elif imported.startswith(common_prefix):
-                provider = imported[len(common_prefix):].split("/", 1)[0]
-                contract_import = True
             if not provider or provider == owner:
                 continue
             if provider not in modules:
@@ -2097,13 +1475,16 @@ def check_bootstrap_contract(path: Path, errors: list[str]) -> None:
         "config.NewRootCommand",
         "newLoggerManager(ctx, &cfg.Logging)",
         "modularlog.SetDefault(loggerManager.Logger())",
-        "newTransportPolicy(cfg.Application.Name, loggerManager.Logger())",
         "app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)",
     ]
+    uses_transport = "httpserver." in content or "rpcserver." in content
+    if uses_transport:
+        required.insert(3, "newTransportPolicy(cfg.Application.Name, loggerManager.Logger())")
     for fragment in required:
         if fragment not in content:
             errors.append(f"{path.relative_to(path.parents[2])} is missing bootstrap contract: {fragment}")
-    positions = [content.find(fragment) for fragment in required[1:4]]
+    ordering = required[1:-1]
+    positions = [content.find(fragment) for fragment in ordering]
     if -1 not in positions and positions != sorted(positions):
         errors.append(f"{path.relative_to(path.parents[2])} violates config -> logger -> transport policy ordering")
 
@@ -2125,41 +1506,11 @@ def verify_framework(project: Path) -> None:
     run_go(project, ["build", "./..."])
 
 
-def snapshot_common(project: Path) -> tuple[Path, bool]:
-    temporary = Path(tempfile.mkdtemp(prefix="modular-common-backup-"))
-    common = project / "common"
-    existed = common.exists()
-    if existed:
-        shutil.copytree(common, temporary / "common")
-    return temporary, existed
-
-
-def restore_common(project: Path, temporary: Path, existed: bool) -> None:
-    common = project / "common"
-    if common.exists():
-        shutil.rmtree(common)
-    if existed:
-        shutil.copytree(temporary / "common", common)
-    shutil.rmtree(temporary, ignore_errors=True)
-
-
 def verify_contract(project: Path) -> None:
-    temporary, existed = snapshot_common(project)
-    try:
-        if not testing_mode():
-            buf = shutil.which("buf")
-            if buf is None:
-                raise ScaffoldError("`buf` is required for contract verification")
-            run_command([buf, "lint"], cwd=project)
-            run_buf_generate(project, buf)
-        doctor_check(project, phase="contract", strict=True)
-        placeholder_check(project, allow_contract=True, allow_unwired=False)
-        if not testing_mode():
-            run_go(project, ["build", "./..."])
-    except BaseException:
-        restore_common(project, temporary, existed)
-        raise
-    shutil.rmtree(temporary, ignore_errors=True)
+    doctor_check(project, phase="contract", strict=True)
+    placeholder_check(project, allow_contract=True, allow_unwired=False)
+    if not testing_mode():
+        run_go(project, ["build", "./..."])
 
 
 def verify_complete(project: Path) -> None:
@@ -2287,37 +1638,19 @@ def self_check(root: Path) -> None:
     info(f"self-check passed for {root}")
 
 
-def resolve_service(project: Path, requested: str | None) -> str:
-    if requested:
-        svc = validate_name(requested, "svc")
-        if f"service:{svc}" not in load_manifest(project)["features"]:
-            raise ScaffoldError(f"svc {svc!r} does not exist")
-        return svc
-    services = services_from(load_manifest(project))
-    if len(services) == 1:
-        return next(iter(services))
-    if not services:
-        raise ScaffoldError("no svc exists; run service add <svc> first")
-    raise ScaffoldError("multiple svc modules exist; pass --svc")
-
-
 def mutation_flags(args: argparse.Namespace) -> tuple[bool, bool]:
     return bool(getattr(args, "dry_run", False)), bool(getattr(args, "diff", False))
 
 
-def resolve_process(architecture: dict[str, Any], requested: str | None) -> str:
-    processes = architecture["processes"]
-    if requested:
-        name = validate_name(requested, "process")
-        if name not in processes:
-            raise ScaffoldError(f"process {name!r} does not exist")
-        return name
-    if len(processes) == 1:
-        return next(iter(processes))
-    raise ScaffoldError("multiple processes exist; pass --process")
+def require_v4(manifest: dict[str, Any]) -> None:
+    if is_modular_monolith(manifest):
+        return
+    if is_module_process(manifest):
+        raise ScaffoldError("project uses the v0.3 module/process model; run migrate v0.3-to-v0.4")
+    raise ScaffoldError("project uses a legacy model; migrate it with modular v0.3 before upgrading to v0.4")
 
 
-def v3_render_and_apply(
+def v4_render_and_apply(
     project: Path,
     manifest: dict[str, Any],
     architecture: dict[str, Any],
@@ -2341,19 +1674,6 @@ def v3_render_and_apply(
     )
 
 
-def next_port(manifest: dict[str, Any], transport: str) -> int:
-    base = 18080 if transport == "http" else 19090
-    used = {
-        int(feature.get("ports", {}).get(transport, 0))
-        for feature in services_from(manifest).values()
-        if feature.get("ports", {}).get(transport)
-    }
-    port = base
-    while port in used:
-        port += 1
-    return port
-
-
 def command_init(args: argparse.Namespace) -> int:
     project = validate_name(args.project, "project")
     root = (Path(args.out).resolve() / project).resolve()
@@ -2361,24 +1681,19 @@ def command_init(args: argparse.Namespace) -> int:
         raise ScaffoldError(f"target already exists: {root}")
     version = resolve_modular_version(args.modular_version)
     dry_run, diff = mutation_flags(args)
-    if args.topology:
-        topology = str(args.topology)
-        manifest = empty_manifest(module=project, topology=topology, modular_version=version)
-        result = render_and_apply(root, manifest, dry_run=dry_run, diff=diff, verify=verify_framework)
-    else:
-        if parse_semver(version) < MIN_V3_MODULAR_VERSION:
-            raise ScaffoldError(f"module/process scaffolds require modular v0.3.0 or newer; got {version}")
-        transports = list(args.transport or ["http"])
-        manifest = empty_v3_manifest(module=project, modular_version=version)
-        architecture = empty_architecture(project, transports)
-        result = render_and_apply(
-            root,
-            manifest,
-            architecture=architecture,
-            dry_run=dry_run,
-            diff=diff,
-            verify=verify_framework,
-        )
+    if parse_semver(version) < MIN_V4_MODULAR_VERSION:
+        raise ScaffoldError(f"modular-monolith scaffolds require modular v0.4.0 or newer; got {version}")
+    transports = list(args.transport or ["http"])
+    manifest = empty_v4_manifest(module=project, modular_version=version)
+    architecture = empty_architecture(project, transports)
+    result = render_and_apply(
+        root,
+        manifest,
+        architecture=architecture,
+        dry_run=dry_run,
+        diff=diff,
+        verify=verify_framework,
+    )
     if not dry_run and not diff:
         info(f"initialized {project} with github.com/wplbyx/modular {version}")
     return result
@@ -2387,8 +1702,7 @@ def command_init(args: argparse.Namespace) -> int:
 def command_module_add(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
-    if not is_module_process(manifest):
-        raise ScaffoldError("module commands require a v0.3 project; run migrate v0.2-to-v0.3")
+    require_v4(manifest)
     architecture = load_architecture(project)
     name = validate_name(args.module, "module")
     if name in architecture["modules"]:
@@ -2398,19 +1712,16 @@ def command_module_add(args: argparse.Namespace) -> int:
         validate_name(dependency, "module dependency")
         if dependency not in architecture["modules"]:
             raise ScaffoldError(f"module {name!r} depends on unknown module {dependency!r}")
-    process_name = resolve_process(architecture, args.process)
     architecture["modules"][name] = {
         "dependencies": dependencies,
-        "extraction": "local",
     }
-    architecture["processes"][process_name]["modules"].append(name)
-    architecture["processes"][process_name]["modules"].sort()
-    return v3_render_and_apply(project, manifest, architecture, args)
+    return v4_render_and_apply(project, manifest, architecture, args)
 
 
 def command_module_remove(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
+    require_v4(manifest)
     architecture = load_architecture(project)
     name = validate_name(args.module, "module")
     if name not in architecture["modules"]:
@@ -2422,18 +1733,13 @@ def command_module_remove(args: argparse.Namespace) -> int:
     if dependents:
         raise ScaffoldError(f"module {name!r} is required by: {', '.join(dependents)}")
     architecture["modules"].pop(name)
-    architecture["extraction_blockers"] = [
-        blocker for blocker in architecture["extraction_blockers"]
-        if name not in blocker.get("modules", [])
-    ]
-    for process in architecture["processes"].values():
-        process["modules"] = [module for module in process.get("modules", []) if module != name]
-    return v3_render_and_apply(project, manifest, architecture, args, allow_delete=True)
+    return v4_render_and_apply(project, manifest, architecture, args, allow_delete=True)
 
 
 def command_module_depend(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
+    require_v4(manifest)
     architecture = load_architecture(project)
     name = validate_name(args.module, "module")
     dependency = validate_name(args.dependency, "module dependency")
@@ -2447,257 +1753,70 @@ def command_module_depend(args: argparse.Namespace) -> int:
     else:
         dependencies.discard(dependency)
     architecture["modules"][name]["dependencies"] = sorted(dependencies)
-    return v3_render_and_apply(project, manifest, architecture, args)
-
-
-def command_module_blocker_add(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    architecture = load_architecture(project)
-    modules = sorted(set(args.module))
-    for module in modules:
-        if module not in architecture["modules"]:
-            raise ScaffoldError(f"module {module!r} does not exist")
-    architecture["extraction_blockers"].append({
-        "kind": str(args.kind),
-        "modules": modules,
-        "reason": str(args.reason).strip(),
-    })
-    return v3_render_and_apply(project, manifest, architecture, args)
-
-
-def command_process_add(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    architecture = load_architecture(project)
-    name = validate_name(args.process, "process")
-    if name in architecture["processes"]:
-        raise ScaffoldError(f"process {name!r} already exists")
-    transports = sorted(set(args.transport or []))
-    architecture["processes"][name] = {
-        "modules": [],
-        "transports": transports,
-        "ports": {kind: next_v3_port(architecture, kind) for kind in transports},
-        "resources": {},
-    }
-    return v3_render_and_apply(project, manifest, architecture, args)
-
-
-def command_process_remove(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    architecture = load_architecture(project)
-    name = validate_name(args.process, "process")
-    process = architecture["processes"].get(name)
-    if process is None:
-        raise ScaffoldError(f"process {name!r} does not exist")
-    if process.get("modules"):
-        raise ScaffoldError(f"move modules out of process {name!r} before removing it")
-    if len(architecture["processes"]) == 1:
-        raise ScaffoldError("an architecture must retain at least one process")
-    architecture["processes"].pop(name)
-    return v3_render_and_apply(project, manifest, architecture, args, allow_delete=True)
-
-
-def command_process_attach(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    architecture = load_architecture(project)
-    process_name = validate_name(args.process, "process")
-    module = validate_name(args.module, "module")
-    if process_name not in architecture["processes"] or module not in architecture["modules"]:
-        raise ScaffoldError("process and module must both exist")
-    current_process = next(
-        name for name, process in architecture["processes"].items()
-        if module in process.get("modules", [])
-    )
-    if current_process != process_name:
-        problems = extraction_problems(project, architecture, module, process_name)
-        if problems:
-            raise ScaffoldError(
-                "module cannot move across processes:\n"
-                + "\n".join(f"- {item}" for item in problems)
-                + "\nrun module extract --check after resolving these items"
-            )
-    for process in architecture["processes"].values():
-        process["modules"] = [item for item in process.get("modules", []) if item != module]
-    architecture["processes"][process_name]["modules"].append(module)
-    architecture["processes"][process_name]["modules"].sort()
-    if current_process != process_name:
-        architecture["modules"][module]["extraction"] = "extracted"
-    return v3_render_and_apply(project, manifest, architecture, args)
-
-
-def next_v3_port(architecture: dict[str, Any], transport: str) -> int:
-    base = 18080 if transport == "http" else 19090
-    used = {
-        int(process.get("ports", {}).get(transport, 0))
-        for process in architecture["processes"].values()
-        if process.get("ports", {}).get(transport)
-    }
-    while base in used:
-        base += 1
-    return base
-
-
-def command_service_add(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    if is_module_process(manifest):
-        raise ScaffoldError("service commands are v0.2-only; use module and process commands")
-    svc = validate_name(args.svc, "svc")
-    transports = [str(value) for value in args.transport]
-    if not transports:
-        raise ScaffoldError("service add requires at least one explicit --transport")
-    invalid = sorted(set(transports) - VALID_TRANSPORTS)
-    if invalid:
-        raise ScaffoldError(f"unsupported transports: {', '.join(invalid)}")
-    if manifest["project"]["topology"] == "single" and svc.casefold() == str(manifest["project"]["name"]).casefold():
-        raise ScaffoldError(f"svc {svc!r} conflicts with the single-process config directory")
-    key = f"service:{svc}"
-    current = copy.deepcopy(manifest["features"].get(key, {}))
-    selected = sorted(set(current.get("transports", [])) | set(transports))
-    ports = dict(current.get("ports", {}))
-    for transport in selected:
-        ports.setdefault(transport, next_port(manifest, transport))
-    manifest["features"][key] = {
-        "kind": "service",
-        "svc": svc,
-        "transports": selected,
-        "ports": ports,
-    }
-    dry_run, diff = mutation_flags(args)
-    return render_and_apply(project, manifest, dry_run=dry_run, diff=diff, verify=verify_framework)
-
-
-def command_service_remove(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    if is_module_process(manifest):
-        raise ScaffoldError("service commands are v0.2-only; use module and process commands")
-    svc = validate_name(args.svc, "svc")
-    key = f"service:{svc}"
-    if key not in manifest["features"]:
-        raise ScaffoldError(f"svc {svc!r} does not exist")
-    dependents = [key for key in manifest["features"] if key.startswith(f"resource:{svc}:")]
-    if dependents:
-        raise ScaffoldError(f"remove resources for {svc!r} before removing the svc")
-    manifest["features"].pop(key)
-    dry_run = not args.apply or args.dry_run
-    return render_and_apply(project, manifest, dry_run=dry_run, diff=args.diff, allow_delete=True, verify=verify_framework if args.apply else None)
+    return v4_render_and_apply(project, manifest, architecture, args)
 
 
 def command_transport_add(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
-    if is_module_process(manifest):
-        architecture = load_architecture(project)
-        process_name = validate_name(args.svc, "process")
-        if process_name not in architecture["processes"]:
-            raise ScaffoldError(f"process {process_name!r} does not exist")
-        process = architecture["processes"][process_name]
-        transports = set(process.get("transports", []))
-        transports.add(args.kind)
-        process["transports"] = sorted(transports)
-        process.setdefault("ports", {}).setdefault(args.kind, next_v3_port(architecture, args.kind))
-        return v3_render_and_apply(project, manifest, architecture, args)
-    args.transport = [args.kind]
-    return command_service_add(args)
+    require_v4(manifest)
+    architecture = load_architecture(project)
+    application = architecture["application"]
+    transports = set(application.get("transports", []))
+    transports.add(args.kind)
+    application["transports"] = sorted(transports)
+    application.setdefault("ports", {}).setdefault(args.kind, 18080 if args.kind == "http" else 19090)
+    return v4_render_and_apply(project, manifest, architecture, args)
 
 
 def command_transport_remove(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
-    if is_module_process(manifest):
-        architecture = load_architecture(project)
-        process_name = validate_name(args.svc, "process")
-        if process_name not in architecture["processes"]:
-            raise ScaffoldError(f"process {process_name!r} does not exist")
-        process = architecture["processes"][process_name]
-        process["transports"] = sorted(set(process.get("transports", [])) - {args.kind})
-        process.get("ports", {}).pop(args.kind, None)
-        return v3_render_and_apply(project, manifest, architecture, args, allow_delete=True)
-    svc = validate_name(args.svc, "svc")
-    key = f"service:{svc}"
-    feature = copy.deepcopy(manifest["features"].get(key))
-    if not isinstance(feature, dict):
-        raise ScaffoldError(f"svc {svc!r} does not exist")
-    selected = set(feature.get("transports", []))
-    selected.discard(args.kind)
-    if not selected:
-        raise ScaffoldError("a svc must retain at least one transport; remove the svc instead")
-    feature["transports"] = sorted(selected)
-    feature.get("ports", {}).pop(args.kind, None)
-    manifest["features"][key] = feature
-    dry_run = not args.apply or args.dry_run
-    return render_and_apply(project, manifest, dry_run=dry_run, diff=args.diff, allow_delete=True, verify=verify_framework if args.apply else None)
+    require_v4(manifest)
+    architecture = load_architecture(project)
+    application = architecture["application"]
+    if args.kind not in application.get("transports", []):
+        raise ScaffoldError(f"transport {args.kind!r} is not enabled")
+    application["transports"] = sorted(set(application.get("transports", [])) - {args.kind})
+    application.get("ports", {}).pop(args.kind, None)
+    return v4_render_and_apply(project, manifest, architecture, args, allow_delete=True)
 
 
 def command_resource_add(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
-    if is_module_process(manifest):
-        architecture = load_architecture(project)
-        if args.svc:
-            raise ScaffoldError("v0.3 resources belong to a process; use --process")
-        process_name = resolve_process(architecture, args.process)
-        kind = str(args.kind)
-        feature: dict[str, Any] = {"kind": kind}
-        if kind == "db":
-            if args.driver == "bun" and args.dialect != "postgres":
-                raise ScaffoldError("Bun database requires --dialect postgres")
-            feature["driver"] = args.driver
-            if args.driver in {"bun", "gorm"}:
-                feature["dialect"] = args.dialect
-        architecture["processes"][process_name]["resources"][kind] = feature
-        return v3_render_and_apply(project, manifest, architecture, args)
-    svc = resolve_service(project, args.svc)
+    require_v4(manifest)
+    architecture = load_architecture(project)
     kind = str(args.kind)
-    feature: dict[str, Any] = {"kind": "resource", "svc": svc, "resource": kind}
+    feature: dict[str, Any] = {"kind": kind}
     if kind == "db":
-        if args.driver not in VALID_DB_DRIVERS:
-            raise ScaffoldError(f"unsupported database driver: {args.driver}")
+        if args.driver == "bun" and args.dialect != "postgres":
+            raise ScaffoldError("Bun database requires --dialect postgres")
         feature["driver"] = args.driver
-        if args.driver == "gorm":
-            if args.dialect not in VALID_GORM_DIALECTS:
-                raise ScaffoldError(f"unsupported GORM dialect: {args.dialect}")
+        if args.driver in {"bun", "gorm"}:
             feature["dialect"] = args.dialect
-        elif args.driver == "bun":
-            if args.dialect != "postgres":
-                raise ScaffoldError("Bun database requires --dialect postgres")
-            feature["dialect"] = args.dialect
-    manifest["features"][f"resource:{svc}:{kind}"] = feature
-    dry_run, diff = mutation_flags(args)
-    return render_and_apply(project, manifest, dry_run=dry_run, diff=diff, verify=verify_framework)
+    architecture["application"]["resources"][kind] = feature
+    return v4_render_and_apply(project, manifest, architecture, args)
 
 
 def command_resource_remove(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
-    if is_module_process(manifest):
-        architecture = load_architecture(project)
-        if args.svc:
-            raise ScaffoldError("v0.3 resources belong to a process; use --process")
-        process_name = resolve_process(architecture, args.process)
-        resources = architecture["processes"][process_name]["resources"]
-        if args.kind not in resources:
-            raise ScaffoldError(f"resource {args.kind!r} is not attached to process {process_name!r}")
-        resources.pop(args.kind)
-        return v3_render_and_apply(project, manifest, architecture, args, allow_delete=True)
-    svc = resolve_service(project, args.svc)
-    key = f"resource:{svc}:{args.kind}"
-    if key not in manifest["features"]:
-        raise ScaffoldError(f"resource {args.kind!r} is not attached to svc {svc!r}")
-    manifest["features"].pop(key)
-    dry_run = not args.apply or args.dry_run
-    return render_and_apply(project, manifest, dry_run=dry_run, diff=args.diff, allow_delete=True, verify=verify_framework if args.apply else None)
+    require_v4(manifest)
+    architecture = load_architecture(project)
+    resources = architecture["application"]["resources"]
+    if args.kind not in resources:
+        raise ScaffoldError(f"resource {args.kind!r} is not attached to the application")
+    resources.pop(args.kind)
+    return v4_render_and_apply(project, manifest, architecture, args, allow_delete=True)
 
 
 def command_sync(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
+    require_v4(manifest)
     dry_run, diff = mutation_flags(args)
-    architecture = load_architecture(project) if is_module_process(manifest) else None
+    architecture = load_architecture(project)
     return render_and_apply(
         project,
         manifest,
@@ -2711,8 +1830,9 @@ def command_sync(args: argparse.Namespace) -> int:
 def command_prune(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
+    require_v4(manifest)
     dry_run = not args.apply or args.dry_run
-    architecture = load_architecture(project) if is_module_process(manifest) else None
+    architecture = load_architecture(project)
     return render_and_apply(
         project,
         manifest,
@@ -2724,207 +1844,124 @@ def command_prune(args: argparse.Namespace) -> int:
     )
 
 
-def extraction_problems(project: Path, architecture: dict[str, Any], module: str, target: str) -> list[str]:
-    problems = []
-    for blocker in architecture.get("extraction_blockers", []):
-        if module in blocker.get("modules", []):
-            problems.append(f"{blocker.get('kind', 'unknown')}: {blocker.get('reason', '')}".rstrip())
-
-    assignments = {
-        item: process_name
-        for process_name, process in architecture["processes"].items()
-        for item in process.get("modules", [])
-    }
-    assignments[module] = target
-    for consumer, definition in architecture["modules"].items():
-        for provider in definition.get("dependencies", []):
-            if assignments.get(consumer) == assignments.get(provider):
-                continue
-            adapter = project / "internal" / "modules" / consumer / "internal" / "adapters" / "remote" / provider
-            if not adapter.is_dir() or not any(adapter.glob("*.go")):
-                problems.append(f"missing remote adapter for {consumer} -> {provider}")
-            contract = project / "proto" / provider
-            if not contract.is_dir() or not any(contract.rglob("*.proto")):
-                problems.append(f"missing protobuf contract for module {provider}")
-    return sorted(set(problems))
-
-
-def command_module_extract(args: argparse.Namespace) -> int:
+def command_migrate_v4(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
-    architecture = load_architecture(project)
-    module = validate_name(args.module, "module")
-    target = validate_name(args.to_process, "process")
-    if module not in architecture["modules"]:
-        raise ScaffoldError(f"module {module!r} does not exist")
-    problems = extraction_problems(project, architecture, module, target)
-    if problems:
-        raise ScaffoldError("module is not extractable:\n" + "\n".join(f"- {item}" for item in problems))
-    if args.check:
-        info(f"module {module} is extractable to process {target}")
-        return 0
-
-    source_name = next(
-        name for name, process in architecture["processes"].items()
-        if module in process.get("modules", [])
-    )
-    source = architecture["processes"][source_name]
-    if target not in architecture["processes"]:
-        transports = list(source.get("transports", []))
-        architecture["processes"][target] = {
-            "modules": [],
-            "transports": transports,
-            "ports": {kind: next_v3_port(architecture, kind) for kind in transports},
-            "resources": copy.deepcopy(source.get("resources", {})),
-        }
-    for process in architecture["processes"].values():
-        process["modules"] = [item for item in process.get("modules", []) if item != module]
-    architecture["processes"][target]["modules"].append(module)
-    architecture["processes"][target]["modules"].sort()
-    architecture["modules"][module]["extraction"] = "extracted"
-    return v3_render_and_apply(project, manifest, architecture, args, allow_delete=True)
-
-
-def command_migrate_topology(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    if is_module_process(manifest):
-        raise ScaffoldError("topology migration is v0.2-only; use process commands")
-    target = str(args.to)
-    if target not in VALID_TOPOLOGIES:
-        raise ScaffoldError(f"invalid topology: {target}")
-    manifest["project"]["topology"] = target
-    dry_run = not args.apply or args.dry_run
-    return render_and_apply(
-        project,
-        manifest,
-        dry_run=dry_run,
-        diff=args.diff,
-        allow_delete=True,
-        verify=verify_framework if args.apply else None,
-    )
-
-
-def command_migrate_v3(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    if is_module_process(manifest):
-        raise ScaffoldError("project already uses the v0.3 module/process model")
+    if is_modular_monolith(manifest):
+        raise ScaffoldError("project already uses the v0.4 modular-monolith model")
+    if not is_module_process(manifest):
+        raise ScaffoldError("v0.4 migration requires a v0.3 module/process project")
     version = resolve_modular_version(args.modular_version)
-    if parse_semver(version) < MIN_V3_MODULAR_VERSION:
-        raise ScaffoldError(f"v0.3 migration requires modular v0.3.0 or newer; got {version}")
+    if parse_semver(version) < MIN_V4_MODULAR_VERSION:
+        raise ScaffoldError(f"v0.4 migration requires modular v0.4.0 or newer; got {version}")
 
-    services = services_from(manifest)
+    previous = load_v3_architecture(project)
+    processes = previous["processes"]
+    if len(processes) != 1:
+        assignments = ", ".join(
+            f"{name}=[{', '.join(process.get('modules', []))}]"
+            for name, process in sorted(processes.items())
+        )
+        raise ScaffoldError(
+            "v0.4 supports one Application; consolidate the v0.3 processes or split them into separate projects "
+            f"before migration ({assignments})"
+        )
+    application_name, process = next(iter(processes.items()))
     architecture = {
-        "schema": 1,
-        "modules": {
-            name: {"dependencies": [], "extraction": "local"}
-            for name in services
+        "schema": 2,
+        "application": {
+            "name": application_name,
+            "transports": list(process.get("transports", [])),
+            "ports": dict(process.get("ports", {})),
+            "resources": copy.deepcopy(process.get("resources", {})),
         },
-        "processes": {},
-        "extraction_blockers": [],
+        "modules": {
+            name: {"dependencies": list(definition.get("dependencies", []))}
+            for name, definition in previous["modules"].items()
+        },
     }
-    topology = manifest["project"].get("topology")
-    if topology == "single":
-        process_name = str(manifest["project"]["name"])
-        transports = sorted({
-            transport
-            for feature in services.values()
-            for transport in feature.get("transports", [])
-        })
-        merged_resources: dict[str, Any] = {}
-        owners: dict[str, str] = {}
-        for module in services:
-            for kind, definition in resources_for(manifest, module).items():
-                normalized = {
-                    "kind": kind,
-                    **{
-                        key: value
-                        for key, value in definition.items()
-                        if key not in {"kind", "svc", "resource"}
-                    },
-                }
-                if kind in merged_resources and merged_resources[kind] != normalized:
-                    raise ScaffoldError(
-                        f"cannot merge different {kind} resources from {owners[kind]!r} and {module!r}; "
-                        "align them or migrate those modules manually"
-                    )
-                merged_resources[kind] = normalized
-                owners[kind] = module
-        architecture["processes"][process_name] = {
-            "modules": sorted(services),
-            "transports": transports,
-            "ports": {kind: (18080 if kind == "http" else 19090) for kind in transports},
-            "resources": merged_resources,
-        }
-    else:
-        for module, feature in services.items():
-            architecture["processes"][module] = {
-                "modules": [module],
-                "transports": list(feature.get("transports", [])),
-                "ports": dict(feature.get("ports", {})),
-                "resources": {
-                    kind: {
-                        "kind": kind,
-                        **{
-                            key: value
-                            for key, value in definition.items()
-                            if key not in {"kind", "svc", "resource"}
-                        },
-                    }
-                    for kind, definition in resources_for(manifest, module).items()
-                },
-            }
-        if not services:
-            process_name = str(manifest["project"]["name"])
-            architecture["processes"][process_name] = {
-                "modules": [],
-                "transports": [],
-                "ports": {},
-                "resources": {},
-            }
+    validate_architecture(architecture)
+
+    generated_ports = sorted(
+        path.relative_to(project)
+        for path in project.rglob("*_modular.pb.go")
+        if ".git" not in path.parts and ".modular" not in path.parts
+    )
+    if generated_ports:
+        raise ScaffoldError(
+            "remove obsolete protoc-gen-go-modular output before migration: "
+            + ", ".join(path.as_posix() for path in generated_ports)
+        )
 
     business_path = Path("internal/platform/wiring/business.go")
     business_record = manifest.get("files", {}).get(business_path.as_posix(), {})
     business_target = project / business_path
-    if business_target.is_file() and sha256_file(business_target) != business_record.get("sha256"):
+    business_customized = (
+        business_target.is_file()
+        and sha256_file(business_target) != business_record.get("sha256")
+    )
+    force_scaffold = {ARCHITECTURE_PATH, Path("go.mod")}
+    if business_customized:
+        business_content = business_target.read_text(encoding="utf-8")
+        if "func WireApplication(" not in business_content or "func WireBusiness(" in business_content:
+            raise ScaffoldError(
+                "business wiring was customized; migrate WireBusiness(process, platform) to "
+                "WireApplication(platform) before retrying"
+            )
+        manifest.get("files", {}).pop(business_path.as_posix(), None)
+        warn(f"preserving adapted {business_path} as user-owned v0.4 wiring")
+    else:
+        force_scaffold.add(business_path)
+
+    legacy_generator_references = []
+    reference_suffixes = {
+        ".go", ".mk", ".py", ".sh", ".bash", ".zsh",
+        ".yaml", ".yml", ".json", ".toml",
+    }
+    for path in project.rglob("*"):
+        if not path.is_file() or ".git" in path.parts or ".modular" in path.parts:
+            continue
+        unsupported_file = path.name != "Makefile" and path.suffix not in reference_suffixes
+        if path.name == "buf.gen.yaml" or unsupported_file:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "protoc-gen-go-modular" in content:
+            legacy_generator_references.append(path.relative_to(project))
+    if legacy_generator_references:
         raise ScaffoldError(
-            "business wiring was customized; migrate WireBusiness to the v0.3 Contribution interface manually"
+            "remove obsolete protoc-gen-go-modular references before migration: "
+            + ", ".join(path.as_posix() for path in sorted(legacy_generator_references))
         )
 
-    forced_scaffolds = {business_path}
-    required_scaffolds = {
-        Path("buf.gen.yaml"): "local: protoc-gen-go-modular",
-        Path(".gitignore"): ".modular/bin/",
-        Path("Makefile"): "PYTHON ?= python3",
-        PROFILE_PATH: '"internal/modules/*/internal/**/*.go"',
-    }
-    for path, required in required_scaffolds.items():
+    for path in [Path(".gitignore"), PROFILE_PATH]:
         record = manifest.get("files", {}).get(path.as_posix(), {})
         target = project / path
-        if not target.is_file():
-            raise ScaffoldError(f"missing {path}; restore it before v0.3 migration")
-        if sha256_file(target) == record.get("sha256"):
-            forced_scaffolds.add(path)
-        elif required not in target.read_text(encoding="utf-8"):
-            raise ScaffoldError(f"{path} was customized; add {required!r} before migration")
-        else:
+        if target.is_file() and sha256_file(target) == record.get("sha256"):
+            force_scaffold.add(path)
+        elif target.is_file():
             warn(f"preserving customized {path}")
 
-    obsolete_scaffolds = {
-        Path(f"config/{module}/config.go")
-        for module in services
-    }
-    for path in obsolete_scaffolds:
-        record = manifest.get("files", {}).get(path.as_posix(), {})
+    force_delete: set[Path] = set()
+    for path in [Path("buf.yaml"), Path("buf.gen.yaml")]:
         target = project / path
+        record = manifest.get("files", {}).get(path.as_posix(), {})
         if not target.is_file():
+            manifest.get("files", {}).pop(path.as_posix(), None)
             continue
-        if record.get("owner") != OWNER_SCAFFOLD or sha256_file(target) != record.get("sha256"):
+        content = target.read_text(encoding="utf-8")
+        unchanged = sha256_file(target) == record.get("sha256")
+        if path.name == "buf.gen.yaml" and "protoc-gen-go-modular" in content and not unchanged:
             raise ScaffoldError(
-                f"{path} was customized; move its module settings to config/modules/{path.parent.name}/config.go "
-                "before v0.3 migration"
+                "customized buf.gen.yaml still references protoc-gen-go-modular; remove that plugin before migration"
             )
+        if unchanged:
+            force_delete.add(path)
+        else:
+            manifest.get("files", {}).pop(path.as_posix(), None)
+            warn(f"preserving customized {path} outside modular management")
 
     go_mod_path = project / "go.mod"
     go_mod = go_mod_path.read_text(encoding="utf-8")
@@ -2941,11 +1978,11 @@ def command_migrate_v3(args: argparse.Namespace) -> int:
         updated_go_mod,
         owner=OWNER_SCAFFOLD,
         template="project/go.mod",
-        provenance={"migration": "v0.2-to-v0.3", "version": version},
+        provenance={"migration": "v0.3-to-v0.4", "version": version},
     )
 
-    manifest["project"].pop("topology", None)
-    manifest["project"]["model"] = "module-process"
+    manifest["project"]["model"] = "modular-monolith"
+    manifest["project"]["name"] = application_name
     manifest["project"]["modular_version"] = version
     manifest["features"] = {}
     dry_run = not args.apply or args.dry_run
@@ -2958,15 +1995,18 @@ def command_migrate_v3(args: argparse.Namespace) -> int:
         allow_delete=True,
         verify=verify_framework if args.apply and not args.dry_run and not args.diff else None,
         overrides={Path("go.mod"): go_mod_output},
-        force_scaffold={*forced_scaffolds, Path("go.mod")},
-        force_delete=obsolete_scaffolds,
+        force_scaffold=force_scaffold,
+        force_delete=force_delete,
     )
 
 
 def command_project_upgrade(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
+    require_v4(manifest)
     version = resolve_modular_version(args.modular_version)
+    if parse_semver(version) < MIN_V4_MODULAR_VERSION:
+        raise ScaffoldError(f"v0.4 projects require modular v0.4.0 or newer; got {version}")
     manifest["project"]["modular_version"] = version
     go_mod_path = project / "go.mod"
     go_mod = go_mod_path.read_text(encoding="utf-8")
@@ -3023,39 +2063,6 @@ def command_verify(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_gen(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    if testing_mode():
-        return 0
-    buf = shutil.which("buf")
-    if buf is None:
-        raise ScaffoldError("`buf` is required for proto generation")
-    run_buf_generate(project, buf)
-    return 0
-
-
-def run_buf_generate(project: Path, buf: str) -> None:
-    go = shutil.which("go")
-    if go is None:
-        raise ScaffoldError("`go` is required to build protoc-gen-go-modular")
-    binary_dir = project / ".modular" / "bin"
-    binary_dir.mkdir(parents=True, exist_ok=True)
-    binary = binary_dir / ("protoc-gen-go-modular.exe" if os.name == "nt" else "protoc-gen-go-modular")
-    run_command(
-        [
-            go,
-            "build",
-            "-o",
-            str(binary),
-            "github.com/wplbyx/modular/packages/generate/cmd/protoc-gen-go-modular",
-        ],
-        cwd=project,
-    )
-    env = os.environ.copy()
-    env["PATH"] = str(binary_dir) + os.pathsep + env.get("PATH", "")
-    run_command([buf, "generate"], cwd=project, env=env)
-
-
 def command_coverage(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     if not testing_mode():
@@ -3079,17 +2086,10 @@ def add_mutation_options(parser: argparse.ArgumentParser, *, project: bool = Tru
 COMMAND_PATHS = [
     "init",
     "module add",
-    "module blocker add",
     "module depend add",
     "module depend remove",
-    "module extract",
     "module remove",
-    "process add",
-    "process attach",
-    "process remove",
     "project upgrade",
-    "service add",
-    "service remove",
     "transport add",
     "transport remove",
     "resource add",
@@ -3097,22 +2097,19 @@ COMMAND_PATHS = [
     "sync",
     "doctor",
     "prune",
-    "migrate topology",
-    "migrate v0.2-to-v0.3",
+    "migrate v0.3-to-v0.4",
     "verify",
-    "gen",
     "coverage",
     "self-check",
 ]
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="modular module/process scaffold v3")
+    parser = argparse.ArgumentParser(description="modular-monolith scaffold v4")
     sub = parser.add_subparsers(dest="command", required=True)
 
     command = sub.add_parser("init", help="create a project with repository-local scaffold tooling")
     command.add_argument("project")
-    command.add_argument("--topology", choices=sorted(VALID_TOPOLOGIES), help="deprecated v0.2 compatibility mode")
     command.add_argument("--transport", action="append", choices=sorted(VALID_TRANSPORTS))
     command.add_argument("--modular-version", default=None, help="published tag; defaults to remote latest")
     command.add_argument("--out", default=".")
@@ -3127,11 +2124,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_mutation_options(command)
     command.set_defaults(func=command_project_upgrade)
 
-    module = sub.add_parser("module", help="manage business modules and extraction readiness")
+    module = sub.add_parser("module", help="manage bounded-context business modules")
     module_sub = module.add_subparsers(dest="module_command", required=True)
     command = module_sub.add_parser("add")
     command.add_argument("module")
-    command.add_argument("--process", default=None)
     command.add_argument("--depends-on", action="append", default=[])
     add_mutation_options(command)
     command.set_defaults(func=command_module_add)
@@ -3148,63 +2144,13 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("dependency")
         add_mutation_options(command)
         command.set_defaults(func=command_module_depend)
-    blocker = module_sub.add_parser("blocker")
-    blocker_sub = blocker.add_subparsers(dest="blocker_action", required=True)
-    command = blocker_sub.add_parser("add")
-    command.add_argument("--module", action="append", required=True)
-    command.add_argument("--kind", required=True, choices=["shared-transaction", "shared-data", "local-event", "streaming", "other"])
-    command.add_argument("--reason", required=True)
-    add_mutation_options(command)
-    command.set_defaults(func=command_module_blocker_add)
-    command = module_sub.add_parser("extract")
-    command.add_argument("module")
-    command.add_argument("--to-process", required=True)
-    mode = command.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--check", action="store_true")
-    mode.add_argument("--apply", action="store_true")
-    add_mutation_options(command)
-    command.set_defaults(func=command_module_extract)
-
-    process = sub.add_parser("process", help="manage deployable process groups")
-    process_sub = process.add_subparsers(dest="process_command", required=True)
-    command = process_sub.add_parser("add")
-    command.add_argument("process")
-    command.add_argument("--transport", action="append", choices=sorted(VALID_TRANSPORTS))
-    add_mutation_options(command)
-    command.set_defaults(func=command_process_add)
-    command = process_sub.add_parser("remove")
-    command.add_argument("process")
-    command.add_argument("--apply", action="store_true")
-    add_mutation_options(command)
-    command.set_defaults(func=command_process_remove)
-    command = process_sub.add_parser("attach")
-    command.add_argument("process")
-    command.add_argument("module")
-    add_mutation_options(command)
-    command.set_defaults(func=command_process_attach)
-
-    service = sub.add_parser("service", help="manage infrastructure svc shells")
-    service_sub = service.add_subparsers(dest="service_command", required=True)
-    command = service_sub.add_parser("add")
-    command.add_argument("svc")
-    command.add_argument("--transport", action="append", choices=sorted(VALID_TRANSPORTS), required=True)
-    add_mutation_options(command)
-    command.set_defaults(func=command_service_add)
-    command = service_sub.add_parser("remove")
-    command.add_argument("svc")
-    command.add_argument("--apply", action="store_true")
-    add_mutation_options(command)
-    command.set_defaults(func=command_service_remove)
-
-    transport = sub.add_parser("transport", help="change an existing svc transport selection")
+    transport = sub.add_parser("transport", help="change the Application transport selection")
     transport_sub = transport.add_subparsers(dest="transport_command", required=True)
     command = transport_sub.add_parser("add")
-    command.add_argument("svc")
     command.add_argument("kind", choices=sorted(VALID_TRANSPORTS))
     add_mutation_options(command)
     command.set_defaults(func=command_transport_add)
     command = transport_sub.add_parser("remove")
-    command.add_argument("svc")
     command.add_argument("kind", choices=sorted(VALID_TRANSPORTS))
     command.add_argument("--apply", action="store_true")
     add_mutation_options(command)
@@ -3214,16 +2160,12 @@ def build_parser() -> argparse.ArgumentParser:
     resource_sub = resource.add_subparsers(dest="resource_command", required=True)
     command = resource_sub.add_parser("add")
     command.add_argument("kind", choices=sorted(VALID_RESOURCES))
-    command.add_argument("--svc", default=None)
-    command.add_argument("--process", default=None)
     command.add_argument("--driver", default="bun", choices=sorted(VALID_DB_DRIVERS))
     command.add_argument("--dialect", default="postgres", choices=sorted(VALID_GORM_DIALECTS))
     add_mutation_options(command)
     command.set_defaults(func=command_resource_add)
     command = resource_sub.add_parser("remove")
     command.add_argument("kind", choices=sorted(VALID_RESOURCES))
-    command.add_argument("--svc", default=None)
-    command.add_argument("--process", default=None)
     command.add_argument("--apply", action="store_true")
     add_mutation_options(command)
     command.set_defaults(func=command_resource_remove)
@@ -3239,16 +2181,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     migrate = sub.add_parser("migrate", help="migrate generated framework structure")
     migrate_sub = migrate.add_subparsers(dest="migrate_command", required=True)
-    command = migrate_sub.add_parser("topology")
-    command.add_argument("--to", required=True, choices=sorted(VALID_TOPOLOGIES))
-    command.add_argument("--apply", action="store_true")
-    add_mutation_options(command)
-    command.set_defaults(func=command_migrate_topology)
-    command = migrate_sub.add_parser("v0.2-to-v0.3")
+    command = migrate_sub.add_parser("v0.3-to-v0.4")
     command.add_argument("--modular-version", default=None)
     command.add_argument("--apply", action="store_true")
     add_mutation_options(command)
-    command.set_defaults(func=command_migrate_v3)
+    command.set_defaults(func=command_migrate_v4)
 
     command = sub.add_parser("doctor", help="read-only structure and ownership checks")
     command.add_argument("--phase", choices=["framework", "contract", "complete"], default="framework")
@@ -3260,10 +2197,6 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--phase", choices=["framework", "contract", "complete"], required=True)
     command.add_argument("--project-dir", default=".")
     command.set_defaults(func=command_verify)
-
-    command = sub.add_parser("gen", help="run buf generate")
-    command.add_argument("--project-dir", default=".")
-    command.set_defaults(func=command_gen)
 
     command = sub.add_parser("coverage", help="generate a coverage report without a numeric gate")
     command.add_argument("--project-dir", default=".")

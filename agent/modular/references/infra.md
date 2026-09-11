@@ -27,7 +27,7 @@ The project-local CLI form is:
 
 ```bash
 python .modular/tool/modular.py resource add db \
-  --process app --driver gorm --dialect postgres
+  --driver gorm --dialect postgres
 ```
 
 Bun supports PostgreSQL only. Migrations use `bun.NewMigrationTool(db, migrationsFS)` with an explicit DB. Startup migrations or warmups can be modeled with `core.NewFuncResource` and the same typed Provider.
@@ -42,4 +42,4 @@ Use `storageresource.New(&cfg.Storage)` from `packages/infra/storage/resource`. 
 
 ## Telemetry
 
-`telemetry.NewOpenTelemetry` already implements `core.Resource`. Construct it with the Process name/version, register it once with Application, and do not pass it to repositories unless they genuinely need that dependency.
+`telemetry.NewOpenTelemetry` already implements `core.Resource`. Construct it with the Application name/version, register it once with Application, and do not pass it to repositories unless they genuinely need that dependency.

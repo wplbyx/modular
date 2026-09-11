@@ -14,7 +14,7 @@ Servers and clients. Read when adding endpoints or event handlers. Source: `pack
 
 HTTP, gRPC, SSE, and subscriber endpoints implement `core.ReadyEndpoint`.
 
-HTTP (`packages/transport/server/http`): `httpserver.NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error)`. Construct-then-listen: it binds the port inside `NewServer`, so `Port=0` yields a real assigned port via `server.Addr()` or `server.Transport()`. Inject the Process policy with `WithPolicy(policy)`. `/health` remains a minimal liveness endpoint. Generated Processes use `WithHealthManager(path, manager)` for starting/ready/draining state plus dependency checks; `WithReadiness(path, checkers...)` remains available for standalone use. Readiness returns 200/503 and becomes `Transport.HealthPath`. Use `httpserver.NoWriteTimeout` for streaming responses. Inject an `*errs.Handler` with `WithErrorHandler` to enable localized JSON errors and centralized panic/diagnostic handling. Business handlers may use `httpserver.Wrap(func(*gin.Context) error)` or `c.Error(err)`. `Startup` blocks in Serve; `Shutdown` releases the pre-bound listener even if Startup was never called.
+HTTP (`packages/transport/server/http`): `httpserver.NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error)`. Construct-then-listen: it binds the port inside `NewServer`, so `Port=0` yields a real assigned port via `server.Addr()` or `server.Transport()`. Inject the Application policy with `WithPolicy(policy)`. `/health` remains a minimal liveness endpoint. Generated Applications use `WithHealthManager(path, manager)` for starting/ready/draining state plus dependency checks; `WithReadiness(path, checkers...)` remains available for standalone use. Readiness returns 200/503 and becomes `Transport.HealthPath`. Use `httpserver.NoWriteTimeout` for streaming responses. Inject an `*errs.Handler` with `WithErrorHandler` to enable localized JSON errors and centralized panic/diagnostic handling. Business handlers may use `httpserver.Wrap(func(*gin.Context) error)` or `c.Error(err)`. `Startup` blocks in Serve; `Shutdown` releases the pre-bound listener even if Startup was never called.
 
 gRPC (`packages/transport/server/rpc`): `rpcserver.NewServer(cfg *configitem.GRPC, register RegisterFunc, opts ...Option) (*Server, error)`. Construct-then-listen now matches HTTP: it binds in `NewServer`, so `Port=0` is visible before service registration via `server.Addr()` / `server.Transport()`. `RegisterFunc` is `func(grpc.ServiceRegistrar) error`; combine module callbacks with `rpcserver.ChainRegister`. Note `Option` here is `func(*Server) error` (returns error - the only such Option type in the library; handle its error). Options include `WithPolicy`, `WithUnaryInterceptors`, `WithStreamInterceptors`, `WithMTLS`, and `WithErrorHandler`. `otelgrpc` stats instrumentation is installed when policy tracing is enabled. The standard health service starts NOT_SERVING and becomes SERVING when Startup begins.
 
@@ -29,7 +29,7 @@ Metadata and trace context; subscribers restore them before the handler. Kafka,
 Redis Stream, and RocketMQ support this. MQTT v3 and Redis Pub/Sub channels do
 not expose a header carrier and therefore start a new local request context.
 
-Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `internal/modules/<module>/internal/api/<surface>/event.go`, return a `MessageHandler`; Process wiring wraps it with `NewSubscriberEndpoint`.
+Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `internal/modules/<module>/internal/api/<surface>/event.go`, return a `MessageHandler`; Application wiring wraps it with `NewSubscriberEndpoint`.
 
 Kafka needs no connect/disconnect. MQTT/Redis clients that implement `Connect(ctx)` / `Disconnect(ctx)` are auto-detected; pass explicit hooks only when overriding that behavior.
 
@@ -41,7 +41,7 @@ Kafka needs no connect/disconnect. MQTT/Redis clients that implement `Connect(ct
 
 HTTP (`packages/transport/client/http`): `httpclient.NewClient(cfg)` returns a concrete `*Client`; inject it explicitly. `Config.Policy` controls Metadata, OTel client spans, access logging, and adaptive protection. `Do(*http.Request)` is the primary interface and follows net/http response-body ownership. Retries require a replayable request and apply by default only to idempotent methods plus 408/425/429/5xx or temporary network failures. Each attempt re-enters propagation and protection.
 
-gRPC (`packages/transport/client/rpc`): `rpcclient.GetClientConnection(ctx, opts ...ClientConfigOption) (*grpc.ClientConn, error)` waits until the connection reaches Ready or the context/timeout fails, closing the connection on failure. Use `rpcclient.WithPolicy(policy)` so client Metadata, access logs, protection, and `otelgrpc` stats share process policy. `WithEnableTracing` and `WithClientMetrics` now install real stats instrumentation.
+gRPC (`packages/transport/client/rpc`): `rpcclient.GetClientConnection(ctx, opts ...ClientConfigOption) (*grpc.ClientConn, error)` waits until the connection reaches Ready or the context/timeout fails, closing the connection on failure. Use `rpcclient.WithPolicy(policy)` so client Metadata, access logs, protection, and `otelgrpc` stats share Application policy. `WithEnableTracing` and `WithClientMetrics` install real stats instrumentation. The Application architecture does not manage proto or Buf files; projects that expose or consume gRPC own their standard protobuf contracts independently.
 
 ## Middleware
 
@@ -52,7 +52,7 @@ Recovery/Error -> Metadata/RequestID -> OpenTelemetry -> AccessLog
 -> Aegis BBR/SRE Protection -> user middleware -> handler
 ```
 
-The scaffold-once `cmd/<process>/policy.go` owns replacements and opt-outs.
+The scaffold-once `cmd/<application>/policy.go` owns replacements and opt-outs.
 `WithMiddleware` adds business-specific Gin middleware after the common chain;
 custom gRPC interceptors are likewise appended after the common interceptors.
 All log calls require the request Context. Sensitive Metadata is denied unless

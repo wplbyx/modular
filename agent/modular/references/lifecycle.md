@@ -1,6 +1,6 @@
 # Lifecycle
 
-Read when wiring a Process or diagnosing startup/shutdown. Source:
+Read when wiring the Application or diagnosing startup/shutdown. Source:
 `packages/core`, `packages/app`, and `packages/health`.
 
 ## Contracts
@@ -33,7 +33,7 @@ stop a callback that ignores its context.
 Resource.Setup FIFO
   -> Endpoint.Startup concurrently
   -> ReadyEndpoint.Ready concurrently
-  -> Registrar.Register(Process ServiceNode)
+  -> Registrar.Register(Application ServiceNode)
   -> health.Manager Ready
   -> wait for cancellation or Endpoint exit
   -> health.Manager Draining
@@ -46,22 +46,23 @@ Only successfully set-up Resources and started Endpoints are cleaned up. Run
 and manual Close share one `sync.Once`. Application is single-use; Close before
 Run moves it to stopped without invoking dependencies. A Registrar requires a
 ServiceNode. A zero-Endpoint Application sets up Resources and waits for its
-context, which supports worker-only Processes.
+context, which supports worker-only Applications.
 
 Run-triggered shutdown uses one timeout budget, defaulting to 10 seconds or
 `configitem.Application.ShutdownTimeout`. Unregister happens before server
 shutdown so discovery stops directing new work before connections drain.
 
-## Process assembly
+## Application assembly
 
 Generated bootstrap order is fixed:
 
-1. `config.NewRootCommand` loads the Process config.
+1. `config.NewRootCommand` loads the Application config.
 2. `newLoggerManager` creates and installs the context-required logger.
-3. `newTransportPolicy` and `health.NewManager` create Process policy/state.
+3. `newTransportPolicy` and `health.NewManager` create Application policy/state.
 4. cmd constructs shared Resources and a typed `wiring.Platform`.
-5. `WireBusiness(process, platform)` returns module `Contribution` values.
-6. cmd builds one HTTP and/or one gRPC server and registers all contributions.
+5. `WireApplication(platform)` returns the assembled routes, resources,
+   endpoints, checks, and optional Registrar.
+6. cmd builds one HTTP and/or one gRPC server and registers the Assembly.
 7. cmd creates `core.ProcessIdentity`, `core.ServiceNode`, and Application.
 
 Application does not own the logger. The composition root closes it after Run.

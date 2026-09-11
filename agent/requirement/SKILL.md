@@ -1,62 +1,56 @@
 ---
 name: requirement
-description: "Use this skill whenever the user wants to turn vague product ideas, PRDs, feature lists, or rough backend requirements into executable protobuf interface contracts. It clarifies requirements, decomposes feature IDs, chooses Business Module/surface/RPC boundaries, and writes or updates modular-compatible proto/<module>/*.proto files. Trigger this skill for requests like 整理需求, 写 PRD, 拆功能点, 拆接口, 接口设计, 从需求落到 API, proto, protobuf, gRPC, 后端接口契约, 后端功能模块接口, or 检查需求是否可实现, even if the user does not explicitly mention a skill."
+description: "Turn vague product ideas, PRDs, feature lists, or rough backend requirements into implementable modular-monolith Business Module contracts and use-case briefs. Use whenever the user asks to clarify requirements, split features, design backend interfaces, define module boundaries, or turn requirements into Go code, even when they do not explicitly name this skill."
 ---
 
 # Requirement Skill
 
-这个 skill 将模糊的产品想法、业务需求、PRD、功能清单或项目笔记，转成后端可实现的 Protobuf 接口契约。默认最终产物是 `.proto` 源文件，而不是 Markdown 需求文档。
+把模糊的产品想法、业务需求、PRD 或功能清单，收敛成可实现的
+Business Module 边界、业务动作和手写 Go contract。默认产物是业务代码与
+必要的简短决策记录，不是 proto、Buf 配置或传输 DTO。
 
 ## 输出目标
 
-默认直接生成或更新 `proto/<module>/*.proto` 文件。只有在无法确定项目路径、Go module、Business Module、surface 或接口边界时，才先在回复里给出 `.proto` 草案和必须确认的问题。
+优先直接创建或更新：
 
-不要依赖 `document/` 目录或旧的需求文档模板。需求澄清、feature ID、权限、幂等、事务、并发和错误语义，都应服务于 `.proto` 接口契约。
+- `internal/modules/<module>/contract` 中的公开 Go 接口；
+- Command、Query、Result 和必要的公开值类型；
+- 与真实复杂度匹配的 app/domain 实现骨架；
+- `.modular/architecture.yaml` 中明确且无环的模块依赖。
+
+不要创建 `proto/`、`common/`、Buf 配置或生成式 Module Port。HTTP、
+gRPC 和消息协议是 Application 边缘的外部契约，由 adapter 显式映射到
+模块的 Go 类型；只有用户单独要求外部协议设计时才处理这些传输资产。
 
 ## 先读取项目事实
 
-开始写接口前，先用本地文件确认事实，不要凭空猜：
+开始设计前先确认：
 
-- 读取目标项目的 `go.mod`，获取 module path，用于 `option go_package`。
-- 查看是否存在 `proto/`、`buf.yaml`、`buf.gen.yaml`、`common/`、`internal/`、`config/`。
-- 如果已有 `proto/<module>/*.proto`，先读现有文件，延续 package、go_package、service、message、enum、字段编号和注释风格。
-- 如果项目使用 modular v0.3 约定，读取 `.modular/architecture.yaml`，遵循 `proto/<module>` 作为接口源目录、`common/<module>` 作为生成目录，并确认跨模块依赖已经声明。
-- 不要手写或修改 `common/**/*.pb.go`、`common/**/*_grpc.pb.go`，这些文件只允许由生成器产生。
+- 读取 `.modular/architecture.yaml`，确认 Application、已有模块和依赖；
+- 读取目标模块的 `contract`、`app`、`domain` 和 wiring；
+- 读取消费方实际需要的能力，不为假想复用扩大接口；
+- 确认共享 DB、事务接口、EventBus 或外部 client 的注入方式；
+- 若模块尚未声明，使用 modular CLI 添加，而不是手改受管 framework 文件。
 
 ## 核心流程
 
-除非用户明确只要某一阶段，否则按这个顺序推进：
-
 ```text
 模糊需求
--> 业务目标和边界
--> feature ID
--> Business Module / surface / RPC 划分
--> request / response / message / enum
--> proto 文件更新
--> 未决问题和后续实现提示
+-> 业务目标、操作者与成功条件
+-> feature ID 和失败场景
+-> 限界上下文与模块依赖
+-> Command / Query / Result
+-> 窄 Go contract
+-> 用例、事务与并发规则
+-> wiring 和实现
 ```
 
-不要从一句模糊需求直接跳到字段设计。先弄清楚业务动作、操作者、状态变化和失败场景。
+不要从一句模糊需求直接跳到字段或表结构。先确定业务动作、状态变化、
+数据所有者和失败语义；无法确认的内容保留为未决问题。
 
-## 阶段 1：澄清业务目标
+## 需求收敛
 
-先捕获这些信息：
-
-- 原始需求表述。
-- 背景和业务目标。
-- 目标用户、系统调用方或集成方。
-- 主要业务流程。
-- 异常流程和失败场景。
-- 需求范围内和范围外的能力。
-- 关键业务规则。
-- 权限、数据归属、金额、库存、状态机、幂等、并发等高风险点。
-
-如果信息不足，先记录为未决问题。不要把未确认的假设写成确定接口。
-
-## 阶段 2：拆 feature ID
-
-为每个可实现能力分配稳定 feature ID，再映射到 RPC。使用短模块前缀和数字编号：
+每个 feature 使用稳定的短 ID，例如：
 
 ```text
 AUTH-001 用户登录
@@ -65,152 +59,121 @@ ORD-002 取消订单
 STK-001 调整库存
 ```
 
-feature ID 用于连接业务需求、RPC 注释、错误场景、数据影响和后续测试。稳定 ID 比完美命名更重要。
+每个 feature 至少明确：
 
-每个 feature ID 至少要明确：
+- 操作者与授权规则；
+- 前置条件、输入、输出和成功条件；
+- 业务失败原因；
+- 数据写入所有者；
+- 幂等、事务和并发要求；
+- 是否调用其他模块，以及依赖方向。
 
-- 一句话业务动作。
-- 调用方或操作者。
-- 前置条件。
-- 输入和输出。
-- 成功规则。
-- 失败场景。
-- 数据影响。
-- 权限、幂等、事务、并发要求。
+幂等、重试和补偿只在业务或外部系统交互确实需要时引入。不要因为代码被
+划分为模块，就模拟网络故障或提前实现分布式事务。
 
-如果一个 feature 仍需要实现者决定业务意图，它还没有拆到可执行粒度。
+## 模块与依赖
 
-## 阶段 3：确定 Business Module、surface 和 RPC
+Business Module 默认对应一个限界上下文，拥有自己的业务规则、用例、
+公开 contract 和数据写入。名称使用 lower_snake_case，例如 `order`、
+`inventory`。
 
-把 feature 映射到 modular 的接口边界：
+跨模块同步调用遵循：
 
-- Business Module 是业务能力和数据写入边界，名称使用小写 snake_case，例如 `user`、`order`、`inventory`。它不是部署 Process。
-- `surface` 是接口面，默认 `public`；管理端用 `admin`，平台集成用 `platform`，开放接口用 `openapi`，内部任务按实际语义命名。
-- `public` surface 写入 `proto/<module>/<module>.proto`。
-- 非 `public` surface 写入 `proto/<module>/<surface>.proto`。
-- `public` service 命名为 `<Svc>Service`，例如 `OrderService`。
-- 非 `public` service 命名为 `<Svc><Surface>Service`，例如 `UserAdminService`。
-- RPC 方法名使用 PascalCase，表达业务动作，例如 `CreateOrder`、`CancelOrder`、`ListDisabledUsers`。
+- consumer 只导入 provider 的 `internal/modules/<provider>/contract`；
+- contract 由 provider 定义，但以调用方真实需求保持窄接口；
+- consumer 不导入 provider 的 `internal`、repository、ORM model 或表；
+- `.modular/architecture.yaml` 中声明依赖，整个图必须保持 DAG；
+- 不为了消除依赖环创建一个装满 DTO 的 shared/common 业务包。
 
-同一个 Business Module 的多个 surface 共享 `common/<module>` 生成包，因此 message 和 enum 名称不能互相冲突。优先使用 `<Method>Request` / `<Method>Response`，避免通用的 `Request`、`Response`、`Item`、`Data`。
+出现依赖环时，重新检查业务所有权、合并错误切分的上下文，或把跨模块流程
+提升到明确的发起方；不要用事件或运行时容器隐藏同步环。
 
-## 阶段 4：设计 `.proto` 契约
+## Go contract 设计
 
-生成或更新 proto 时使用纯 gRPC 契约，不添加 `google.api.http` 或 grpc-gateway 注解。HTTP 路径、权限、幂等、事务、并发和错误语义写在 RPC 或 message 注释里，后续由 `internal/modules/<module>/internal/api/<surface>/http.go` 适配。
+公开接口使用 `context.Context` 和业务语义命名：
 
-基础结构：
+```go
+package contract
 
-```proto
-syntax = "proto3";
+import "context"
 
-package order;
+type PlaceOrderCommand struct {
+    CustomerID string
+    Items      []OrderItem
+}
 
-option go_package = "example.com/project/common/order";
+type PlaceOrderResult struct {
+    OrderID string
+}
 
-service OrderService {
-  // ORD-001 创建订单。
-  // Caller: public frontend.
-  // Auth: required.
-  // Idempotency: required by idempotency_key.
-  // Data effects: creates order and order items.
-  // Transaction: commits within the order module; inventory failure is compensated.
-  // Errors: INVALID_ARGUMENT when item list is empty; FAILED_PRECONDITION when stock is insufficient.
-  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+type Service interface {
+    PlaceOrder(context.Context, PlaceOrderCommand) (PlaceOrderResult, error)
 }
 ```
 
-字段规则：
+约束：
 
-- 字段名使用 `snake_case`。
-- 字段编号稳定递增；不要重排、复用或随意删除已发布字段编号。
-- 新增字段追加新的编号。
-- 如果需要废弃字段，保留编号并使用 `reserved`。
-- `string id` 用于外部 ID；不要把数据库自增 ID 泄漏成接口契约，除非需求明确要求。
-- 时间字段优先使用 `google.protobuf.Timestamp`；如项目没有使用 well-known types 且用户希望避免 import，可用 `int64 unix_time`，但要在注释中说明单位。
-- 金额字段优先使用最小货币单位的整数，例如 `int64 amount_cent`；不要用 `float` 表示金额。
-- 分页请求使用 `page_size` 和 `page_token`，或沿用现有项目分页风格。
-- 列表响应包含 `repeated Xxx items` 和 `next_page_token`，或沿用现有项目风格。
-- bool 字段命名表达真实业务语义，例如 `is_disabled`、`allow_backorder`。
-- 不要使用含糊字段名：`data`、`info`、`payload`、`status`，除非它们在上下文中有清晰枚举或消息类型。
+- 写操作使用 `Command`，读操作使用 `Query`，返回值使用 `Result`；
+- 类型表达业务语义，不复用 HTTP/gRPC request/response；
+- 不暴露 ORM model、数据库事务句柄或基础设施 client；
+- 接口按调用能力拆分，避免一个包含所有方法的宽 Service；
+- stable reason 定义在拥有该业务规则的模块；
+- 输入校验分清格式校验与业务不变量，后者留在 app/domain；
+- 简单 CRUD 可留在 app；只有聚合、不变量或策略真实存在时才创建 domain。
 
-enum 规则：
+## 事务与一致性
 
-- enum 名称使用 PascalCase，值使用大写 snake_case。
-- 第一个值必须是 `*_UNSPECIFIED = 0`。
-- 状态机 enum 要在注释中说明可见状态，不要把状态流转规则藏在实现里。
+单体允许跨模块 ACID 事务，但边界必须显式：
 
-## 阶段 5：写入或更新文件
+- 跨模块工作流归发起方模块所有；
+- 发起方只调用其他模块的公开 contract；
+- 在具体用例旁定义最小事务接口，由项目 adapter 实现；
+- 不在 modular core 增加通用 UoW，也不把 repository 暴露给其他模块；
+- 本地 EventBus 只表达进程内通知，不假装可靠的跨系统消息。
 
-写文件时保持变更聚焦：
+与外部系统交互时，再按真实失败模型决定 timeout、重试、幂等键、Outbox/
+Inbox、补偿和对账。不要把这些成本施加给纯进程内模块调用。
 
-- 如果目标 `.proto` 不存在，创建完整文件：`syntax`、`package`、`go_package`、`service`、RPC、message、enum。
-- 如果目标 `.proto` 已存在，只追加或调整相关 RPC、message、enum，不重排无关内容。
-- 删除脚手架占位的 `Example` RPC、`ExampleRequest`、`ExampleResponse`，前提是它们没有被真实接口引用。
-- 不要改动生成目录 `common/`。
-- 不要为了需求接口生成去改 `cmd/`、`internal/`、`config/`，除非用户明确要求继续实现。
-- 如果项目有 `buf.yaml`，在最终回复中建议后续运行 `buf generate`；不要在用户只要求需求或 proto 时擅自生成 Go 代码。
+## Application 边缘
 
-跨模块一致性规则：
+入站 adapter 负责认证、传输格式校验和 DTO 映射，然后调用模块 contract。
+出站 adapter 把外部 client、存储或消息系统映射到模块需要的窄端口。
 
-- 事务默认止于一个 Business Module。若需求必须跨模块共享数据库事务，在 `.modular/architecture.yaml` 登记 `shared-transaction` Extraction Blocker，而不是把“可无缝拆分”写进接口承诺。
-- 跨 Process 的可靠事实使用 Integration Event，并在注释中明确 outbox/inbox、消费幂等、重试和对账；进程内 EventBus 只能表达 best-effort Local Notification。
-- 跨模块同步调用应使用 provider 模块的 protobuf 契约；生成的 unary Port 支持本地直接注入和显式 Remote Adapter。Streaming 不承诺自动本地/远程切换。
+外部 HTTP/gRPC/消息契约可以独立版本化，但不能替代模块 Go contract，也
+不能被其他模块当作本地调用接口。项目明确采用 gRPC 时，其标准 protobuf
+文件和生成流程由项目自行管理，modular scaffolder 不参与。
 
-## 注释内容
+## 实现顺序
 
-每个 RPC 注释尽量包含这些实现者真正需要的信息：
+用户要求实现时，按以下顺序推进：
 
-- feature ID 和一句话业务动作。
-- Caller：frontend、admin、system task、integration 或其他明确调用方。
-- Auth：是否需要登录、角色、数据归属校验。
-- Idempotency：是否需要幂等键、天然幂等还是不需要。
-- Data effects：会创建、更新、删除或读取哪些业务对象。
-- Transaction：写操作的事务边界。
-- Concurrency：库存、余额、名额、状态流转等并发保护。
-- Errors：业务错误码或 gRPC status 语义和触发条件。
+1. 确认或添加模块及 DAG 依赖；
+2. 写 provider 的公开 contract 与稳定错误；
+3. 写发起方用例和必要 domain 规则；
+4. 写 repository/external port 及 adapter；
+5. 在 `WireApplication(platform)` 中按依赖顺序装配；
+6. 最后映射 HTTP/gRPC/event 边缘。
 
-保持注释是接口契约的一部分，不要写实现代码、SQL、UI 文案或页面布局。
-
-## 高风险需求处理
-
-遇到这些需求时，必须先澄清或在注释中明确约束：
-
-- 支付、退款、余额、积分、优惠券、库存、秒杀、订单取消。
-- 账号权限、角色管理、数据归属、管理员操作。
-- 状态机流转，例如订单、工单、审核、发布、冻结。
-- 幂等写操作，例如创建订单、提交支付、领取权益。
-- 并发竞争，例如库存扣减、名额占用、重复提交。
-- 跨服务一致性或事件投递。
-
-如果关键规则不明确，不要写成确定字段；在回复中列出需要产品或技术负责人确认的问题，并给出可继续推进的最小 proto 草案。
+不要修改 `framework.gen.go` 等 managed 文件。业务 wiring、模块代码和
+project-defined transaction adapter 属于用户维护范围。
 
 ## 默认回复结构
 
-完成一次需求到 proto 的工作后，按这个顺序回复：
+完成实现后说明：
 
-1. 当前阶段和已更新的 `.proto` 文件。
-2. 新增或调整的 service / RPC / message / enum。
-3. 已写入 proto 注释的关键业务约束。
-4. 未决问题。
-5. 后续建议，例如运行 `buf generate` 或继续补 HTTP adapter。
+1. 已落地的模块、contract 和用例；
+2. 关键业务规则、事务与依赖方向；
+3. 仍未确定的业务问题；
+4. 实际执行的验证。
 
-如果只是评审需求或接口草案，按这个顺序回复：
-
-1. 当前可确定的业务动作。
-2. 可以落到 proto 的 RPC。
-3. 缺失或高风险信息。
-4. 建议的 Business Module / surface / 文件路径。
-5. 需要用户确认的问题。
+仅做需求评审时，说明可确定的业务动作、建议模块边界、高风险缺口和必须由
+产品或技术负责人确认的问题。
 
 ## 避免的问题
 
-避免这些失败模式：
-
-- 继续产出旧的 Markdown PRD，而不是 `.proto`。
-- 在未澄清业务动作前直接设计字段。
-- 把 HTTP 注解写进 proto，导致当前 modular 脚手架无法自然匹配。
-- 把数据库表结构、索引、SQL 或 ORM tag 写进 proto。
-- 把 UI 布局、颜色、组件或交互文案写进后端接口契约。
-- 手写生成文件。
-- 重排已有字段编号或复用已删除字段编号。
-- 用隐藏假设填补权限、幂等、事务、并发等关键规则。
+- 把模块契约设计成 proto 或传输 DTO；
+- 为将来可能微服务化提前加入 Remote Adapter、幂等、重试或柔性事务；
+- 用数据库表或 ORM model 定义模块边界；
+- 让模块通过全局容器、裸 DB 或 repository 相互调用；
+- 把未知的权限、金额、库存和状态机规则当作确定事实；
+- 为追求固定目录结构创建没有业务价值的空 domain/repository 包。

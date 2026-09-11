@@ -4,16 +4,16 @@
 
 ## Design Philosophy
 
-`modular` 是一套模块化单体优先的 Go 应用积木库（module path: `github.com/wplbyx/modular`，Go 1.26+）。默认形态是一个 Process 承载多个 Business Module；需要时通过显式 extraction 把选定模块移到其他 Process。
+`modular` 是一套纯模块化单体 Go 应用积木库（module path: `github.com/wplbyx/modular`，Go 1.26+）。一个项目固定为一个 Application 和一个部署单元，内部按 DDD 限界上下文划分 Business Module。
 
 核心理念：
 
 - **积木式组装**：所有组件通过 `Option + 构造函数` 模式注入，业务侧零框架绑定。`Application` 只负责生命周期编排，不处理任何业务逻辑。
 - **两种资源类型**：`core.Endpoint`（接流量的服务对象：HTTP/gRPC/SSE/Pub-Sub）和 `core.Resource`（支撑性基础设施：DB/Redis/Cache/Storage/Telemetry）。Application 统一管理两者的生命周期。
 - **身份模型**：一个 Application 对应一个 `core.ServiceNode`，从启动配置构建。`ServiceNode` 是服务实例的完整元数据，用于服务注册与发现。`Endpoint.Name()` / `Resource.Name()` 仅用于日志区分组件模块，不是服务身份。
-- **模块与进程分离**：Business Module 是业务代码和数据写入边界；Process 是部署、配置、transport 和生命周期边界。一个 Process 共享一套 HTTP/gRPC Server、连接池、Telemetry、Health 和 EventBus。
-- **proto 契约**：外部和跨模块稳定接口使用 proto。生成的 unary `XxxServicePort` 在单体中直接注入实现，跨 Process 时注入标准 gRPC client 的 Remote Adapter；不承诺配置切换即可完成拆分。
-- **分级可提取**：默认模块为单体开发成本优化。共享事务等例外必须登记为 Extraction Blocker；候选模块通过 `module extract --check` 后再承担远程故障、幂等和可靠事件成本。
+- **按限界上下文分模块**：Business Module 默认对应一个限界上下文，拥有业务规则、用例、公开 Go contract 和数据写入；Application 是唯一部署、配置、transport 和生命周期边界。
+- **Go 契约**：模块之间只依赖 provider 的手写 `contract`，禁止依赖其他模块的实现。proto/Buf 不属于模块架构；使用外部 gRPC 的项目自行维护标准协议。
+- **单体事务能力**：跨模块 ACID 流程允许由发起方模块显式编排，但只能调用公开 contract。事务接口由具体项目按用例定义，不在 core 提供通用 UoW。
 - **谁最了解数据，谁负责生产数据**：Endpoint 不再向 Application 暴露裸 URL，也不做 ServiceNode 转换。ServiceNode 从配置构建，Application 只负责在 node 和 registrar 之间传值。
 
 ## Package Architecture
@@ -27,7 +27,7 @@ packages/
   metadata/       ← 不可变上下文元数据与安全传播策略
   eventbus/       ← 进程内有序 RingMPSC EventBus Resource
   errs/           ← 统一错误封装（支持错误链、堆栈、上下文字段）
-  generate/       ← 错误语言模板与 protobuf Module Port 生成器
+  generate/       ← 错误语言模板生成器
   util/           ← 通用工具（加密、随机、URL、请求）
   transport/
     server/       ← http, rpc, sse 服务器（实现 core.Endpoint）
@@ -113,9 +113,10 @@ chore: ignore packages/infra/storage/upload test artifact
 - `Application` 是一次性的 `new -> running -> stopping -> stopped` 状态机；重复 `Run` 返回错误，Run 前 `Close` 不触发任何依赖生命周期。配置 Registrar 时必须同时配置 ServiceNode。
 - `app` 只**向下**导入（core + config + log + registry），**不导入 `transport`**——endpoint 永远以 `core.Endpoint` 接口注入。务必保持这条边界：不要让 app 反向依赖 transport/server。
 
-### Protobuf 契约生成
+### 模块契约
 
-- 仓库本身不保存业务 `.proto` 或 `_pb.go`；下游项目通过 Buf 生成 `common/`。`protoc-gen-go-modular` 额外生成 unary Port 和 Remote Adapter，streaming 不做隐式本地适配。
+- 跨模块契约位于 `internal/modules/<module>/contract`，使用手写的窄 Go 接口与 Command/Query/Result 类型。同步模块依赖必须形成 DAG。
+- HTTP/gRPC/消息 DTO 只存在于入站或出站 adapter，并显式映射到应用类型。不要为假想的微服务提取引入 proto、Remote Adapter 或分布式一致性代码。
 
 ### 错误处理与多语言
 
@@ -128,7 +129,7 @@ chore: ignore packages/infra/storage/upload test artifact
 - `cmd` 的启动顺序固定为：`config.NewRoot` 加载配置第一，`NewLoggerManager` 创建 Logger 第二，`log.SetDefault` 后创建 `transport.Policy`，最后才构造 Resource/Endpoint/Application。`app.NewApplication(ctx, cfg, logger, ...)` 要求非 nil `log.Logger`；Application 不关闭该 logger。
 - 所有日志接口强制接收 `context.Context`：使用 `log.Info(ctx, ...)`、`log.Error(ctx, ...)` 或显式注入的 `log.Logger`。没有 `GetLogger`、`Infof`、Sugar、Fatal、Panic 或 raw zap getter；`log.Default()` 未安装时为 no-op。
 - 异步 Logger 和 `eventbus.Bus` 的队列数据必须直接存放在 `github.com/cyub/ringbuffer.MpscRingBuffer`。禁止新建、复制、fork 或包装自研 RingMPSC 算法；附加 channel 只能用于 wakeup/space signal。Logger 通过 `WithOutputConsole` / `WithOutputFiles(ctx)` 建立 bootstrap sink；Telemetry Resource Setup 后可动态挂载 OTLP sink。
-- `transport.NewPolicy` 默认提供 Recovery -> Metadata/RequestID -> OTel -> AccessLog -> Aegis BBR/SRE protection。通过 `cmd/<process>/policy.go`（scaffold-once）做替换或关闭；HTTP/gRPC 服务器和客户端应接收同一个 process Policy。
+- `transport.NewPolicy` 默认提供 Recovery -> Metadata/RequestID -> OTel -> AccessLog -> Aegis BBR/SRE protection。通过 `cmd/<application>/policy.go`（scaffold-once）做替换或关闭；HTTP/gRPC 服务器和客户端应接收同一个 Application Policy。
 - `packages/metadata` 的 global/local scope 控制边界传播。仅全局且安全的键会穿透；authorization/cookie 必须显式 allowlist。业务日志和 handler 从 Context 获取 request/trace 关联字段。
 
 ### Option 模式并非通用

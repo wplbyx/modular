@@ -23,12 +23,10 @@ under `internal/modules/<module>/internal/domain`. Implement them in
 - Define the smallest interface needed by the use case and its tests.
 - Repositories receive concrete `core.Provider[T]` dependencies; call
   `Value()` only while handling work after Resource Setup.
-- A module owns its UoW and data writes. Cross-module shared transactions must
-  be declared as extraction blockers.
-- Cross-module code depends on the provider's generated Port or public
-  `contract`, never its `internal` implementation.
-- A consumer-side remote adapter lives at
-  `internal/modules/<consumer>/internal/adapters/remote/<provider>` and
-  normalizes remote errors through the generated adapter.
+- A module owns its data writes. Cross-module code depends on the provider's
+  public Go `contract`, never its `internal` implementation.
+- A cross-module ACID workflow is owned by its initiating module. Define its
+  narrow transaction runner beside the use case and implement it in project
+  infrastructure; do not expose repositories or raw transaction handles.
 - Generate DTO/model packages only when a real adapter needs them. Temporary
   adapters return explicit errors, never fake success values.

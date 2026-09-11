@@ -39,7 +39,7 @@ Install the standalone generator once:
 go install github.com/wplbyx/modular/packages/generate/cmd/err_template_gen@latest
 ```
 
-For a Process hosting one module, keep the catalog with that Process and scan only the module's implementation:
+For a catalog scoped to one module, keep it with the Application and scan only that module's implementation:
 
 ```bash
 err_template_gen \
@@ -49,7 +49,7 @@ err_template_gen \
   --languages zh-CN,en-US
 ```
 
-For a Process hosting several modules, generate one catalog containing every hosted module reason:
+For the normal modular monolith, generate one catalog containing every module reason:
 
 ```bash
 err_template_gen \
@@ -81,10 +81,10 @@ err_template_gen \
   --check
 ```
 
-## Wire one Handler per process
+## Wire one Handler per Application
 
 Configuration is loaded first; initialize logging second and pass its explicit
-`log.Logger` to the Handler and process policy.
+`log.Logger` to the Handler and Application policy.
 
 ```go
 loggerManager, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
@@ -123,7 +123,7 @@ grpcServer, err := rpcserver.NewServer(
 )
 ```
 
-Use the locale directory for the current Process. One Process has one Catalog and one Handler even when it hosts multiple Business Modules; do not load locale files from business packages.
+Use one locale directory, Catalog, and Handler for the Application even when it hosts multiple Business Modules; do not load locale files from business packages.
 
 HTTP adapters return errors through `httpserver.Wrap` or `c.Error`. HTTP reads `Accept-Language`; gRPC reads `accept-language` metadata. The framework selects the locale and returns only `code`, `reason`, and localized `message`.
 
