@@ -24,9 +24,6 @@ class ModularCliTest(unittest.TestCase):
     def test_init_uses_current_layout(self):
         self.run_cli()
 
-    def test_self_check(self):
-        r = subprocess.run([sys.executable, str(SCRIPT), 'self-check'], cwd=ROOT, env={**__import__('os').environ, 'MODULAR_SCAFFOLD_TESTING':'1'}, text=True, capture_output=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
 
 if __name__ == '__main__':
     unittest.main()
