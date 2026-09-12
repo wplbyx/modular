@@ -6,14 +6,14 @@ the Agent defines the smallest port after the use case is known.
 ## Simple app flow
 
 For CRUD/query/mutation without rich domain behavior, put use-case ports under
-`internal/modules/<module>/internal/app` and implementations under
-`internal/modules/<module>/internal/repository/app`. DTO-style data is
+`modules/<module>/internal/app` and implementations under
+`modules/<module>/internal/repository/app`. DTO-style data is
 acceptable at this seam.
 
 ## Domain flow
 
 For aggregates, invariants, policies, or transaction coordination, put ports
-under `internal/modules/<module>/internal/domain`. Implement them in
+under `modules/<module>/internal/domain`. Implement them in
 `internal/repository/domain`; keep persistence structs and ORM tags under
 `internal/repository/model`, outside domain entities.
 

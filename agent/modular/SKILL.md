@@ -1,6 +1,6 @@
 ---
 name: modular
-description: Scaffold, wire, audit, and evolve modular monolith Go projects built on github.com/wplbyx/modular. Use when initializing a project, adding bounded-context Business Modules, declaring module dependencies, wiring shared transports/resources, designing Go contracts, migrating v0.3 projects, or running scaffold/contract/business verification.
+description: Scaffold, wire, audit, and evolve modular monolith Go projects built on github.com/wplbyx/modular. Use when initializing a project, adding bounded-context Business Modules, declaring module dependencies, wiring shared transports/resources, designing Go contracts, or running scaffold/contract/business verification.
 ---
 
 # Modular skill
@@ -17,11 +17,20 @@ owns framework files; the Agent owns module contracts and business behavior.
 | Simple CRUD contract | [crud](references/workflows/crud.md) | Agent edits + `contract-check` |
 | Aggregate or transaction rules | [domain](references/workflows/domain.md) | Agent edits + `contract-check` |
 | DB/Redis/Storage/Telemetry/EventBus | [resource](references/workflows/resource.md) | `resource add/remove` |
-| v0.3 upgrade | [migration](references/workflows/migration.md) | `migrate v0.3-to-v0.4` |
 | Convention or release audit | [audit](references/workflows/audit.md) | `self-check`, `doctor`, `verify` |
 
 Read only the references selected by that workflow. Keep universal rules here
 and project-specific policy in `.modular/profile.toml`.
+
+## Generated project layout
+
+Generated applications follow this layout:
+
+- `cmd/<application>/` is the composition root and owns `main.go`, shared resource construction, and module assembly.
+- `config/<application>/` contains aggregated application configuration, YAML, and locale catalogs.
+- `modules/<module>/` is a bounded context with `bootstrap.go`, `config.go`, `contract/`, `internal/`, and module-owned `infrastructure/`.
+- Repositories, HTTP handlers, publishers, and subscribers live under the owning module's `infrastructure/`; repository ports remain in `internal/app`.
+- Do not create project-level old project-level wiring and config directories, or shared infrastructure packages.
 
 ## Architecture contract
 
@@ -32,7 +41,7 @@ and project-specific policy in `.modular/profile.toml`.
 - `.modular/architecture.yaml` declares the Application capabilities, modules,
   and an acyclic module dependency graph. The manifest records generated-file
   ownership and replay state only.
-- Other modules import only `internal/modules/<provider>/contract`; imports
+- Other modules import only `modules/<provider>/contract`; imports
   across another module's implementation boundary are invalid.
 - Module contracts use hand-written Go interfaces and Command/Query/Result
   types. Protobuf and other wire formats belong only to optional external
@@ -62,7 +71,7 @@ condition: inspect `--diff`, move extensions to the intended seam, or perform a
 deliberate migration. Destructive commands preview by default and require
 `--apply`.
 
-Keep `cmd/<application>/framework.gen.go` managed and `policy.go`
+Keep `cmd/<application>` managed and `policy.go`
 scaffold-once. The Application loads config, installs logging, creates shared
 resources, calls `WireApplication(platform)`, builds shared endpoints, then
 runs the `app.Application` lifecycle.
@@ -85,7 +94,7 @@ Logger/EventBus queue data remains directly in
 For a new v0.4 project, use the installed tool:
 
 ```bash
-python3 scripts/modular.py init myapp --modular-version v0.4.0
+python3 scripts/modular.py init myapp --modular-version v0.4.1
 ```
 
 For an existing project, use its local copy:

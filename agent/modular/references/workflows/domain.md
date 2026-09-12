@@ -5,7 +5,7 @@ rules justify a domain model. Read [layering](../layering.md),
 [repository placement](../repository.md), and [errors](../errors.md).
 
 1. Name the aggregate and why app-layer behavior is insufficient.
-2. Add concepts under `internal/modules/<module>/internal/domain`; do not split
+2. Add concepts under `modules/<module>/internal/domain`; do not split
    a domain by transport surface.
 3. Keep domain errors machine-readable and localize them at Application edges.
 4. Create entities only with known fields and invariants, not ID-only shells.

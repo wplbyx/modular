@@ -5,7 +5,7 @@ Read when adding Application or Business Module configuration. Source:
 
 ## Ownership
 
-- `config/modules/<module>/config.go` is scaffold-once and contains only
+- `modules/<module>/config.go` is scaffold-once and contains only
   business-owned settings plus its `Flags` method.
 - `config/<application>/config.gen.go` and `config.yaml` are managed aggregates.
 - Transport and infrastructure settings exist once at Application level. Module

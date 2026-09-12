@@ -17,7 +17,6 @@ same deterministic tool at `.modular/tool/modular.py`.
 - `resource remove`
 - `sync`
 - `prune`
-- `migrate v0.3-to-v0.4`
 - `doctor`
 - `verify`
 - `coverage`
@@ -26,7 +25,7 @@ same deterministic tool at `.modular/tool/modular.py`.
 ## Initialization
 
 ```bash
-python3 scripts/modular.py init myapp --modular-version v0.4.0
+python3 scripts/modular.py init myapp --modular-version v0.4.1
 python3 scripts/modular.py init myapp --transport http --transport grpc
 ```
 
@@ -45,7 +44,7 @@ python3 .modular/tool/modular.py module depend remove billing order
 
 Modules represent bounded contexts and form an acyclic dependency graph.
 Adding a module creates only its business configuration seam. Agent-led work
-adds `internal/modules/<module>/contract` and the minimum implementation
+adds `modules/<module>/contract` and the minimum implementation
 packages justified by real use cases.
 
 Module removal is destructive and previews by default:
@@ -71,15 +70,12 @@ previews managed-file changes unless `--apply` is supplied.
 ## Migration and maintenance
 
 ```bash
-python3 .modular/tool/modular.py migrate v0.3-to-v0.4 \
-  --modular-version v0.4.0 --diff
-python3 .modular/tool/modular.py migrate v0.3-to-v0.4 \
-  --modular-version v0.4.0 --apply
+  --modular-version v0.4.1 --diff
+  --modular-version v0.4.1 --apply
 python3 .modular/tool/modular.py sync
 python3 .modular/tool/modular.py prune --apply
 ```
 
-The v0.4 migration accepts only a v0.3 architecture containing one Process.
 It preserves customized proto/Buf assets and already adapted `WireApplication`
 wiring outside modular management, rejects old modular protobuf generator
 output or executable references, and never combines multiple Processes

@@ -73,7 +73,7 @@ Resource.Setup() FIFO
 
 ## 典型使用方式
 
-下游项目在 `internal/platform/wiring` 里显式构造模块，生成的 `cmd/<application>` 只负责共享基础设施和生命周期。模块实现位于 `internal/modules/<name>/internal`；其他模块只能导入其手写 `contract` 包。
+下游项目在 `cmd/<application>` 里显式构造模块，生成的 `cmd/<application>` 只负责共享基础设施和生命周期。模块实现位于 `modules/<name>/internal`；其他模块只能导入其手写 `contract` 包。
 
 异步任务池需要显式注入并交给 Application 管理：
 
@@ -334,7 +334,7 @@ v0.4 脚手架生成一个 Application，并按限界上下文维护 Business Mo
     tool/                    # 项目内可迁移的脚手架及模板
   cmd/
     <application>/main.go    # 唯一受管入口
-    <application>/framework.gen.go
+    <application>
   config/
     <application>/           # identity、transport、共享 Resource 与模块配置聚合
       config.gen.go
@@ -343,7 +343,7 @@ v0.4 脚手架生成一个 Application，并按限界上下文维护 Business Mo
       config.go              # 模块业务配置，用户维护
   internal/
     platform/wiring/
-      framework.gen.go       # typed Platform、Resources 和 Assembly
+             # typed Platform、Resources 和 Assembly
       business.go            # 一次性 wiring 接缝，由 Agent/用户维护
     modules/<module>/
       module.go              # 模块构造与导出能力
@@ -400,7 +400,6 @@ v0.4 脚手架生成一个 Application，并按限界上下文维护 Business Mo
 使用 modular skill 为订单聚合设计领域对象、端口和稳定错误码
 使用 modular skill 给项目接入 redis resource
 使用 modular skill 审计当前项目结构
-使用 modular skill 把 v0.3 单 Process 项目迁移到 v0.4
 ```
 
 确定性命令：
@@ -412,7 +411,6 @@ v0.4 脚手架生成一个 Application，并按限界上下文维护 Business Mo
 | `transport add/remove` | 修改 Application 的 HTTP/gRPC 能力。 |
 | `resource add/remove` | 管理 Application 共享 DB、Redis、Storage、Telemetry 和 EventBus。 |
 | `sync` / `prune` | 幂等同步受管文件，或安全删除不再需要且未被修改的受管文件。 |
-| `migrate v0.3-to-v0.4` | 将单 Process v0.3 项目迁移到纯模块化单体模型。 |
 | `project upgrade` | 更新项目内工具和已发布的 modular 依赖版本。 |
 | `doctor` / `verify` | 执行只读审计和 framework/contract/complete 阶段门禁。 |
 | `coverage` | 运行无数值门槛的覆盖率报告。 |

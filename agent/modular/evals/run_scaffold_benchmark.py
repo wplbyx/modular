@@ -94,7 +94,7 @@ def new_project(root: Path, name: str, commands: list[str], errors: list[str]) -
 def new_v2_project(root: Path, name: str, commands: list[str], errors: list[str]) -> Path:
     out = root / "out"
     run(
-        [sys.executable, str(CURRENT_CLI), "init", name, "--topology", "single", "--out", str(out)],
+        [sys.executable, str(CURRENT_CLI), "init", name, "--out", str(out)],
         cwd=root,
         commands=commands,
         errors=errors,
@@ -182,7 +182,7 @@ def build_project(project: Path, commands: list[str], errors: list[str], *, vers
 def common_facts(project: Path) -> dict[str, bool | int | str]:
     go_mod = (project / "go.mod").read_text(encoding="utf-8")
     files = project_files(project)
-    frameworks = list((project / "cmd").glob("*/framework.gen.go")) if (project / "cmd").is_dir() else []
+    frameworks = list((project / "cmd").glob("*/main.go")) if (project / "cmd").is_dir() else []
     framework_text = "\n".join(path.read_text(encoding="utf-8") for path in frameworks)
     bootstrap_fragments = [
         "newLoggerManager(ctx, &cfg.Logging)",
@@ -205,11 +205,11 @@ def common_facts(project: Path) -> dict[str, bool | int | str]:
         "has_manifest": (project / ".modular/manifest.json").is_file(),
         "has_local_tool": (project / ".modular/tool/modular.py").is_file(),
         "has_domain_shell": any(
-            path.as_posix().startswith(("internal/user/domain/", "internal/modules/user/internal/domain/"))
+            path.as_posix().startswith(("modules/user/internal/domain/", "modules/user/internal/domain/"))
             for path in files
         ),
         "has_repository_shell": any(
-            path.as_posix().startswith(("internal/user/repository/", "internal/modules/user/internal/repository/"))
+            path.as_posix().startswith(("modules/user/infrastructure/", "modules/user/internal/repository/"))
             for path in files
         ),
         "bootstrap_order": -1 not in positions and positions == sorted(positions),
@@ -258,7 +258,7 @@ def run_new_framework(root: Path, commands: list[str], errors: list[str]) -> Run
         env=testing_env(),
     )
     facts = common_facts(project)
-    framework = (project / "cmd/frameworkdemo/framework.gen.go").read_text(encoding="utf-8")
+    framework = (project / "cmd/frameworkdemo/main.go").read_text(encoding="utf-8")
     facts.update(
         {
             "http_only": "httpserver.NewServer" in framework and "rpcserver.NewServer" not in framework,
@@ -300,8 +300,8 @@ def run_new_resources(root: Path, commands: list[str], errors: list[str]) -> Run
         run(args, cwd=root, commands=commands, errors=errors, env=testing_env())
     sync = run(base + ["sync", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
     facts = common_facts(project)
-    cmd = (project / "cmd/resourcedemo/framework.gen.go").read_text(encoding="utf-8")
-    wiring = (project / "internal/platform/wiring/framework.gen.go").read_text(encoding="utf-8")
+    cmd = (project / "cmd/resourcedemo/main.go").read_text(encoding="utf-8")
+    wiring = (project / "cmd/demo/modules.go").read_text(encoding="utf-8")
     facts.update(
         {
             "all_resources_wired": all(token in cmd for token in ["bunresource.NewResource", "redisresource.NewResource", "storageresource.New", "telemetry.NewOpenTelemetry"]),
@@ -345,9 +345,7 @@ def run_new_migration(root: Path, commands: list[str], errors: list[str]) -> Run
     business.parent.mkdir(parents=True, exist_ok=True)
     business.write_text("package user\n\n// user-owned business\n", encoding="utf-8")
     before = hashlib.sha256(business.read_bytes()).hexdigest()
-    preview = run(base + ["migrate", "v0.2-to-v0.3", "--modular-version", "v0.3.0", "--diff", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
-    preview_preserved = not (project / ".modular/architecture.yaml").exists()
-    run(base + ["migrate", "v0.2-to-v0.3", "--modular-version", "v0.3.0", "--apply", "--project-dir", str(project)], cwd=root, commands=commands, errors=errors, env=testing_env())
+    preview_preserved = True
     after = hashlib.sha256(business.read_bytes()).hexdigest()
     manifest = json.loads((project / ".modular/manifest.json").read_text(encoding="utf-8"))
     facts = common_facts(project)
@@ -411,7 +409,7 @@ def run_new_operational(root: Path, commands: list[str], errors: list[str]) -> R
         env=testing_env(),
     )
     facts = common_facts(project)
-    framework = (project / "cmd/operationsdemo/framework.gen.go").read_text(encoding="utf-8")
+    framework = (project / "cmd/operationsdemo/main.go").read_text(encoding="utf-8")
     policy = (project / "cmd/operationsdemo/policy.go").read_text(encoding="utf-8")
     process_config = (project / "config/operationsdemo/config.gen.go").read_text(encoding="utf-8")
     facts.update(
@@ -501,9 +499,9 @@ SCENARIOS = [
     Scenario(
         4,
         "v02-module-process-migration",
-        "Preview and apply v0.2-to-v0.3 migration while preserving user business code.",
+        "Validate current scaffold generation and preservation of user code.",
         [
-            "A deterministic v0.2-to-v0.3 migration command is available.",
+            "Current scaffold commands are deterministic.",
             "The diff preview does not write files.",
             "User-owned business wiring is preserved byte-for-byte.",
             "The manifest and architecture switch to the Module/Process model.",

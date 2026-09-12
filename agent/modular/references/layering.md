@@ -9,23 +9,23 @@ boundary.
 - `.modular/architecture.yaml`: Application capabilities, modules, and module
   dependencies.
 - `.modular/manifest.json`: generated ownership and replay hashes only.
-- `config/modules/<module>/config.go`: scaffold-once business configuration.
+- `modules/<module>/config.go`: scaffold-once business configuration.
 - `config/<application>/config.gen.go|config.yaml`: managed aggregate config.
-- `cmd/<application>/main.go|framework.gen.go`: managed bootstrap.
+- `cmd/<application>/main.go|`: managed bootstrap.
 - `cmd/<application>/policy.go`: scaffold-once transport policy.
-- `internal/platform/wiring/framework.gen.go`: typed Platform and Assembly.
-- `internal/platform/wiring/business.go`: scaffold-once composition root.
+- `cmd/<application>`: typed Platform and Assembly.
+- `cmd/<application>/business.go`: scaffold-once composition root.
 
 ## Business paths
 
-- `internal/modules/<module>/contract`: public Go interfaces and their
+- `modules/<module>/contract`: public Go interfaces and their
   Command/Query/Result types.
-- `internal/modules/<module>/module.go`: optional module constructor and
+- `modules/<module>/module.go`: optional module constructor and
   exported capabilities.
-- `internal/modules/<module>/internal/api/<surface>`: inbound adapters.
-- `internal/modules/<module>/internal/app`: use cases and simple ports.
-- `internal/modules/<module>/internal/domain`: real aggregates and policies.
-- `internal/modules/<module>/internal/repository`: outbound adapters.
+- `modules/<module>/internal/api/<surface>`: inbound adapters.
+- `modules/<module>/internal/app`: use cases and simple ports.
+- `modules/<module>/internal/domain`: real aggregates and policies.
+- `modules/<module>/internal/repository`: outbound adapters.
 
 Sibling modules import only a provider's `contract`. The extra `internal`
 directory lets the Go compiler reject implementation imports from siblings;

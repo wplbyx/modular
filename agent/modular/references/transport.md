@@ -29,7 +29,7 @@ Metadata and trace context; subscribers restore them before the handler. Kafka,
 Redis Stream, and RocketMQ support this. MQTT v3 and Redis Pub/Sub channels do
 not expose a header carrier and therefore start a new local request context.
 
-Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `internal/modules/<module>/internal/api/<surface>/event.go`, return a `MessageHandler`; Application wiring wraps it with `NewSubscriberEndpoint`.
+Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `modules/<module>/internal/api/<surface>/event.go`, return a `MessageHandler`; Application wiring wraps it with `NewSubscriberEndpoint`.
 
 Kafka needs no connect/disconnect. MQTT/Redis clients that implement `Connect(ctx)` / `Disconnect(ctx)` are auto-detected; pass explicit hooks only when overriding that behavior.
 

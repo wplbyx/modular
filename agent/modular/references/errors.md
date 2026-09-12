@@ -44,7 +44,7 @@ For a catalog scoped to one module, keep it with the Application and scan only t
 ```bash
 err_template_gen \
   --root . \
-  --packages ./internal/modules/user/... \
+  --packages ./modules/user/... \
   --out ./config/user_api/locales \
   --languages zh-CN,en-US
 ```
