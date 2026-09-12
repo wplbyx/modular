@@ -67,7 +67,7 @@ python3 .modular/tool/modular.py resource remove redis --apply
 Transports and Resources belong to the one Application. Removing either
 previews managed-file changes unless `--apply` is supplied.
 
-## Migration and maintenance
+## Maintenance
 
 ```bash
   --modular-version v0.4.1 --diff
@@ -76,9 +76,7 @@ python3 .modular/tool/modular.py sync
 python3 .modular/tool/modular.py prune --apply
 ```
 
-It preserves customized proto/Buf assets and already adapted `WireApplication`
 wiring outside modular management, rejects old modular protobuf generator
-output or executable references, and never combines multiple Processes
 automatically.
 
 All mutating commands accept `--dry-run` and `--diff`. `sync` replays managed

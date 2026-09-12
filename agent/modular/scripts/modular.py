@@ -257,7 +257,7 @@ def validate_architecture(architecture: dict[str, Any]) -> None:
     if not isinstance(architecture, dict):
         raise ScaffoldError("architecture root must be an object")
     if architecture.get("schema") != 2:
-        raise ScaffoldError(f"unsupported architecture schema {architecture.get('schema')!r}; run migrate v0.3-to-v0.4")
+        raise ScaffoldError(f"unsupported architecture schema {architecture.get('schema')!r}")
     required_root_fields = {"schema", "application", "modules"}
     if set(architecture) != required_root_fields:
         missing = sorted(required_root_fields - set(architecture))
@@ -1659,7 +1659,7 @@ def require_v4(manifest: dict[str, Any]) -> None:
     if is_modular_monolith(manifest):
         return
     if is_module_process(manifest):
-        raise ScaffoldError("project uses the v0.3 module/process model; run migrate v0.3-to-v0.4")
+        raise ScaffoldError("project uses the v0.3 module/process model")
     raise ScaffoldError("project uses a legacy model; migrate it with modular v0.3 before upgrading to v0.4")
 
 
@@ -1857,162 +1857,6 @@ def command_prune(args: argparse.Namespace) -> int:
     )
 
 
-def command_migrate_v4(args: argparse.Namespace) -> int:
-    project = Path(args.project_dir).resolve()
-    manifest = load_manifest(project)
-    if is_modular_monolith(manifest):
-        raise ScaffoldError("project already uses the v0.4 modular-monolith model")
-    if not is_module_process(manifest):
-        raise ScaffoldError("v0.4 migration requires a v0.3 module/process project")
-    version = resolve_modular_version(args.modular_version)
-    if parse_semver(version) < MIN_V4_MODULAR_VERSION:
-        raise ScaffoldError(f"v0.4 migration requires modular v0.4.0 or newer; got {version}")
-
-    previous = load_v3_architecture(project)
-    processes = previous["processes"]
-    if len(processes) != 1:
-        assignments = ", ".join(
-            f"{name}=[{', '.join(process.get('modules', []))}]"
-            for name, process in sorted(processes.items())
-        )
-        raise ScaffoldError(
-            "v0.4 supports one Application; consolidate the v0.3 processes or split them into separate projects "
-            f"before migration ({assignments})"
-        )
-    application_name, process = next(iter(processes.items()))
-    architecture = {
-        "schema": 2,
-        "application": {
-            "name": application_name,
-            "transports": list(process.get("transports", [])),
-            "ports": dict(process.get("ports", {})),
-            "resources": copy.deepcopy(process.get("resources", {})),
-        },
-        "modules": {
-            name: {"dependencies": list(definition.get("dependencies", []))}
-            for name, definition in previous["modules"].items()
-        },
-    }
-    validate_architecture(architecture)
-
-    generated_ports = sorted(
-        path.relative_to(project)
-        for path in project.rglob("*_modular.pb.go")
-        if ".git" not in path.parts and ".modular" not in path.parts
-    )
-    if generated_ports:
-        raise ScaffoldError(
-            "remove obsolete protoc-gen-go-modular output before migration: "
-            + ", ".join(path.as_posix() for path in generated_ports)
-        )
-
-    business_path = Path(f"cmd/{name}/modules.go")
-    business_record = manifest.get("files", {}).get(business_path.as_posix(), {})
-    business_target = project / business_path
-    business_customized = (
-        business_target.is_file()
-        and sha256_file(business_target) != business_record.get("sha256")
-    )
-    force_scaffold = {ARCHITECTURE_PATH, Path("go.mod")}
-    if business_customized:
-        business_content = business_target.read_text(encoding="utf-8")
-        if "func WireApplication(" not in business_content or "func WireBusiness(" in business_content:
-            raise ScaffoldError(
-                "business wiring was customized; migrate WireBusiness(process, platform) to "
-                "WireApplication(platform) before retrying"
-            )
-        manifest.get("files", {}).pop(business_path.as_posix(), None)
-        warn(f"preserving adapted {business_path} as user-owned v0.4 wiring")
-    else:
-        force_scaffold.add(business_path)
-
-    legacy_generator_references = []
-    reference_suffixes = {
-        ".go", ".mk", ".py", ".sh", ".bash", ".zsh",
-        ".yaml", ".yml", ".json", ".toml",
-    }
-    for path in project.rglob("*"):
-        if not path.is_file() or ".git" in path.parts or ".modular" in path.parts:
-            continue
-        unsupported_file = path.name != "Makefile" and path.suffix not in reference_suffixes
-        if path.name == "buf.gen.yaml" or unsupported_file:
-            continue
-        try:
-            content = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        if "protoc-gen-go-modular" in content:
-            legacy_generator_references.append(path.relative_to(project))
-    if legacy_generator_references:
-        raise ScaffoldError(
-            "remove obsolete protoc-gen-go-modular references before migration: "
-            + ", ".join(path.as_posix() for path in sorted(legacy_generator_references))
-        )
-
-    for path in [Path(".gitignore"), PROFILE_PATH]:
-        record = manifest.get("files", {}).get(path.as_posix(), {})
-        target = project / path
-        if target.is_file() and sha256_file(target) == record.get("sha256"):
-            force_scaffold.add(path)
-        elif target.is_file():
-            warn(f"preserving customized {path}")
-
-    force_delete: set[Path] = set()
-    for path in [Path("buf.yaml"), Path("buf.gen.yaml")]:
-        target = project / path
-        record = manifest.get("files", {}).get(path.as_posix(), {})
-        if not target.is_file():
-            manifest.get("files", {}).pop(path.as_posix(), None)
-            continue
-        content = target.read_text(encoding="utf-8")
-        unchanged = sha256_file(target) == record.get("sha256")
-        if path.name == "buf.gen.yaml" and "protoc-gen-go-modular" in content and not unchanged:
-            raise ScaffoldError(
-                "customized buf.gen.yaml still references protoc-gen-go-modular; remove that plugin before migration"
-            )
-        if unchanged:
-            force_delete.add(path)
-        else:
-            manifest.get("files", {}).pop(path.as_posix(), None)
-            warn(f"preserving customized {path} outside modular management")
-
-    go_mod_path = project / "go.mod"
-    go_mod = go_mod_path.read_text(encoding="utf-8")
-    updated_go_mod, replacements = re.subn(
-        r"(github\.com/wplbyx/modular\s+)v\d+\.\d+\.\d+(?:[-+][^\s]+)?",
-        rf"\g<1>{version}",
-        go_mod,
-        count=1,
-    )
-    if replacements != 1:
-        raise ScaffoldError("go.mod does not contain a concrete github.com/wplbyx/modular version")
-    go_mod_output = output(
-        "go.mod",
-        updated_go_mod,
-        owner=OWNER_SCAFFOLD,
-        template="project/go.mod",
-        provenance={"migration": "v0.3-to-v0.4", "version": version},
-    )
-
-    manifest["project"]["model"] = "modular-monolith"
-    manifest["project"]["name"] = application_name
-    manifest["project"]["modular_version"] = version
-    manifest["features"] = {}
-    dry_run = not args.apply or args.dry_run
-    return render_and_apply(
-        project,
-        manifest,
-        architecture=architecture,
-        dry_run=dry_run,
-        diff=args.diff,
-        allow_delete=True,
-        verify=verify_framework if args.apply and not args.dry_run and not args.diff else None,
-        overrides={Path("go.mod"): go_mod_output},
-        force_scaffold=force_scaffold,
-        force_delete=force_delete,
-    )
-
-
 def command_project_upgrade(args: argparse.Namespace) -> int:
     project = Path(args.project_dir).resolve()
     manifest = load_manifest(project)
@@ -2110,7 +1954,6 @@ COMMAND_PATHS = [
     "sync",
     "doctor",
     "prune",
-    "migrate v0.3-to-v0.4",
     "verify",
     "coverage",
     "self-check",
@@ -2191,14 +2034,6 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--apply", action="store_true")
     add_mutation_options(command)
     command.set_defaults(func=command_prune)
-
-    migrate = sub.add_parser("migrate", help="migrate generated framework structure")
-    migrate_sub = migrate.add_subparsers(dest="migrate_command", required=True)
-    command = migrate_sub.add_parser("v0.3-to-v0.4")
-    command.add_argument("--modular-version", default=None)
-    command.add_argument("--apply", action="store_true")
-    add_mutation_options(command)
-    command.set_defaults(func=command_migrate_v4)
 
     command = sub.add_parser("doctor", help="read-only structure and ownership checks")
     command.add_argument("--phase", choices=["framework", "contract", "complete"], default="framework")
