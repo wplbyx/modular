@@ -65,7 +65,9 @@ type DirectUploadOptions struct {
 
 // DirectDownloadOptions 配置直连下载 GET 预签名。
 type DirectDownloadOptions struct {
-	Expires time.Duration
+	Expires                    time.Duration
+	ResponseContentType        string // 响应覆盖：指定响应 Content-Type，如 image/png（浏览器 inline 预览）
+	ResponseContentDisposition string // 响应覆盖：指定响应 Content-Disposition，如 attachment; filename="a.png"
 }
 
 // DirectMultipartInitiateOptions 配置直传分片初始化预签名。

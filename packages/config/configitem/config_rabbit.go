@@ -6,6 +6,8 @@ import (
 
 //go:generate gomodifytags -file $GOFILE -add-tags mapstructure -remove-tags json,yaml,default -transform pascalcase -all -w --override --sort --quiet
 
+// RabbitMQ is configuration-only; this repository does not provide a RabbitMQ transport.
+// Deprecated: use configuration owned by the adapter actually deployed.
 type RabbitMQ struct {
 	Conn     RabbitConn     `mapstructure:"Conn"`     // 连接配置
 	Producer RabbitProducer `mapstructure:"Producer"` // 生产者/发布者配置

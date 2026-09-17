@@ -47,7 +47,7 @@ func errorMiddleware(handler *errs.Handler) gin.HandlerFunc {
 		}()
 
 		ctx.Next()
-		if len(ctx.Errors) == 0 {
+		if ctx.GetBool("modular.error.handled") || len(ctx.Errors) == 0 {
 			return
 		}
 		handleHTTPError(ctx, handler, ctx.Errors.Last().Err)
@@ -67,14 +67,19 @@ func defaultErrorMiddleware(logger log.Logger) gin.HandlerFunc {
 		}()
 
 		ctx.Next()
-		if len(ctx.Errors) == 0 || ctx.Writer.Written() {
+		if ctx.GetBool("modular.error.handled") || len(ctx.Errors) == 0 || ctx.Writer.Written() {
 			return
 		}
+		ctx.Set("modular.error.handled", true)
 		ctx.AbortWithStatus(errs.Code(ctx.Errors.Last().Err))
 	}
 }
 
 func handleHTTPError(ctx *gin.Context, handler *errs.Handler, err error) {
+	if ctx.GetBool("modular.error.handled") {
+		return
+	}
+	ctx.Set("modular.error.handled", true)
 	operation := ctx.FullPath()
 	if operation == "" {
 		operation = ctx.Request.URL.Path

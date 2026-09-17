@@ -2,12 +2,11 @@ package resilience
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/wplbyx/modular/packages/errs"
-	"github.com/wplbyx/modular/packages/log"
-	"go.uber.org/zap"
 )
 
 var (
@@ -56,21 +55,22 @@ type circuitBreaker struct {
 	successes     int
 	expiry        time.Time
 	halfOpenCalls int
+	generation    uint64
 }
 
 // NewCircuitBreaker 创建一个新的熔断器
 func NewCircuitBreaker(config CircuitBreakerConfig) CircuitBreaker {
 	// 使用默认配置填充未设置的字段
-	if config.FailureThreshold == 0 {
+	if config.FailureThreshold <= 0 {
 		config.FailureThreshold = DefaultCircuitBreakerConfig.FailureThreshold
 	}
-	if config.SuccessThreshold == 0 {
+	if config.SuccessThreshold <= 0 {
 		config.SuccessThreshold = DefaultCircuitBreakerConfig.SuccessThreshold
 	}
-	if config.Timeout == 0 {
+	if config.Timeout <= 0 {
 		config.Timeout = DefaultCircuitBreakerConfig.Timeout
 	}
-	if config.HalfOpenMaxCalls == 0 {
+	if config.HalfOpenMaxCalls <= 0 {
 		config.HalfOpenMaxCalls = DefaultCircuitBreakerConfig.HalfOpenMaxCalls
 	}
 	if config.Name == "" {
@@ -90,135 +90,80 @@ func (cb *circuitBreaker) Name() string {
 
 // State 返回当前熔断器状态
 func (cb *circuitBreaker) State() CircuitState {
-	cb.mutex.RLock()
-	defer cb.mutex.RUnlock()
-
-	return cb.currentState()
-}
-
-// currentState 返回当前熔断器状态（内部方法，不获取锁）
-func (cb *circuitBreaker) currentState() CircuitState {
-	if cb.state == StateOpen && time.Now().After(cb.expiry) {
-		return StateHalfOpen
-	}
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+	cb.advance()
 	return cb.state
 }
-
-// Execute 执行被保护的函数
-func (cb *circuitBreaker) Execute(ctx context.Context, fn func() error) error {
-	// 检查熔断器状态
-	if !cb.allowRequest() {
-		state := cb.State()
-		log.Info(ctx, "circuit breaker rejected request",
-			zap.String("circuit_breaker", cb.config.Name),
-			zap.String("state", state.String()),
-		)
-		// 返回带有上下文的错误
-		return errs.ServiceUnavailable(
-			circuitOpenMessage.With("name", cb.config.Name).With("state", state.String()),
-			errs.WithCause(ErrCircuitOpen),
-			errs.WithField("circuit_breaker", cb.config.Name),
-			errs.WithField("circuit_state", state.String()),
-		)
+func (cb *circuitBreaker) advance() {
+	if cb.state == StateOpen && !time.Now().Before(cb.expiry) {
+		cb.transition(StateHalfOpen)
 	}
+}
+func (cb *circuitBreaker) transition(state CircuitState) {
+	cb.state = state
+	cb.generation++
+	cb.failures = 0
+	cb.successes = 0
+	cb.halfOpenCalls = 0
+	if state == StateOpen {
+		cb.expiry = time.Now().Add(cb.config.Timeout)
+	}
+}
 
-	// 执行函数
-	err := fn()
-
-	// 根据执行结果更新熔断器状态
-	if err != nil {
-		cb.onFailure(ctx)
-		// 返回原始错误，熔断器上下文已记录
+// Execute 的完成结果仅更新放行时所属的状态代际。
+func (cb *circuitBreaker) Execute(ctx context.Context, fn func() error) (err error) {
+	if err = ctx.Err(); err != nil {
 		return err
 	}
-
-	cb.onSuccess(ctx)
-	return nil
-}
-
-// allowRequest 判断是否允许请求通过
-func (cb *circuitBreaker) allowRequest() bool {
+	if fn == nil {
+		return errors.New("circuit breaker function is nil")
+	}
 	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
-	state := cb.currentState()
-
-	switch state {
-	case StateClosed:
-		return true
-	case StateOpen:
-		return false
-	case StateHalfOpen:
-		// 半开状态下限制并发调用数
-		if cb.halfOpenCalls >= cb.config.HalfOpenMaxCalls {
-			return false
-		}
+	cb.advance()
+	if cb.state == StateOpen {
+		cb.mutex.Unlock()
+		return ErrCircuitOpen
+	}
+	if cb.state == StateHalfOpen && cb.halfOpenCalls >= cb.config.HalfOpenMaxCalls {
+		cb.mutex.Unlock()
+		return ErrTooManyCalls
+	}
+	generation := cb.generation
+	if cb.state == StateHalfOpen {
 		cb.halfOpenCalls++
-		return true
-	default:
-		return false
 	}
-}
-
-// onSuccess 处理成功的请求
-func (cb *circuitBreaker) onSuccess(ctx context.Context) {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
-	state := cb.currentState()
-
-	switch state {
-	case StateClosed:
-		// 关闭状态下重置失败计数
-		cb.failures = 0
-	case StateHalfOpen:
-		// 半开状态下增加成功计数
-		cb.successes++
-		if cb.halfOpenCalls > 0 {
-			cb.halfOpenCalls--
+	cb.mutex.Unlock()
+	defer func() {
+		p := recover()
+		cb.mutex.Lock()
+		cb.advance()
+		if generation == cb.generation {
+			if cb.state == StateHalfOpen {
+				cb.halfOpenCalls--
+			}
+			if err != nil || p != nil {
+				if cb.state == StateHalfOpen {
+					cb.transition(StateOpen)
+				} else {
+					cb.failures++
+					if cb.failures >= cb.config.FailureThreshold {
+						cb.transition(StateOpen)
+					}
+				}
+			} else if cb.state == StateHalfOpen {
+				cb.successes++
+				if cb.successes >= cb.config.SuccessThreshold {
+					cb.transition(StateClosed)
+				}
+			} else {
+				cb.failures = 0
+			}
 		}
-		// 如果连续成功次数达到阈值，关闭熔断器
-		if cb.successes >= cb.config.SuccessThreshold {
-			log.Info(ctx, "circuit breaker closed",
-				zap.String("circuit_breaker", cb.config.Name),
-				zap.Int("successes", cb.successes),
-			)
-			cb.state = StateClosed
-			cb.failures = 0
-			cb.successes = 0
-			cb.halfOpenCalls = 0
+		cb.mutex.Unlock()
+		if p != nil {
+			panic(p)
 		}
-	}
-}
-
-// onFailure 处理失败的请求
-func (cb *circuitBreaker) onFailure(ctx context.Context) {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
-	state := cb.currentState()
-
-	switch state {
-	case StateClosed:
-		// 关闭状态下增加失败计数
-		cb.failures++
-		// 如果失败次数超过阈值，打开熔断器
-		if cb.failures >= cb.config.FailureThreshold {
-			log.Info(ctx, "circuit breaker opened",
-				zap.String("circuit_breaker", cb.config.Name),
-				zap.Int("failures", cb.failures),
-			)
-			cb.state = StateOpen
-			cb.expiry = time.Now().Add(cb.config.Timeout)
-		}
-	case StateHalfOpen:
-		// 半开状态下失败，立即打开熔断器
-		log.Info(ctx, "circuit breaker opened after half-open failure", zap.String("circuit_breaker", cb.config.Name))
-		cb.state = StateOpen
-		cb.expiry = time.Now().Add(cb.config.Timeout)
-		if cb.halfOpenCalls > 0 {
-			cb.halfOpenCalls--
-		}
-		cb.successes = 0
-	}
+	}()
+	return fn()
 }

@@ -7,7 +7,7 @@ import (
 )
 
 // WriteThrough 实现 Write-Through（写穿透）模式。
-// 写：更新缓存和源在同一事务中完成
+// 写：先更新源，再更新缓存；缓存失败不回滚已经成功的源写入
 // 读：查缓存 -> 未命中则从源读取 -> 回写缓存
 type WriteThrough struct {
 	cache KVCache
@@ -42,7 +42,7 @@ func (wt *WriteThrough) Get(ctx context.Context, key string, loader func() (stri
 	return data, nil
 }
 
-// Set 原子地写入缓存和源
+// Set 依次写入源和缓存，不提供跨存储原子性
 func (wt *WriteThrough) Set(ctx context.Context, key string, value string, writer func() error) error {
 	if err := writer(); err != nil {
 		return err

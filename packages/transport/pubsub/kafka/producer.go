@@ -45,7 +45,6 @@ func NewProducer(opts ...ProducerOption) (*Producer, error) {
 		topic: o.Topic,
 		writer: &kafka.Writer{
 			Addr:                   addr,
-			Topic:                  o.Topic,
 			Balancer:               &kafka.Hash{},
 			Async:                  false,
 			BatchSize:              o.BatchSize,

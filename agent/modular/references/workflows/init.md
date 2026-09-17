@@ -9,6 +9,9 @@ Use for a new modular monolith or Business Module. Read [commands](../commands.m
    dependency without a local replace.
 3. Review the dry-run/diff and apply.
 4. Add Business Modules named for bounded contexts with explicit dependencies.
+   The CLI creates a typed `New(Config, Dependencies) (*Module, error)` shell
+   in each module's bootstrap. Define its real dependencies and capabilities
+   only when use cases are known; cmd connects modules, bootstrap assembles internals.
 5. Add Application-owned Resources only when a real use case needs them.
 6. Run `make scaffold-check`.
 

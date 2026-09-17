@@ -6,6 +6,7 @@ import (
 
 // ConsumerOptions configures a RocketMQ PushConsumer (the Push delivery model).
 type ConsumerOptions struct {
+	CloseTimeout time.Duration
 	// Endpoint is the RocketMQ 5.x gRPC endpoint. Required.
 	Endpoint string
 
@@ -49,7 +50,7 @@ type ConsumerOption func(*ConsumerOptions)
 
 // DefaultConsumerOptions returns ConsumerOptions with sensible defaults.
 func DefaultConsumerOptions() *ConsumerOptions {
-	return &ConsumerOptions{}
+	return &ConsumerOptions{CloseTimeout: 30 * time.Second}
 }
 
 // WithConsumerEndpoint sets the RocketMQ 5.x gRPC endpoint.
@@ -116,4 +117,9 @@ func WithConsumerThreads(n int32) ConsumerOption {
 	return func(o *ConsumerOptions) {
 		o.Threads = n
 	}
+}
+
+// WithConsumerCloseTimeout sets the default graceful shutdown budget.
+func WithConsumerCloseTimeout(d time.Duration) ConsumerOption {
+	return func(o *ConsumerOptions) { o.CloseTimeout = d }
 }

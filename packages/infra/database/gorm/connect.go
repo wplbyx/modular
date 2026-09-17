@@ -26,7 +26,7 @@ func NewGormConnection(
 		return nil, errors.New("gorm dialector is nil")
 	}
 
-	db, err := gormlib.Open(dialector, &gormlib.Config{SkipDefaultTransaction: true})
+	db, err := gormlib.Open(dialector, &gormlib.Config{SkipDefaultTransaction: true, DisableAutomaticPing: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open gorm connection: %w", err)
 	}

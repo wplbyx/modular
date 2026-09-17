@@ -1,45 +1,59 @@
 # Infrastructure Resources
 
-Constructors and `core.Resource` wiring for the `resource` command. Source: `packages/infra/`.
+Read when adding an Application Resource or a module-owned adapter. Source:
+`packages/infra`, `packages/eventbus`, `packages/telemetry`, and
+`packages/idgen`.
 
-## Managed resources
+## Shared Resources
 
-Bun, GORM, MongoDB, Redis, and Storage use `core.ManagedResource[T]`. Each result implements:
+The project creates shared Resources in `cmd/<application>/resources.go` by
+calling modular library constructors. Do not add a project-level `platform`,
+`shared`, or `infrastructure` package merely to wrap those constructors.
+`cmd/<application>/modules.go` passes the necessary providers to each module's
+Dependencies. Module bootstrap constructs its private infrastructure adapters;
+see [layering](layering.md) for the two assembly interfaces.
+
+Bun, GORM, MongoDB, Redis, Storage, and ID generators use
+`core.ManagedResource[T]`. Each result implements:
 
 - `core.Resource` for Application lifecycle ownership.
-- `core.Provider[T]` for typed repository injection.
-- `health.Checker` structurally through `Name` and `Check`.
+- `core.Provider[T]` for typed module adapter injection.
+- `health.Checker` structurally through `Name` and `Check` when applicable.
 
-Do not call `Value()` before Application has completed Setup. Store the Provider in the repository and resolve it when handling a use case. There are no DB, Mongo, Redis, Storage, or HTTP-client package globals.
+Retain the Provider in a repository and call `Value()` only while handling work
+after Application Setup. There are no DB, Mongo, Redis, Storage, HTTP-client, or
+ID-generator package globals.
 
-## Database
+## Database and migrations
 
-SQL uses `configitem.Database` with an explicit `DSN` and pool settings. Dialect selection belongs in cmd.
+SQL uses `configitem.Database` with an explicit DSN and pool settings. Dialect
+selection belongs in `cmd/<application>/resources.go`.
 
 - Bun/PostgreSQL: `bun.NewResource(&cfg.Database)`.
 - GORM/PostgreSQL: `gorm/postgres.NewResource(&cfg.Database)`.
 - GORM/MySQL: `gorm/mysql.NewResource(&cfg.Database)`.
 - GORM/ClickHouse: `gorm/clickhouse.NewResource(&cfg.Database)`.
-- GORM/SQLite: `gorm/sqlite.NewResource(&cfg.Database)`; this is a pure Go driver.
-- MongoDB: `mongo.NewResource(&cfg.Mongo)` using the separate `configitem.Mongo` type.
+- GORM/SQLite: `gorm/sqlite.NewResource(&cfg.Database)`; this is pure Go.
+- MongoDB: `mongo.NewResource(&cfg.Mongo)` using `configitem.Mongo`.
 
-The project-local CLI form is:
+Each module's GORM adapter may expose `Migrate(ctx) error`. Module bootstrap exposes
+those callbacks through its assembly result; cmd aggregates them into one `core.FuncResource`
+ordered immediately after the database. Do not put project migrations in
+`.modular/architecture.yaml` or call them before the DB Resource is set up.
 
-```bash
-python .modular/tool/modular.py resource add db \
-  --driver gorm --dialect postgres
-```
+## Other resources
 
-Bun supports PostgreSQL only. Migrations use `bun.NewMigrationTool(db, migrationsFS)` with an explicit DB. Startup migrations or warmups can be modeled with `core.NewFuncResource` and the same typed Provider.
+- Redis: `redis.NewResource(&cfg.Redis)`.
+- Storage: `storageresource.New(&cfg.Storage)` from
+  `packages/infra/storage/resource`; only disk and OSS v2 are supported.
+- EventBus: one process-local `eventbus.Bus` Resource, injected into publishers
+  and subscriber adapters.
+- UUIDv7: `idresource.NewUUIDv7(name)` supplies
+  `core.Provider[idgen.Generator]` without coordination. Add it with
+  `resource add idgen --driver uuidv7`.
+- Telemetry: `telemetry.NewOpenTelemetry` is registered once as a Resource and
+  normally is not injected into repositories.
 
-## Redis
-
-Use `redis.NewResource(&cfg.Redis)`. It provides `redis.UniversalClient`, pings during Setup and readiness checks, and closes during Application shutdown.
-
-## Storage
-
-Use `storageresource.New(&cfg.Storage)` from `packages/infra/storage/resource`. This composition package selects only disk or OSS and avoids the root-package import cycle. OSS uses the v2 SDK. Repositories may depend on `core.Provider[storage.Storage]` or expose a narrower storage interface internally.
-
-## Telemetry
-
-`telemetry.NewOpenTelemetry` already implements `core.Resource`. Construct it with the Application name/version, register it once with Application, and do not pass it to repositories unless they genuinely need that dependency.
+EventBus is best-effort process-local notification. Publishing after a database
+commit does not make delivery durable; use an explicit Outbox when external
+delivery guarantees are part of the requirements.

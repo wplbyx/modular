@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	"google.golang.org/grpc/resolver"
@@ -42,6 +44,10 @@ type grpcResolverBuilder struct {
 func (b *grpcResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	if b.discovery == nil {
+		cancel()
+		return nil, fmt.Errorf("discovery is nil")
+	}
 	serviceName := extractServiceName(target)
 	if serviceName == "" {
 		cancel()
@@ -99,10 +105,13 @@ func (r *gRPCResolver) watch() {
 func (r *gRPCResolver) update(nodes []*core.ServiceNode) {
 	var addresses []resolver.Address
 	for _, svc := range nodes {
+		if svc == nil {
+			continue
+		}
 		for _, t := range svc.Transports {
 			if strings.EqualFold(t.Protocol, "grpc") {
 				addresses = append(addresses, resolver.Address{
-					Addr:       fmt.Sprintf("%s:%d", t.Address, t.Port),
+					Addr:       net.JoinHostPort(t.Address, strconv.Itoa(t.Port)),
 					ServerName: svc.Name,
 					Metadata:   createMetadata(svc),
 				})
@@ -110,21 +119,17 @@ func (r *gRPCResolver) update(nodes []*core.ServiceNode) {
 		}
 	}
 
-	if len(addresses) == 0 {
-		r.cc.ReportError(fmt.Errorf("no available addresses for service: %s", r.service))
-		return
+	if err := r.cc.UpdateState(resolver.State{Addresses: addresses}); err != nil {
+		r.cc.ReportError(err)
 	}
 
-	r.cc.UpdateState(resolver.State{
-		Addresses: addresses,
-	})
 }
 
 func extractServiceName(target resolver.Target) string {
 	if target.URL.Host != "" {
 		return target.URL.Host
 	}
-	return target.URL.Path
+	return target.Endpoint()
 }
 
 func createMetadata(svc *core.ServiceNode) *json.RawMessage {

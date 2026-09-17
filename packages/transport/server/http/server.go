@@ -131,6 +131,12 @@ func NewServer(cfg *configitem.HTTP, opts ...ServerOption) (*Server, error) {
 	if srv.policy.Protection() != nil {
 		srv.engine.Use(mw.Protection(srv.policy))
 	}
+	// Render handler errors inside accounting; the outer boundary handles admission/metadata failures.
+	if srv.errorHandler != nil {
+		srv.engine.Use(errorMiddleware(srv.errorHandler))
+	} else {
+		srv.engine.Use(defaultErrorMiddleware(srv.logger))
+	}
 	for _, m := range srv.middlewares {
 		srv.engine.Use(m)
 	}

@@ -54,8 +54,8 @@ func NewIdempotentLock(client goredis.UniversalClient, opts ...IdempotentOption)
 	for _, opt := range opts {
 		opt(lock)
 	}
-	if lock.ttl <= 0 {
-		return nil, errors.New("idempotent lock ttl must be positive")
+	if lock.ttl < 300*time.Millisecond {
+		return nil, errors.New("idempotent lock ttl must be at least 300ms")
 	}
 	if lock.prefix == "" {
 		return nil, errors.New("idempotent lock prefix is empty")
@@ -96,68 +96,58 @@ func (l *IdempotentLock) Run(ctx context.Context, key string, fn func(context.Co
 		return fmt.Errorf("idempotent lock %q is already held", key)
 	}
 
-	lockedCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
+	lockedCtx, cancel := context.WithCancelCause(ctx)
+	renewalDone := make(chan struct{})
+	go func() { defer close(renewalDone); l.renewLoop(lockedCtx, lockKey, lockValue, cancel) }()
 	defer func() {
 		if p := recover(); p != nil {
 			err = errors.Join(err, fmt.Errorf("idempotent callback panic: %v", p))
 		}
-		releaseErr := l.release(context.Background(), lockKey, lockValue)
-		if releaseErr != nil {
-			err = errors.Join(err, releaseErr)
+		cancel(context.Canceled)
+		<-renewalDone
+		if cause := context.Cause(lockedCtx); cause != nil && !errors.Is(cause, context.Canceled) {
+			err = errors.Join(err, cause)
 		}
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer releaseCancel()
+		err = errors.Join(err, l.release(releaseCtx, lockKey, lockValue))
 	}()
-
-	renewErr := make(chan error, 1)
-	go l.renewLoop(lockedCtx, lockKey, lockValue, renewErr)
-
 	checkAndRenew := func(checkCtx context.Context) (bool, error) {
-		return l.renew(checkCtx, lockKey, lockValue)
+		ok, renewErr := l.renew(checkCtx, lockKey, lockValue)
+		if renewErr != nil {
+			cancel(fmt.Errorf("renew idempotent lock: %w", renewErr))
+		} else if !ok {
+			cancel(errors.New("idempotent lock ownership lost"))
+		}
+		return ok, renewErr
 	}
-
-	err = fn(lockedCtx, checkAndRenew)
-	cancel()
-
-	select {
-	case renewalErr := <-renewErr:
-		err = errors.Join(err, renewalErr)
-	default:
-	}
-	return err
+	return fn(lockedCtx, checkAndRenew)
 }
 
-func (l *IdempotentLock) renewLoop(ctx context.Context, key, value string, errCh chan<- error) {
+func (l *IdempotentLock) renewLoop(ctx context.Context, key, value string, cancel context.CancelCauseFunc) {
 	interval := l.ttl / 3
-	if interval < 100*time.Millisecond {
-		interval = 100 * time.Millisecond
-	}
-
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			ok, err := l.renew(ctx, key, value)
+			renewCtx, stop := context.WithTimeout(ctx, interval)
+			ok, err := l.renew(renewCtx, key, value)
+			stop()
+			if ctx.Err() != nil {
+				return
+			}
 			if err != nil {
-				sendRenewErr(errCh, fmt.Errorf("renew idempotent lock: %w", err))
+				cancel(fmt.Errorf("renew idempotent lock: %w", err))
 				return
 			}
 			if !ok {
-				sendRenewErr(errCh, errors.New("idempotent lock ownership lost"))
+				cancel(errors.New("idempotent lock ownership lost"))
 				return
 			}
 		}
-	}
-}
-
-func sendRenewErr(errCh chan<- error, err error) {
-	select {
-	case errCh <- err:
-	default:
 	}
 }
 

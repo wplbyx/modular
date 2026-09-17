@@ -52,23 +52,30 @@ Run-triggered shutdown uses one timeout budget, defaulting to 10 seconds or
 `configitem.Application.ShutdownTimeout`. Unregister happens before server
 shutdown so discovery stops directing new work before connections drain.
 
-## Application assembly
+## Application composition root
 
-Generated bootstrap order is fixed:
+The `main` package in `cmd/<application>` performs one visible bootstrap:
 
-1. `config.NewRootCommand` loads the Application config.
-2. `newLoggerManager` creates and installs the context-required logger.
-3. `newTransportPolicy` and `health.NewManager` create Application policy/state.
-4. cmd constructs shared Resources and a typed `wiring.Platform`.
-5. `WireApplication(platform)` returns the assembled routes, resources,
-   endpoints, checks, and optional Registrar.
-6. cmd builds one HTTP and/or one gRPC server and registers the Assembly.
-7. cmd creates `core.ProcessIdentity`, `core.ServiceNode`, and Application.
+1. `main.go` creates a signal context and `config.NewRootCommand[Config]`.
+2. The run callback creates `LoggerManager`, installs its logger, loads the one
+   error catalog, and creates the shared transport policy and health manager.
+3. `resources.go` constructs shared Resources. Their order places the database
+   before the aggregated module-migration Resource and dependent Resources.
+4. `modules.go` calls module constructors in DAG order, passing configuration,
+   necessary Providers, and provider contracts. Each module bootstrap constructs
+   its private adapters and use cases. Cmd collects routes, subscriptions, checks,
+   migrations, and any additional endpoints from their typed assembly results.
+5. cmd constructs one server per enabled protocol, mounts module registrations,
+   then builds `ProcessIdentity`, `ServiceNode`, and `app.Application`.
 
-Application does not own the logger. The composition root closes it after Run.
-HTTP readiness should use `httpserver.WithHealthManager`; gRPC exposes its
-standard health service. Build ServiceNode transports from each server's
-`Transport()` so pre-bound `Port=0` values are preserved.
+Application does not own the logger; cmd closes it after Run. HTTP readiness
+uses `httpserver.WithHealthManager`; gRPC exposes its standard health service.
+Build ServiceNode transports from constructed servers so pre-bound `Port=0`
+values are preserved.
+
+Module construction only assembles objects; migration, message consumption,
+and background tasks run through Application-managed lifecycle. See
+[layering](layering.md) for the distinction between assembly and business contracts.
 
 Use `signal.NotifyContext` for `SIGINT`/`SIGTERM`. HTTP and gRPC also apply their
 own graceful-stop timeouts before forced closure.

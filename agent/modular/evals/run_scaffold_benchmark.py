@@ -185,7 +185,7 @@ def common_facts(project: Path) -> dict[str, bool | int | str]:
     frameworks = list((project / "cmd").glob("*/main.go")) if (project / "cmd").is_dir() else []
     framework_text = "\n".join(path.read_text(encoding="utf-8") for path in frameworks)
     bootstrap_fragments = [
-        "newLoggerManager(ctx, &cfg.Logging)",
+        "modularlog.NewLoggerManager(&cfg.Logging)",
         "modularlog.SetDefault(loggerManager.Logger())",
         "newTransportPolicy(cfg.Application.Name, loggerManager.Logger())",
         "app.NewApplication(ctx, &cfg.Application, loggerManager.Logger(), options...)",

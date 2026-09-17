@@ -44,6 +44,7 @@ func (c *Registry) Register(ctx context.Context, node *core.ServiceNode) error {
 		return fmt.Errorf("service node cannot be nil")
 	}
 
+	var registered []string
 	for _, t := range node.Transports {
 		reg := &api.AgentServiceRegistration{
 			ID:      transportID(node.ID, t),
@@ -60,8 +61,15 @@ func (c *Registry) Register(ctx context.Context, node *core.ServiceNode) error {
 
 		opts := api.ServiceRegisterOpts{}.WithContext(ctx)
 		if err := c.client.Agent().ServiceRegisterOpts(reg, opts); err != nil {
-			return fmt.Errorf("register transport %s: %w", t.Protocol, err)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			var cleanupErr error
+			for _, id := range registered {
+				cleanupErr = errors.Join(cleanupErr, c.client.Agent().ServiceDeregisterOpts(id, (&api.QueryOptions{}).WithContext(cleanupCtx)))
+			}
+			cancel()
+			return errors.Join(fmt.Errorf("register transport %s: %w", t.Protocol, err), cleanupErr)
 		}
+		registered = append(registered, reg.ID)
 	}
 
 	return nil

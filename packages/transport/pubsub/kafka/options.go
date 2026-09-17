@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"context"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -59,6 +60,7 @@ func WithBatchTimeout(timeout time.Duration) ProducerOption {
 
 // ConsumerOptions contains options for Kafka consumer
 type ConsumerOptions struct {
+	Reader         ConsumerReader
 	Brokers        []string
 	GroupID        string
 	Topic          string
@@ -140,4 +142,16 @@ func WithConsumerDLQ(topic string, producer *ProducerOptions) ConsumerOption {
 		o.DLQTopic = topic
 		o.DLQProducer = producer
 	}
+}
+
+// ConsumerReader is the Kafka SDK boundary; implementations must honor context cancellation.
+type ConsumerReader interface {
+	FetchMessage(context.Context) (kafka.Message, error)
+	CommitMessages(context.Context, ...kafka.Message) error
+	Close() error
+}
+
+// WithConsumerReader injects a reader owned and closed by this consumer.
+func WithConsumerReader(reader ConsumerReader) ConsumerOption {
+	return func(o *ConsumerOptions) { o.Reader = reader }
 }

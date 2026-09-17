@@ -4,210 +4,247 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
 )
 
-// WriteBehind 实现 Write-Behind（异步写回）模式。
-// 写：立即更新缓存 -> 异步写入源
-// 读：查缓存 -> 未命中则从源读取 -> 回写缓存
+// WriteBehind owns a bounded, process-local asynchronous write queue.
+// Set reports admission, not durability. FlushContext reports failures up to its admission watermark.
 type WriteBehind struct {
 	cache         KVCache
 	ttl           time.Duration
 	queue         chan writeTask
-	wg            sync.WaitGroup
-	pending       sync.WaitGroup
-	stopCh        chan struct{}
-	mu            sync.RWMutex
+	slots         chan struct{}
+	keys          [64]chan struct{}
+	mu            sync.Mutex
 	stopped       bool
+	producers     sync.WaitGroup
+	accepted      uint64
+	completed     uint64
+	failed        uint64
+	firstFailure  uint64
+	firstErr      error
+	changed       chan struct{}
+	done          chan struct{}
+	taskCtx       context.Context
+	cancel        context.CancelFunc
+	timeout       time.Duration
 	defaultWriter WriteBehindWriter
 }
-
 type writeTask struct {
 	ctx    context.Context
-	key    string
-	value  string
+	seq    uint64
 	writer func(context.Context) error
 }
-
-type WriteBehindWriter func(ctx context.Context, key string, value string) error
+type WriteBehindWriter func(context.Context, string, string) error
 type WriteBehindOption func(*WriteBehind)
-
-func WithWriteBehindWriter(writer WriteBehindWriter) WriteBehindOption {
-	return func(wb *WriteBehind) {
-		wb.defaultWriter = writer
-	}
+type WriteBehindStats struct {
+	Accepted, Completed, Failed uint64
+	Queued                      int
+	Closed                      bool
 }
 
-// NewWriteBehind 创建 WriteBehind 实例
-func NewWriteBehind(c KVCache, ttl time.Duration, queueSize int, opts ...WriteBehindOption) *WriteBehind {
+func WithWriteBehindWriter(writer WriteBehindWriter) WriteBehindOption {
+	return func(w *WriteBehind) { w.defaultWriter = writer }
+}
+func WithWriteBehindTimeout(timeout time.Duration) WriteBehindOption {
+	return func(w *WriteBehind) {
+		if timeout > 0 {
+			w.timeout = timeout
+		}
+	}
+}
+func NewWriteBehind(cache KVCache, ttl time.Duration, queueSize int, opts ...WriteBehindOption) *WriteBehind {
 	if queueSize <= 0 {
 		queueSize = 1
 	}
-	wb := &WriteBehind{
-		cache:  c,
-		ttl:    ttl,
-		queue:  make(chan writeTask, queueSize),
-		stopCh: make(chan struct{}),
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &WriteBehind{cache: cache, ttl: ttl, queue: make(chan writeTask, queueSize), slots: make(chan struct{}, queueSize), changed: make(chan struct{}), done: make(chan struct{}), taskCtx: ctx, cancel: cancel, timeout: 30 * time.Second}
+	for i := range w.keys {
+		w.keys[i] = make(chan struct{}, 1)
 	}
 	for _, opt := range opts {
-		opt(wb)
+		if opt != nil {
+			opt(w)
+		}
 	}
-
-	wb.wg.Add(1)
-	go wb.processQueue()
-
-	return wb
+	go w.processQueue()
+	return w
 }
-
-// Get retrieves data using write-behind pattern
-func (wb *WriteBehind) Get(ctx context.Context, key string, loader func() (string, error)) (string, error) {
-	val, err := wb.cache.Get(ctx, key)
+func (w *WriteBehind) Get(ctx context.Context, key string, loader func() (string, error)) (string, error) {
+	value, err := w.cache.Get(ctx, key)
 	if err == nil {
-		return val, nil
+		return value, nil
 	}
 	if !errors.Is(err, ErrCacheMiss) {
 		return "", err
 	}
-
 	data, err := loader()
 	if err != nil {
 		return "", err
 	}
-
-	// 缓存回写失败不影响读结果，显式忽略
-	_ = wb.cache.Set(ctx, key, data, wb.ttl)
+	_ = w.cache.Set(ctx, key, data, w.ttl)
 	return data, nil
 }
-
-// Set updates cache immediately and queues DB write
-func (wb *WriteBehind) Set(ctx context.Context, key string, value string) error {
-	if wb.defaultWriter == nil {
+func (w *WriteBehind) Set(ctx context.Context, key, value string) error {
+	if w.defaultWriter == nil {
 		return errors.New("write-behind default writer is nil")
 	}
-	if err := wb.cache.Set(ctx, key, value, wb.ttl); err != nil {
-		return err
-	}
-
-	return wb.enqueue(writeTask{
-		ctx:   ctx,
-		key:   key,
-		value: value,
-		writer: func(taskCtx context.Context) error {
-			return wb.defaultWriter(taskCtx, key, value)
-		},
-	})
+	return w.set(ctx, key, value, func(ctx context.Context) error { return w.defaultWriter(ctx, key, value) })
 }
 
-// SetWithWriter updates cache and queues custom writer
-func (wb *WriteBehind) SetWithWriter(ctx context.Context, key string, value string, writer func() error) error {
+// SetWithWriter preserves the legacy callback; callbacks must finish to permit draining.
+func (w *WriteBehind) SetWithWriter(ctx context.Context, key, value string, writer func() error) error {
 	if writer == nil {
 		return errors.New("write-behind writer is nil")
 	}
-	if err := wb.cache.Set(ctx, key, value, wb.ttl); err != nil {
+	return w.set(ctx, key, value, func(context.Context) error { return writer() })
+}
+func (w *WriteBehind) set(ctx context.Context, key, value string, writer func(context.Context) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	return wb.enqueue(writeTask{
-		ctx:   ctx,
-		key:   key,
-		value: value,
-		writer: func(context.Context) error {
-			return writer()
-		},
-	})
-}
-
-func (wb *WriteBehind) enqueue(task writeTask) error {
-	if task.ctx == nil {
-		task.ctx = context.Background()
-	}
-
-	wb.mu.RLock()
-	stopped := wb.stopped
-	wb.mu.RUnlock()
-	if stopped {
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
 		return errors.New("write-behind is stopped")
 	}
-
-	wb.pending.Add(1)
 	select {
-	case wb.queue <- task:
-		return nil
-	case <-task.ctx.Done():
-		wb.pending.Done()
-		return task.ctx.Err()
+	case w.slots <- struct{}{}:
 	default:
-		wb.pending.Done()
-		return fmt.Errorf("write-behind queue is full")
+		w.mu.Unlock()
+		return errors.New("write-behind queue is full")
 	}
-}
-
-func (wb *WriteBehind) processQueue() {
-	defer wb.wg.Done()
-
-	for {
-		select {
-		case <-wb.stopCh:
-			wb.drainQueue()
-			return
-		case task := <-wb.queue:
-			wb.runTask(task)
+	w.producers.Add(1)
+	w.mu.Unlock()
+	defer w.producers.Done()
+	queued := false
+	defer func() {
+		if !queued {
+			<-w.slots
 		}
-	}
-}
-
-func (wb *WriteBehind) drainQueue() {
-	for {
-		select {
-		case task := <-wb.queue:
-			wb.runTask(task)
-		default:
-			return
-		}
-	}
-}
-
-func (wb *WriteBehind) runTask(task writeTask) {
-	defer wb.pending.Done()
-	if task.writer == nil {
-		return
-	}
-	_ = task.writer(task.ctx)
-}
-
-// Stop stops the background processor
-func (wb *WriteBehind) Stop() {
-	wb.mu.Lock()
-	defer wb.mu.Unlock()
-
-	if wb.stopped {
-		return
-	}
-
-	wb.stopped = true
-	close(wb.stopCh)
-	wb.wg.Wait()
-}
-
-// Flush flushes remaining items in queue
-func (wb *WriteBehind) Flush(timeout time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	_ = wb.FlushContext(ctx)
-}
-
-func (wb *WriteBehind) FlushContext(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		wb.pending.Wait()
-		close(done)
 	}()
-
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	lock := w.keys[h.Sum32()%uint32(len(w.keys))]
 	select {
+	case lock <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-done:
-		return nil
+	case <-w.taskCtx.Done():
+		return w.taskCtx.Err()
 	}
+	defer func() { <-lock }()
+	if err := w.cache.Set(ctx, key, value, w.ttl); err != nil {
+		return err
+	}
+	// Reservation guarantees queue space. Sequence assignment and insertion are atomic to Flush.
+	w.mu.Lock()
+	w.accepted++
+	w.queue <- writeTask{ctx: context.WithoutCancel(ctx), seq: w.accepted, writer: writer}
+	queued = true
+	w.mu.Unlock()
+	return nil
+}
+func (w *WriteBehind) processQueue() {
+	defer close(w.done)
+	defer w.cancel()
+	for task := range w.queue {
+		<-w.slots
+		ctx, cancel := context.WithTimeout(task.ctx, w.timeout)
+		stop := context.AfterFunc(w.taskCtx, cancel)
+		if w.taskCtx.Err() != nil {
+			cancel()
+		}
+		err := func() (err error) {
+			defer func() {
+				if p := recover(); p != nil {
+					err = fmt.Errorf("write-behind writer panic: %v", p)
+				}
+			}()
+			if err = ctx.Err(); err != nil {
+				return err
+			}
+			return task.writer(ctx)
+		}()
+		stop()
+		cancel()
+		w.mu.Lock()
+		w.completed = task.seq
+		if err != nil {
+			w.failed++
+			if w.firstFailure == 0 {
+				w.firstFailure = task.seq
+				w.firstErr = err
+			}
+		}
+		close(w.changed)
+		w.changed = make(chan struct{})
+		w.mu.Unlock()
+	}
+}
+
+// Close stops admission and drains accepted work. Expiry cancels cooperative writers.
+func (w *WriteBehind) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	if !w.stopped {
+		w.stopped = true
+		go func() { w.producers.Wait(); close(w.queue) }()
+	}
+	w.mu.Unlock()
+	select {
+	case <-w.done:
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.failure(w.accepted)
+	case <-ctx.Done():
+		w.cancel()
+		return ctx.Err()
+	}
+}
+
+// Stop is the legacy unbounded drain. Use Close to obtain errors and set a budget.
+func (w *WriteBehind) Stop() { _ = w.Close(context.Background()) }
+
+// Flush is retained for compatibility; FlushContext also returns failures.
+func (w *WriteBehind) Flush(timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_ = w.FlushContext(ctx)
+}
+func (w *WriteBehind) FlushContext(ctx context.Context) error {
+	w.mu.Lock()
+	target := w.accepted
+	for w.completed < target {
+		changed := w.changed
+		w.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		w.mu.Lock()
+	}
+	defer w.mu.Unlock()
+	return w.failure(target)
+}
+
+// Store only the first failure and a total count, keeping diagnostics bounded.
+func (w *WriteBehind) failure(target uint64) error {
+	if w.firstFailure != 0 && w.firstFailure <= target {
+		return fmt.Errorf("write-behind failed at sequence %d (flush watermark %d): %w", w.firstFailure, target, w.firstErr)
+	}
+	return nil
+}
+func (w *WriteBehind) Stats() WriteBehindStats {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return WriteBehindStats{Accepted: w.accepted, Completed: w.completed, Failed: w.failed, Queued: len(w.queue), Closed: w.stopped}
 }

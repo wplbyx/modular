@@ -7,22 +7,26 @@ the Agent defines the smallest port after the use case is known.
 
 For CRUD/query/mutation without rich domain behavior, put use-case ports under
 `modules/<module>/internal/app` and implementations under
-`modules/<module>/internal/repository/app`. DTO-style data is
+`modules/<module>/infrastructure`. DTO-style data is
 acceptable at this seam.
 
 ## Domain flow
 
-For aggregates, invariants, policies, or transaction coordination, put ports
-under `modules/<module>/internal/domain`. Implement them in
-`internal/repository/domain`; keep persistence structs and ORM tags under
-`internal/repository/model`, outside domain entities.
+For aggregates, invariants, policies, or transaction coordination, keep domain
+behavior under `modules/<module>/internal/domain` and consumer-owned outbound
+ports in `internal/app`. Implement adapters in module `infrastructure`; keep
+persistence structs and ORM tags there, outside domain entities.
 
 ## Rules
 
 - Explain app-versus-domain placement before adding packages.
-- Define the smallest interface needed by the use case and its tests.
+- Define outbound needs using [interface design](interface-design.md#define-outbound-needs-and-delivery-guarantees),
+  including the guarantees a replacement adapter must preserve.
 - Repositories receive concrete `core.Provider[T]` dependencies; call
   `Value()` only while handling work after Resource Setup.
+- Module bootstrap constructs repositories and injects them into use cases;
+  cmd provides only the module's explicit external dependencies. Follow
+  [layering](layering.md) for assembly interfaces and replacement seams.
 - A module owns its data writes. Cross-module code depends on the provider's
   public Go `contract`, never its `internal` implementation.
 - A cross-module ACID workflow is owned by its initiating module. Define its

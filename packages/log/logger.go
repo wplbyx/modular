@@ -69,6 +69,7 @@ type LoggerManager struct {
 	level   zapcore.Level
 	cores   []zapcore.Core
 	closers []io.Closer
+	initErr error
 	sinks   *sinkSet
 	logger  Logger
 
@@ -114,14 +115,11 @@ var defaultLogger atomic.Pointer[defaultHolder]
 
 // NewLoggerManager creates a process logger. Callers explicitly install its
 // Logger with SetDefault when package-level convenience functions are wanted.
+// Explicit output options override cfg.Output. Otherwise outputs are selected
+// from configuration, defaulting to console when Output is empty.
 func NewLoggerManager(cfg *configitem.Logging, options ...LoggerManagerOption) (*LoggerManager, error) {
 	if cfg == nil {
 		return nil, errors.New("logger config is nil")
-	}
-	if outputSelected(cfg.Output, "file") && cfg.File.Filename != "" {
-		if err := ensureLogDir(cfg.File.Filename); err != nil {
-			return nil, fmt.Errorf("create log directory: %w", err)
-		}
 	}
 
 	manager := &LoggerManager{
@@ -145,8 +143,14 @@ func NewLoggerManager(cfg *configitem.Logging, options ...LoggerManagerOption) (
 			option(manager)
 		}
 	}
-	if len(manager.cores) == 0 {
-		return nil, errors.New("logger config output is empty")
+	if manager.initErr == nil && len(manager.cores) == 0 {
+		manager.initErr = manager.configureOutputs()
+	}
+	if manager.initErr != nil {
+		for _, closer := range manager.closers {
+			manager.initErr = errors.Join(manager.initErr, closer.Close())
+		}
+		return nil, manager.initErr
 	}
 
 	manager.sinks = newSinkSet(manager.cores)
@@ -564,13 +568,39 @@ func parseLevel(level string) zapcore.Level {
 	return parsed
 }
 
-func outputSelected(outputs []string, expected string) bool {
+// configureOutputs 在创建输出资源之前校验完整配置。
+func (m *LoggerManager) configureOutputs() error {
+	outputs := m.config.Output
+	if len(outputs) == 0 {
+		outputs = []string{"console"}
+	}
+	bootstrap := false
 	for _, output := range outputs {
-		if strings.EqualFold(output, expected) {
-			return true
+		switch strings.ToLower(output) {
+		case "console", "file":
+			bootstrap = true
+		case "telemetry":
+			// Telemetry Resource 在 Setup 后挂载输出。
+		default:
+			return fmt.Errorf("unsupported logging output %q", output)
 		}
 	}
-	return false
+	if !bootstrap {
+		return errors.New("logging requires a console or file bootstrap output")
+	}
+	for _, output := range outputs {
+		switch strings.ToLower(output) {
+		case "console":
+			WithOutputConsole()(m)
+		case "file":
+			// 文件轮转由 Manager.Close 管理，不随请求或启动 context 取消。
+			WithOutputFiles(context.Background())(m)
+		}
+		if m.initErr != nil {
+			return m.initErr
+		}
+	}
+	return nil
 }
 
 type sinkSet struct {

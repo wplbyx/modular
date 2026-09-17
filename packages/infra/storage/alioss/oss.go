@@ -158,6 +158,12 @@ func (s *OssStorage) PresignDownload(ctx context.Context, key string, opts stora
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(objKey),
 	}
+	if opts.ResponseContentType != "" {
+		req.ResponseContentType = oss.Ptr(opts.ResponseContentType)
+	}
+	if opts.ResponseContentDisposition != "" {
+		req.ResponseContentDisposition = oss.Ptr(opts.ResponseContentDisposition)
+	}
 	return s.presign(ctx, objKey, req, expires, nil, true)
 }
 

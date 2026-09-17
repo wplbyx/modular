@@ -162,7 +162,7 @@ func main() {
 
 func run(ctx context.Context, cfg *projectconfig.Config) error {
 	// cfg 已由 config.NewRootCommand 加载；日志固定是第二个初始化步骤。
-	loggerManager, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
+	loggerManager, err := log.NewLoggerManager(&cfg.Logging)
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
@@ -324,6 +324,12 @@ HTTP client 是显式构造的 `*httpclient.Client`，主接口为 `Do(*http.Req
 
 v0.4 脚手架生成一个 Application，并按限界上下文维护 Business Module。CLI 管理确定性的配置和共享基础设施；Agent/用户在 typed composition root 中构造模块。
 
+装配分为两层：`cmd/<application>` 创建共享资源、按依赖 DAG 连接模块、挂载入口并配置生命周期；`modules/<module>/bootstrap.go` 用明确的依赖组装本模块 adapter、用例和领域对象。业务流程、事务和失败恢复留在发起用例中。
+
+兄弟模块使用 `contract` 业务契约；cmd 使用模块根包的 `Config`、`Dependencies`、`Module` 和 `New(cfg Config, deps Dependencies) (*Module, error)` 装配接口。新 CLI 骨架提供这一形状，已有 scaffold-once 文件保持用户所有。构造仅连接对象，保留 Provider，不提前读资源或启动任务。
+
+接口不仅是签名，还包含成功保证、错误与副作用，以及适用的幂等、并发和事务语义。设计或审核业务接口时读取 [接口设计指南](agent/modular/references/interface-design.md)，按业务需要选择抽象，不要求固定接口分类或层级。两层装配规则和双模块示例见 [分层与装配](agent/modular/references/layering.md)。
+
 ```text
 <project>/
   .modular/
@@ -333,26 +339,21 @@ v0.4 脚手架生成一个 Application，并按限界上下文维护 Business Mo
     make/modular.mk          # 受管 Make 目标
     tool/                    # 项目内可迁移的脚手架及模板
   cmd/
-    <application>/main.go    # 唯一受管入口
-    <application>
+    <application>/main.go    # 应用启动入口
+    <application>/resources.go # 共享资源装配
+    <application>/modules.go # 应用级装配类型与模块连接入口
   config/
     <application>/           # identity、transport、共享 Resource 与模块配置聚合
       config.gen.go
       config.yaml
-    modules/<module>/
-      config.go              # 模块业务配置，用户维护
-  internal/
-    platform/wiring/
-             # typed Platform、Resources 和 Assembly
-      business.go            # 一次性 wiring 接缝，由 Agent/用户维护
-    modules/<module>/
-      module.go              # 模块构造与导出能力
+  modules/<module>/
+      bootstrap.go           # 模块局部装配入口与导出能力，用户维护
+      config.go              # 模块业务配置，与 bootstrap 同包
       contract/              # 手写的窄 Go 接口和 Command/Query/Result
       internal/              # Go 编译器阻止兄弟模块穿透
-        api/<surface>/       # HTTP/gRPC/event DTO 映射与入站适配器
-        app/                 # 用例编排
+        app/                 # 业务用例、私有输入输出与出站接口；直接实现公开 contract
         domain/              # 仅在有聚合、不变量或策略时创建
-        repository/          # DB/Redis/client/storage 出站适配器
+      infrastructure/        # 模块自有 HTTP/消息/持久化适配器，协议 DTO 与映射就近放置
   go.mod    
 
 ```
@@ -360,7 +361,7 @@ v0.4 脚手架生成一个 Application，并按限界上下文维护 Business Mo
 约束：
 
 - `module add` 不要求 transport；transport 和 Resource 属于唯一 Application。
-- Application 对每种启用协议只构造一个共享 Server，`wiring.Assembly` 聚合 route/register/checker/lifecycle。
+- Application 对每种启用协议只构造一个共享 Server，应用装配结果聚合 route/register/checker/lifecycle。
 - 强类型资源直接位于 `Platform.Resources.<Resource>`；模块只接收实际需要的 Provider 或窄接口。
 - `Assembly.Registrar` 默认 nil；需要注册 Application 实例时在 scaffold-once wiring 中显式注入。
 - `managed` 文件只有在当前哈希与 manifest 一致时才更新；`scaffold-once` 文件创建后归用户和 Agent 维护。
@@ -449,5 +450,6 @@ go generate ./packages/config/...
 - `app` 不导入 `transport`，只接收 `core.Endpoint` 和 `core.Resource`。
 - 请求边缘和需要稳定业务 reason 的错误使用 `packages/errs`；生命周期初始化/关闭错误仍使用 `fmt.Errorf("...: %w", err)` 和 `errors.Join`。
 - 所有日志方法强制接收 `context.Context`；`log.Default()` 未安装时为 no-op。进程必须在配置加载后第二步创建 `LoggerManager`，再由 `cmd` 显式安装默认 logger。
+- `log.NewLoggerManager(&cfg.Logging)` 按 `Output` 创建 console/file 输出，空列表默认 console；telemetry 由 Resource.Setup 后挂载，配置中不能仅有 telemetry。显式输出 Options 优先于 `Output`，不会叠加配置输出；文件轮转由 Manager.Close 停止。
 - storage 当前只有 `disk` 和 `oss` 两类实现；OSS 使用 `alibabacloud-oss-go-sdk-v2`，不要引入 v1 SDK。
 - DB、Redis、Storage 和 transport client 都通过构造函数显式注入，不提供业务可依赖的包级全局实例。

@@ -1,49 +1,124 @@
-# Layering
+# Layering and assembly
 
-A Business Module is a bounded-context code and data-write boundary. The
-Application is the one deployment, configuration, transport, and lifecycle
-boundary.
+Read when designing module interfaces, wiring modules or resources, or auditing
+dependencies. A Business Module owns a bounded context and its data writes. One
+Application owns deployment, shared configuration, transports, and lifecycle.
 
-## Framework paths
+## Two assembly levels
 
-- `.modular/architecture.yaml`: Application capabilities, modules, and module
-  dependencies.
-- `.modular/manifest.json`: generated ownership and replay hashes only.
-- `modules/<module>/config.go`: scaffold-once business configuration.
-- `config/<application>/config.gen.go|config.yaml`: managed aggregate config.
-- `cmd/<application>/main.go|`: managed bootstrap.
-- `cmd/<application>/policy.go`: scaffold-once transport policy.
-- `cmd/<application>`: typed Platform and Assembly.
-- `cmd/<application>/business.go`: scaffold-once composition root.
+| Level | Responsibility | Inputs and outputs |
+| --- | --- | --- |
+| `cmd/<application>` | Outermost composition root: create shared Resources, connect modules in DAG order, mount entrypoints, and configure Application lifecycle | Application config and shared Providers in; assembled Application out |
+| `modules/<module>/bootstrap.go` | Local composition root: construct module-owned adapters, use cases, and domain objects | Module Config and narrow Dependencies in; typed Module capabilities and mounting hooks out |
 
-## Business paths
+Bootstrap is assembly code, not business behavior. Its position at the module
+root lets it import both `internal` use cases and `infrastructure` adapters.
+Those packages do not import the module root. Business workflows, transaction
+decisions, and failure recovery belong to the initiating use case, not either
+composition root. Application itself only orchestrates lifecycle.
 
-- `modules/<module>/contract`: public Go interfaces and their
-  Command/Query/Result types.
-- `modules/<module>/module.go`: optional module constructor and
-  exported capabilities.
-- `modules/<module>/internal/api/<surface>`: inbound adapters.
-- `modules/<module>/internal/app`: use cases and simple ports.
-- `modules/<module>/internal/domain`: real aggregates and policies.
-- `modules/<module>/internal/repository`: outbound adapters.
+## Two interfaces
 
-Sibling modules import only a provider's `contract`. The extra `internal`
-directory lets the Go compiler reject implementation imports from siblings;
-the doctor also checks that every contract import is declared in architecture.
+- **Business contract**: `modules/<provider>/contract` contains narrow public Go
+  interfaces, Command/Query/Result values, and deliberately shared events.
+  Siblings import only this contract, with a declared architecture DAG edge.
+- **Assembly interface**: the module root exposes `Config`, `Dependencies`,
+  `Module`, and `New(cfg Config, deps Dependencies) (*Module, error)` to cmd.
+  Technical types such as `core.Provider[*gorm.DB]` are appropriate here.
+  Exported parameters and results must be usable by cmd without importing
+  module `internal` types. Expose business capabilities as contract interfaces;
+  keep implementation fields private.
 
-Do not generate a fixed layer tree. CRUD may remain in app. Add domain only
-for invariants, policies, aggregate coordination, or transaction rules. Module
-construction never depends on `app.Application` or a runtime container.
+`Dependencies` contains only capabilities this module actually needs. Bootstrap
+normally creates its private adapters; add an explicit replacement option only
+when a real use case requires it. Modules do not accept an Application, a
+service locator, or the entire application resource collection. A declared DAG
+edge does not invent a contract method or constructor field: those need a known
+use case.
 
-## Application assembly
+Constructors connect objects and validate configuration. Repositories retain
+Providers; constructing a module must not call `Value()` before Resource Setup,
+start background tasks, execute migrations, or begin consuming messages. Return
+necessary mounting hooks, migration callbacks, or lifecycle objects to cmd for
+Application-managed execution. Shared Resources remain Application-owned.
 
-One Application shares its logger, health manager, transport policy, resources,
-and at most one HTTP and one gRPC server. `wiring.Platform.Resources` exposes
-typed lifecycle resources to the composition root. Modules receive only the
-narrow providers or interfaces they actually need.
+The generated empty Module is only an assembly shell, not implemented business
+behavior. Add fields and hooks only when needed; no universal module lifecycle
+interface is required. Existing scaffold-once constructors remain user-owned.
 
-Cross-module workflows belong to the initiating module. They may share an ACID
-transaction when all participants use the same transactional resource, but
-must call public contracts and must not expose another module's repository or
-tables. Long-lived workflows with their own language and invariants should
-become a Business Module, not a generic technical workflow layer.
+## Module internals
+
+- `internal/app`: use cases, private business inputs/results, and consumer-owned outbound ports, including
+  repository, publisher, external-client, and use-case transaction interfaces.
+- `internal/domain`: aggregates and policies when business invariants justify
+  them; simple CRUD does not require an artificial domain model.
+- Use cases implement public `contract` interfaces directly when needed; public
+  Command/Query/Result types remain in `contract` and need not be duplicated.
+- `infrastructure`: module-owned persistence, HTTP, and messaging adapters.
+  Protocol DTOs and mappings live alongside their respective adapters.
+
+Adapters may import their own module's internal ports. Siblings cannot import
+the provider root, implementation, ORM models, or tables. Public contracts
+should be understandable without the provider's persistence or transport
+mechanisms. A cross-module ACID flow needs an explicit project-specific
+transaction participation mechanism; calling contracts alone is not atomic.
+
+## Interface design and review
+
+Use [interface design](interface-design.md) when defining or reviewing business
+intent, contract guarantees, request adaptation, strategies, or outbound ports.
+It provides decision criteria, not a fixed interface taxonomy. This document
+owns placement and assembly; review both assembly levels alongside the business
+contracts and critical collaboration flows.
+
+## Example: customer and order
+
+The following excerpts assume real customer lookup and order placement use
+cases. They illustrate assembly, not default generated business code; omitted
+constructors and contracts belong to the application.
+
+```go
+// modules/order/bootstrap.go (imports omitted)
+type Dependencies struct {
+    DB        core.Provider[*gorm.DB]
+    Customers customercontract.Reader
+}
+
+type Module struct {
+    Placer contract.Placer
+    http   *orderhttp.Handler
+}
+
+func New(cfg Config, deps Dependencies) (*Module, error) {
+    repo := ordergorm.NewRepository(deps.DB) // retains Provider
+    placer := app.NewPlacer(repo, deps.Customers)
+    return &Module{
+        Placer: placer,
+        http:   orderhttp.NewHandler(placer),
+    }, nil
+}
+
+func (m *Module) RegisterHTTP(routes *gin.RouterGroup) {
+    m.http.Register(routes)
+}
+```
+
+```go
+// cmd/<application>/modules.go: inside application assembly
+customers, err := customer.New(cfg.Customer, customer.Dependencies{DB: db})
+if err != nil {
+    return assembly, fmt.Errorf("assemble customer: %w", err)
+}
+orders, err := order.New(cfg.Order, order.Dependencies{
+    DB: db, Customers: customers.Reader,
+})
+if err != nil {
+    return assembly, fmt.Errorf("assemble order: %w", err)
+}
+// Collect registration callbacks here; mount them on the shared HTTP server.
+// Application sets up DB before the server handles requests.
+```
+
+Changing order's internal repository wiring changes its bootstrap, not cmd.
+Cmd knows module capabilities and their connections; order owns its use-case
+sequence and consistency guarantees. Application owns when they start and stop.

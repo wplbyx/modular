@@ -13,6 +13,7 @@ import (
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
+	"github.com/wplbyx/modular/packages/transport/pubsub/internal/delivery"
 )
 
 // Reserved stream field keys used to carry pubsub.Message metadata inside an
@@ -59,6 +60,10 @@ type StreamClient struct {
 	mu        sync.RWMutex
 	cancel    context.CancelFunc
 	connected bool
+	started   bool
+	closed    bool
+	active    map[string]bool
+	done      chan struct{}
 
 	wg sync.WaitGroup // consume loops
 }
@@ -82,10 +87,17 @@ func NewStreamClient(opts ...StreamOption) (*StreamClient, error) {
 	if o.Consumer == "" {
 		o.Consumer = defaultConsumerName()
 	}
+	if o.Block <= 0 {
+		o.Block = time.Second
+	}
 	if o.Workers <= 0 {
 		o.Workers = 1
 	}
+	if o.RecoveryInterval <= 0 || o.ClaimMinIdle <= 0 || o.MaxRetries < 0 || o.Count < 1 {
+		return nil, errors.New("invalid Redis Stream recovery, retry or batch settings")
+	}
 	return &StreamClient{
+		active: make(map[string]bool), done: make(chan struct{}),
 		client: o.Client,
 		opts:   o,
 	}, nil
@@ -98,6 +110,9 @@ func (c *StreamClient) Connect(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.closed {
+		return errors.New("Redis Stream client is closed")
+	}
 	if c.connected {
 		return nil
 	}
@@ -162,42 +177,142 @@ func (c *StreamClient) Publish(ctx context.Context, topic string, payload []byte
 // A per-call WithQueueName overrides the configured group. The consumer name is
 // shared across all workers of this client.
 func (c *StreamClient) Subscribe(ctx context.Context, topic string, handler pubsub.MessageHandler, opts ...pubsub.SubscribeOption) error {
-	handler = pubsub.WithMessageMetadata(handler)
+	if handler == nil || topic == "" {
+		return errors.New("stream and handler are required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.started {
+		return errors.New("Redis Stream client is closed or already subscribed")
+	}
 	subscribeOpts := &pubsub.SubscribeOptions{}
 	for _, opt := range opts {
 		opt(subscribeOpts)
 	}
-
 	group := c.opts.Group
 	if subscribeOpts.QueueName != "" {
 		group = subscribeOpts.QueueName
 	}
-	if group == "" {
-		return fmt.Errorf("redis stream consumer group is required")
-	}
-
 	if err := c.ensureGroup(ctx, topic, group); err != nil {
 		return err
 	}
-
 	subCtx, cancel := context.WithCancel(ctx)
-	c.mu.Lock()
 	c.cancel = cancel
-	c.mu.Unlock()
-
-	workers := c.opts.Workers
-	for i := 0; i < workers; i++ {
+	c.started = true
+	queue := make(chan goredis.XMessage, c.opts.Workers)
+	handler = pubsub.WithMessageMetadata(handler)
+	for worker := 0; worker < c.opts.Workers; worker++ {
 		c.wg.Add(1)
-		go c.consumeLoop(subCtx, i, topic, group, handler)
+		go func(id int) {
+			defer c.wg.Done()
+			for {
+				select {
+				case <-subCtx.Done():
+					return
+				case m := <-queue:
+					c.handleMessage(subCtx, id, topic, group, handler, m)
+					c.mu.Lock()
+					delete(c.active, m.ID)
+					c.mu.Unlock()
+				}
+			}
+		}(worker)
 	}
-
-	log.Info(ctx, "Redis Stream subscribed",
-		zap.String("stream", topic),
-		zap.String("group", group),
-		zap.String("consumer", c.opts.Consumer),
-		zap.Int("workers", workers),
-	)
+	c.wg.Add(2)
+	go func() { defer c.wg.Done(); c.readMessages(subCtx, topic, group, queue) }()
+	go func() { defer c.wg.Done(); c.recoverMessages(subCtx, topic, group, queue) }()
+	go func() { c.wg.Wait(); close(c.done) }()
 	return nil
+}
+func (c *StreamClient) schedule(ctx context.Context, queue chan<- goredis.XMessage, m goredis.XMessage) bool {
+	c.mu.Lock()
+	if c.active[m.ID] {
+		c.mu.Unlock()
+		return true
+	}
+	c.active[m.ID] = true
+	c.mu.Unlock()
+	select {
+	case queue <- m:
+		return true
+	case <-ctx.Done():
+		c.mu.Lock()
+		delete(c.active, m.ID)
+		c.mu.Unlock()
+		return false
+	}
+}
+func (c *StreamClient) readMessages(ctx context.Context, stream, group string, queue chan<- goredis.XMessage) {
+	cursor := "0"
+	for attempt := 0; ctx.Err() == nil; {
+		block := c.opts.Block
+		if cursor != ">" {
+			block = -1
+		}
+		streams, err := c.client.XReadGroup(ctx, &goredis.XReadGroupArgs{Group: group, Consumer: c.opts.Consumer, Streams: []string{stream, cursor}, Count: c.opts.Count, Block: block}).Result()
+		if errors.Is(err, goredis.Nil) {
+			if cursor != ">" {
+				cursor = ">"
+			}
+			continue
+		}
+		if err != nil {
+			if !delivery.WaitRetry(ctx, c.opts.RetryBackoff, attempt) {
+				return
+			}
+			attempt++
+			continue
+		}
+		attempt = 0
+		count := 0
+		for _, batch := range streams {
+			for _, m := range batch.Messages {
+				count++
+				if cursor != ">" {
+					cursor = m.ID
+				}
+				if !c.schedule(ctx, queue, m) {
+					return
+				}
+			}
+		}
+		if count == 0 && cursor != ">" {
+			cursor = ">"
+		}
+	}
+}
+func (c *StreamClient) recoverMessages(ctx context.Context, stream, group string, queue chan<- goredis.XMessage) {
+	ticker := time.NewTicker(c.opts.RecoveryInterval)
+	defer ticker.Stop()
+	for {
+		cursor := "0-0"
+		for {
+			messages, next, err := c.client.XAutoClaim(ctx, &goredis.XAutoClaimArgs{Stream: stream, Group: group, Consumer: c.opts.Consumer, MinIdle: c.opts.ClaimMinIdle, Start: cursor, Count: c.opts.Count}).Result()
+			if err != nil {
+				if ctx.Err() == nil {
+					log.Error(ctx, "Redis Stream pending recovery failed", zap.Error(err))
+				}
+				break
+			}
+			for _, m := range messages {
+				if !c.schedule(ctx, queue, m) {
+					return
+				}
+			}
+			if next == "0-0" || next == "" {
+				break
+			}
+			cursor = next
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // ensureGroup creates the consumer group for the stream, ignoring the
@@ -216,98 +331,41 @@ func (c *StreamClient) ensureGroup(ctx context.Context, stream, group string) er
 	return nil
 }
 
-func (c *StreamClient) consumeLoop(ctx context.Context, workerID int, stream, group string, handler pubsub.MessageHandler) {
-	defer c.wg.Done()
-	log.Info(ctx, "Redis Stream worker started", zap.Int("worker_id", workerID), zap.String("stream", stream))
-
-	args := &goredis.XReadGroupArgs{
-		Group:    group,
-		Consumer: c.opts.Consumer,
-		Streams:  []string{stream, ">"},
-		Count:    c.opts.Count,
-		Block:    c.opts.Block,
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info(ctx, "Redis Stream worker stopping", zap.Int("worker_id", workerID), zap.String("stream", stream))
-			return
-		default:
-		}
-
-		streams, err := c.client.XReadGroup(ctx, args).Result()
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			// redis.Nil is returned when BLOCK times out with no new messages.
-			if errors.Is(err, goredis.Nil) {
-				continue
-			}
-			log.Error(ctx, "Redis Stream XREADGROUP failed", zap.Int("worker_id", workerID), zap.Error(err))
-			if !sleepWithContext(ctx, 10*time.Millisecond) {
-				return
-			}
-			continue
-		}
-
-		for _, s := range streams {
-			for _, m := range s.Messages {
-				c.handleMessage(ctx, workerID, stream, group, handler, m)
-			}
-		}
-	}
-}
-
-// handleMessage retries the handler, acks on success, and diverts to the DLQ
-// (when configured) once retries are exhausted.
 func (c *StreamClient) handleMessage(ctx context.Context, workerID int, stream, group string, handler pubsub.MessageHandler, m goredis.XMessage) {
 	message := streamMessageToMessage(stream, m)
-
-	var handlerErr error
-	for attempt := 0; attempt <= c.opts.MaxRetries; attempt++ {
-		handlerErr = handler(ctx, message)
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
+		handlerErr := delivery.CallHandler(ctx, handler, message)
 		if handlerErr == nil {
-			c.ack(ctx, workerID, stream, group, m.ID)
-			return
+			break
 		}
-		if attempt < c.opts.MaxRetries {
-			log.Warn(ctx, "Redis Stream handler failed; retrying",
-				zap.Int("worker_id", workerID),
-				zap.String("stream", stream),
-				zap.String("message_id", m.ID),
-				zap.Int("attempt", attempt+1),
-				zap.Int("max_retries", c.opts.MaxRetries),
-				zap.Error(handlerErr),
-			)
-			if !sleepWithContext(ctx, c.opts.RetryBackoff) {
-				return
+		log.Warn(ctx, "Redis Stream handler failed; retaining message", zap.String("message_id", m.ID), zap.Error(handlerErr))
+		if attempt >= c.opts.MaxRetries && c.opts.DLQStream != "" {
+			for n := 0; ; n++ {
+				if err := c.sendToDLQ(ctx, stream, m, handlerErr); err == nil {
+					break
+				}
+				if !delivery.WaitRetry(ctx, c.opts.RetryBackoff, n) {
+					return
+				}
 			}
+			break
 		}
-	}
-
-	log.Warn(ctx, "Redis Stream handler exhausted retries",
-		zap.Int("worker_id", workerID),
-		zap.String("stream", stream),
-		zap.String("message_id", m.ID),
-		zap.Error(handlerErr),
-	)
-
-	if c.opts.DLQStream != "" {
-		if err := c.sendToDLQ(ctx, stream, m, handlerErr); err != nil {
-			log.Error(ctx, "Redis Stream DLQ publish failed", zap.Int("worker_id", workerID), zap.String("message_id", m.ID), zap.Error(err))
-			// Do not ack: leave the entry pending so it can be reclaimed.
+		if !delivery.WaitRetry(ctx, c.opts.RetryBackoff, attempt) {
 			return
 		}
 	}
-	c.ack(ctx, workerID, stream, group, m.ID)
-}
-
-func (c *StreamClient) ack(ctx context.Context, workerID int, stream, group, id string) {
-	// TODO: 如果ack失败呢？
-	if err := c.client.XAck(ctx, stream, group, id).Err(); err != nil {
-		log.Error(ctx, "Redis Stream XACK failed", zap.Int("worker_id", workerID), zap.String("stream", stream), zap.String("message_id", id), zap.Error(err))
+	for attempt := 0; ; attempt++ {
+		if err := c.client.XAck(ctx, stream, group, m.ID).Err(); err == nil {
+			return
+		} else {
+			log.Error(ctx, "Redis Stream XACK failed; retrying", zap.Error(err))
+		}
+		if !delivery.WaitRetry(ctx, c.opts.RetryBackoff, attempt) {
+			return
+		}
 	}
 }
 
@@ -330,15 +388,34 @@ func (c *StreamClient) sendToDLQ(ctx context.Context, stream string, m goredis.X
 // Unsubscribe is a no-op for streams: the consumer group persists on the
 // server. Stopping the consume loops happens via Close/Disconnect.
 func (c *StreamClient) Unsubscribe(ctx context.Context, topic string) error {
-	log.Info(ctx, "Redis Stream unsubscribe requested; use Close to stop consuming", zap.String("stream", topic))
-	return nil
+	_ = c.Disconnect(ctx)
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+	if !started {
+		return nil
+	}
+	select {
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-// Close cancels the consume loops and waits for them to finish. It does not
-// close the injected Redis client.
+// Close stops all consumption without closing the caller-owned Redis connection.
 func (c *StreamClient) Close() error {
-	_ = c.Disconnect(context.Background())
-	c.wg.Wait()
+	c.mu.Lock()
+	c.closed = true
+	c.connected = false
+	if c.cancel != nil {
+		c.cancel()
+	}
+	started := c.started
+	c.mu.Unlock()
+	if started {
+		<-c.done
+	}
 	return nil
 }
 

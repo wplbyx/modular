@@ -1,7 +1,6 @@
 {
   "schema": 1,
   "tokens": [
-    "BUSINESS_WIRING",
     "CONSTRUCTOR_PARAMS",
     "ENTITY",
     "ENTITY_FIELDS",
@@ -30,7 +29,6 @@
     "contract/app_ports.go.tmpl": {"owner": "scaffold-once", "phase": "contract"},
     "contract/domain_error.go.tmpl": {"owner": "scaffold-once", "phase": "contract"},
     "contract/api_error_mapping.go.tmpl": {"owner": "scaffold-once", "phase": "contract"},
-    "contract/business_wiring.go.tmpl": {"owner": "scaffold-once", "phase": "contract"},
     "contract/domain_entity.go.tmpl": {"owner": "scaffold-once", "phase": "business"},
     "contract/business_test.go.tmpl": {"owner": "scaffold-once", "phase": "business"}
   }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/wplbyx/modular/packages/core"
 	"github.com/wplbyx/modular/packages/metadata"
@@ -54,10 +55,16 @@ type SubscriberEndpoint struct {
 	onStart func(ctx context.Context) error
 	onStop  func(ctx context.Context) error
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	ready  chan struct{}
-	once   sync.Once
+	mu             sync.Mutex
+	cancel         context.CancelFunc
+	ready          chan struct{}
+	once           sync.Once
+	state          string
+	readyErr       error
+	startDone      chan struct{}
+	shutdownDone   chan struct{}
+	shutdownErr    error
+	shutdownCancel context.CancelFunc
 }
 
 // SubscriberOption configures a SubscriberEndpoint.
@@ -94,7 +101,7 @@ func NewSubscriberEndpoint(name string, sub Subscriber, topic string, handler Me
 		topic:      topic,
 		handler:    handler,
 		propagator: defaultMetadataPropagator,
-		ready:      make(chan struct{}),
+		ready:      make(chan struct{}), startDone: make(chan struct{}), shutdownDone: make(chan struct{}),
 	}
 	if connector, ok := sub.(Connector); ok {
 		e.onStart = connector.Connect
@@ -117,68 +124,134 @@ func (e *SubscriberEndpoint) Name() string { return e.name }
 
 // Startup runs the optional connect hook, subscribes, then blocks until
 // Shutdown cancels the internal context.
-func (e *SubscriberEndpoint) Startup(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	subCtx, cancel := context.WithCancel(ctx)
-
+func (e *SubscriberEndpoint) Startup(ctx context.Context) (err error) {
 	e.mu.Lock()
+	if e.state != "" {
+		e.mu.Unlock()
+		return fmt.Errorf("endpoint %s already started or stopped", e.name)
+	}
+	e.state = "starting"
+	subCtx, cancel := context.WithCancel(ctx)
 	e.cancel = cancel
 	e.mu.Unlock()
-
+	defer func() {
+		cancel()
+		e.mu.Lock()
+		if err != nil {
+			e.readyErr = err
+		} else if subCtx.Err() != nil {
+			e.readyErr = subCtx.Err()
+		}
+		e.once.Do(func() { close(e.ready) })
+		e.mu.Unlock()
+	}()
+	// startDone covers only connect/subscribe, not the blocking serving lifetime.
+	started := false
+	defer func() {
+		if !started {
+			close(e.startDone)
+		}
+	}()
+	if err = subCtx.Err(); err != nil {
+		return err
+	}
+	if e.sub == nil || e.handler == nil {
+		return fmt.Errorf("subscriber and handler are required")
+	}
 	if e.onStart != nil {
-		if err := e.onStart(subCtx); err != nil {
-			cancel()
+		if err = e.onStart(subCtx); err != nil {
 			return fmt.Errorf("connect for endpoint %s: %w", e.name, err)
 		}
 	}
-
+	if err = subCtx.Err(); err != nil {
+		return err
+	}
 	handler := e.handler
 	if e.propagator != nil {
 		handler = withMessageMetadata(e.propagator, handler)
 	}
-	if err := e.sub.Subscribe(subCtx, e.topic, handler, e.opts...); err != nil {
-		cancel()
+	if err = e.sub.Subscribe(subCtx, e.topic, handler, e.opts...); err != nil {
 		return fmt.Errorf("subscribe %s: %w", e.topic, err)
 	}
+	e.mu.Lock()
+	if e.state != "starting" || subCtx.Err() != nil {
+		e.mu.Unlock()
+		return fmt.Errorf("endpoint %s stopped during startup", e.name)
+	}
+	e.state = "running"
 	e.once.Do(func() { close(e.ready) })
-
+	e.mu.Unlock()
+	started = true
+	close(e.startDone)
 	<-subCtx.Done()
 	return nil
 }
 
-// Ready waits until the subscription has been established.
 func (e *SubscriberEndpoint) Ready(ctx context.Context) error {
 	select {
 	case <-e.ready:
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.readyErr != nil {
+			return e.readyErr
+		}
+		if e.state != "running" {
+			return fmt.Errorf("endpoint %s is not running", e.name)
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// Shutdown cancels the subscription loop, calls the optional disconnect
-// hook, and closes the underlying subscriber.
 func (e *SubscriberEndpoint) Shutdown(ctx context.Context) error {
 	e.mu.Lock()
-	if e.cancel != nil {
-		e.cancel()
-		e.cancel = nil
-	}
-	e.mu.Unlock()
-
-	var errs error
-	if e.onStop != nil {
-		if err := e.onStop(ctx); err != nil {
-			errs = fmt.Errorf("disconnect for endpoint %s: %w", e.name, err)
+	if e.state != "stopping" && e.state != "stopped" {
+		if e.state == "" {
+			close(e.startDone)
 		}
+		e.state = "stopping"
+		if e.cancel != nil {
+			e.cancel()
+		}
+		e.once.Do(func() { close(e.ready) })
+		budget, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		e.shutdownCancel = cancel
+		go func() {
+			defer cancel()
+			var err error
+			if closer, ok := e.sub.(ContextCloser); ok {
+				err = closer.CloseContext(budget)
+			} else {
+				// Legacy SDKs cannot cancel Close: keep one owner, including late startup cleanup.
+				<-e.startDone
+				if e.onStop != nil {
+					err = e.onStop(budget)
+				}
+				if e.sub != nil {
+					err = errors.Join(err, e.sub.Close())
+				}
+			}
+			e.mu.Lock()
+			e.shutdownErr = err
+			e.state = "stopped"
+			e.mu.Unlock()
+			close(e.shutdownDone)
+		}()
 	}
-	if err := e.sub.Close(); err != nil {
-		errs = errors.Join(errs, fmt.Errorf("close subscriber for endpoint %s: %w", e.name, err))
+	cancel := e.shutdownCancel
+	e.mu.Unlock()
+	select {
+	case <-e.shutdownDone:
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.shutdownErr
+	case <-ctx.Done():
+		if cancel != nil {
+			cancel()
+		}
+		return ctx.Err()
 	}
-	return errs
 }
 
 func joinErrors(errs, err error) error {

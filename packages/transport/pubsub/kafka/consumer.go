@@ -2,16 +2,17 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
 	"github.com/wplbyx/modular/packages/log"
 	"github.com/wplbyx/modular/packages/transport/pubsub"
+	"github.com/wplbyx/modular/packages/transport/pubsub/internal/delivery"
 )
 
 // Ensure Consumer implements pubsub.Subscriber interface
@@ -19,11 +20,15 @@ var _ pubsub.Subscriber = (*Consumer)(nil)
 
 // Consumer implements pubsub.Subscriber using Kafka
 type Consumer struct {
-	reader      *kafka.Reader
+	reader      ConsumerReader
 	opts        *ConsumerOptions
+	mu          sync.Mutex
+	started     bool
+	closed      bool
+	closeOnce   sync.Once
+	closeErr    error
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
-	handlers    sync.Map // topic -> pubsub.MessageHandler
 	dlqProducer *Producer
 }
 
@@ -41,15 +46,21 @@ func NewConsumer(opts ...ConsumerOption) (*Consumer, error) {
 		return nil, fmt.Errorf("kafka topic cannot be empty")
 	}
 
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        o.Brokers,
-		GroupID:        o.GroupID,
-		Topic:          o.Topic,
-		MinBytes:       o.MinBytes,
-		MaxBytes:       o.MaxBytes,
-		StartOffset:    o.StartOffset,
-		CommitInterval: o.CommitInterval,
-	})
+	if o.Workers < 1 || o.MaxRetries < 0 {
+		return nil, errors.New("invalid Kafka workers or retry count")
+	}
+	var reader ConsumerReader = o.Reader
+	if reader == nil {
+		reader = kafka.NewReader(kafka.ReaderConfig{
+			Brokers:        o.Brokers,
+			GroupID:        o.GroupID,
+			Topic:          o.Topic,
+			MinBytes:       o.MinBytes,
+			MaxBytes:       o.MaxBytes,
+			StartOffset:    o.StartOffset,
+			CommitInterval: o.CommitInterval,
+		})
+	}
 
 	dlqProducer, err := newDLQProducer(o)
 	if err != nil {
@@ -68,117 +79,144 @@ func NewConsumer(opts ...ConsumerOption) (*Consumer, error) {
 // Note: For Kafka, the topic is typically set at consumer creation time
 // This method starts consuming messages from the configured topic
 func (c *Consumer) Subscribe(ctx context.Context, topic string, handler pubsub.MessageHandler, opts ...pubsub.SubscribeOption) error {
-	handler = pubsub.WithMessageMetadata(handler)
-	// Store handler for the topic
-	c.handlers.Store(topic, handler)
-
-	workers := c.opts.Workers
-	if workers <= 0 {
-		workers = 1
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	c.cancel = cancel
-	for i := 0; i < workers; i++ {
-		c.wg.Add(1)
-		go c.consumeLoop(ctx, topic, handler, i)
-	}
-
-	log.Info(ctx, "Kafka consumer subscribed", zap.String("topic", topic))
-	return nil
-}
-
-// Unsubscribe unsubscribes from a topic
-func (c *Consumer) Unsubscribe(ctx context.Context, topic string) error {
-	c.handlers.Delete(topic)
-	log.Info(ctx, "Kafka consumer unsubscribed", zap.String("topic", topic))
-	return nil
-}
-
-// Close closes the consumer
-func (c *Consumer) Close() error {
-	log.Info(context.Background(), "Kafka consumer closing")
-
-	if c.cancel != nil {
-		c.cancel()
-	}
-
-	if err := c.reader.Close(); err != nil {
-		log.Error(context.Background(), "Kafka consumer reader close failed", zap.Error(err))
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	c.wg.Wait()
-	if c.dlqProducer != nil {
-		return c.dlqProducer.Close()
+	if handler == nil || topic != c.opts.Topic {
+		return errors.New("Kafka subscription requires configured topic and handler")
 	}
-	return nil
-}
-
-func (c *Consumer) consumeLoop(ctx context.Context, topic string, handler pubsub.MessageHandler, workerID int) {
-	defer c.wg.Done()
-	log.Info(ctx, "Kafka consumer worker started", zap.Int("worker_id", workerID), zap.String("topic", topic))
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info(ctx, "Kafka consumer worker stopping", zap.Int("worker_id", workerID), zap.String("topic", topic))
-			return
-		default:
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.started {
+		return errors.New("Kafka consumer is closed or already subscribed")
+	}
+	ctx, c.cancel = context.WithCancel(ctx)
+	c.started = true
+	handler = pubsub.WithMessageMetadata(handler)
+	queues := make([]chan kafka.Message, c.opts.Workers)
+	for i := range queues {
+		queues[i] = make(chan kafka.Message, 1)
+		c.wg.Add(1)
+		go func(worker int) {
+			defer c.wg.Done()
+			for msg := range queues[worker] {
+				if ctx.Err() != nil {
+					return
+				}
+				c.handleMessage(ctx, worker, handler, msg)
+			}
+		}(i)
+	}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		defer func() {
+			for _, queue := range queues {
+				close(queue)
+			}
+		}()
+		attempt := 0
+		for {
 			msg, err := c.reader.FetchMessage(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Error(ctx, "Kafka consumer fetch failed", zap.Int("worker_id", workerID), zap.Error(err))
-				time.Sleep(10 * time.Millisecond)
+				log.Error(ctx, "Kafka consumer fetch failed", zap.Error(err))
+				if !delivery.WaitRetry(ctx, c.opts.RetryBackoff, attempt) {
+					return
+				}
+				attempt++
 				continue
 			}
-
-			c.handleMessage(ctx, workerID, handler, msg)
+			attempt = 0
+			index := msg.Partition % len(queues)
+			if index < 0 {
+				index = 0
+			}
+			select {
+			case queues[index] <- msg:
+			case <-ctx.Done():
+				return
+			}
 		}
+	}()
+	return nil
+}
+
+func (c *Consumer) Unsubscribe(ctx context.Context, topic string) error {
+	c.mu.Lock()
+	if c.cancel != nil {
+		c.cancel()
 	}
+	c.mu.Unlock()
+	done := make(chan struct{})
+	go func() { c.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Consumer) Close() error {
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		c.closed = true
+		if c.cancel != nil {
+			c.cancel()
+		}
+		c.mu.Unlock()
+		c.closeErr = c.reader.Close()
+		c.wg.Wait()
+		if c.dlqProducer != nil {
+			c.closeErr = errors.Join(c.closeErr, c.dlqProducer.Close())
+		}
+	})
+	return c.closeErr
 }
 
 func (c *Consumer) handleMessage(ctx context.Context, workerID int, handler pubsub.MessageHandler, msg kafka.Message) {
 	message := messageFromKafka(msg)
-	var handlerErr error
-
-	for attempt := 0; attempt <= c.opts.MaxRetries; attempt++ {
-		handlerErr = handler(ctx, message)
-		if handlerErr == nil {
-			if err := c.reader.CommitMessages(ctx, msg); err != nil {
-				log.Error(ctx, "Kafka consumer offset commit failed", zap.Int("worker_id", workerID), zap.Error(err))
-			}
+	attempt := 0
+	for {
+		if ctx.Err() != nil {
 			return
 		}
-
-		if attempt < c.opts.MaxRetries {
-			log.Warn(ctx, "Kafka handler failed; retrying",
-				zap.Int("worker_id", workerID),
-				zap.String("topic", msg.Topic),
-				zap.Int("attempt", attempt+1),
-				zap.Int("max_retries", c.opts.MaxRetries),
-				zap.Error(handlerErr),
-			)
-			if !sleepWithContext(ctx, c.opts.RetryBackoff) {
-				return
-			}
+		handlerErr := delivery.CallHandler(ctx, handler, message)
+		if handlerErr == nil {
+			break
 		}
+		log.Warn(ctx, "Kafka handler failed; retaining message", zap.Int64("offset", msg.Offset), zap.Error(handlerErr))
+		if attempt >= c.opts.MaxRetries && c.dlqProducer != nil && c.opts.DLQTopic != "" {
+			for dlqAttempt := 0; ; dlqAttempt++ {
+				if err := c.sendToDLQ(ctx, msg, handlerErr); err == nil {
+					break
+				}
+				if !delivery.WaitRetry(ctx, c.opts.RetryBackoff, dlqAttempt) {
+					return
+				}
+			}
+			break
+		}
+		if !delivery.WaitRetry(ctx, c.opts.RetryBackoff, attempt) {
+			return
+		}
+		attempt++
 	}
-
-	log.Warn(ctx, "Kafka handler exhausted retries", zap.Int("worker_id", workerID), zap.String("topic", msg.Topic), zap.Error(handlerErr))
-	if c.dlqProducer == nil || c.opts.DLQTopic == "" {
+	if c.opts.GroupID == "" {
 		return
 	}
-
-	if err := c.sendToDLQ(ctx, msg, handlerErr); err != nil {
-		log.Error(ctx, "Kafka DLQ publish failed", zap.Int("worker_id", workerID), zap.Error(err))
-		return
-	}
-
-	if err := c.reader.CommitMessages(ctx, msg); err != nil {
-		log.Error(ctx, "Kafka DLQ offset commit failed", zap.Int("worker_id", workerID), zap.Error(err))
+	for attempt := 0; ; attempt++ {
+		if err := c.reader.CommitMessages(ctx, msg); err == nil {
+			return
+		} else {
+			log.Error(ctx, "Kafka offset commit failed; retrying", zap.Error(err))
+		}
+		if !delivery.WaitRetry(ctx, c.opts.RetryBackoff, attempt) {
+			return
+		}
 	}
 }
 
@@ -238,20 +276,6 @@ func messageFromKafka(msg kafka.Message) pubsub.Message {
 		message.Headers[h.Key] = string(h.Value)
 	}
 	return message
-}
-
-func sleepWithContext(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return true
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
 }
 
 // Ensure Consumer implements io.Closer

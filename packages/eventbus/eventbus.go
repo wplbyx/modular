@@ -50,6 +50,8 @@ type Handler func(context.Context, Event) error
 
 // Stats is a point-in-time bus snapshot.
 type Stats struct {
+	Active        int64
+	Canceled      uint64
 	Published     uint64
 	Handled       uint64
 	Dropped       uint64
@@ -68,11 +70,15 @@ type queuedEvent struct {
 
 // Bus is a core.Resource. Setup starts one consumer and Close drains it.
 type Bus struct {
-	config Config
-	logger modularlog.Logger
-	queue  *ringbuffer.MpscRingBuffer
-	wake   chan struct{}
-	done   chan struct{}
+	taskCtx  context.Context
+	cancel   context.CancelFunc
+	canceled atomic.Uint64
+	active   atomic.Int64
+	config   Config
+	logger   modularlog.Logger
+	queue    *ringbuffer.MpscRingBuffer
+	wake     chan struct{}
+	done     chan struct{}
 
 	mu        sync.RWMutex
 	handlers  map[string][]Handler
@@ -98,7 +104,9 @@ func New(config Config, logger modularlog.Logger) (*Bus, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("%w: logger is nil", ErrInvalid)
 	}
+	taskCtx, cancel := context.WithCancel(context.Background())
 	return &Bus{
+		taskCtx: taskCtx, cancel: cancel,
 		config:   config,
 		logger:   logger.Named(config.Name),
 		queue:    ringbuffer.NewMpscRingBuffer(config.Capacity),
@@ -191,13 +199,16 @@ func (b *Bus) Close(ctx context.Context) error {
 	case <-b.done:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("event bus drain timed out with %d queued events: %w", b.queue.Length(), ctx.Err())
+		b.cancel()
+		return fmt.Errorf("event bus drain timed out (%d queued, %d active): %w", b.queue.Length(), b.active.Load(), ctx.Err())
 	}
 }
 
 // Stats returns observable queue and handler counters.
 func (b *Bus) Stats() Stats {
 	return Stats{
+		Active:        b.active.Load(),
+		Canceled:      b.canceled.Load(),
 		Published:     b.published.Load(),
 		Handled:       b.handled.Load(),
 		Dropped:       b.dropped.Load(),
@@ -229,6 +240,7 @@ func (b *Bus) endProducer() {
 
 func (b *Bus) consume() {
 	defer func() {
+		b.cancel()
 		b.state.Store(stateClosed)
 		close(b.done)
 	}()
@@ -255,7 +267,13 @@ func (b *Bus) consume() {
 }
 
 func (b *Bus) dispatch(record *queuedEvent) {
-	ctx := metadata.NewContext(context.Background(), record.metadata)
+	b.active.Add(1)
+	defer b.active.Add(-1)
+	if b.taskCtx.Err() != nil {
+		b.canceled.Add(1)
+		return
+	}
+	ctx := metadata.NewContext(b.taskCtx, record.metadata)
 	if record.spanContext.IsValid() {
 		ctx = trace.ContextWithSpanContext(ctx, record.spanContext)
 	}

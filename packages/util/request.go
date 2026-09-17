@@ -24,6 +24,11 @@ func DoRequest(meta *Meta, param map[string]interface{}, body interface{}, callb
 }
 
 func DoRequestWithContext(ctx context.Context, client *http.Client, meta *Meta, param map[string]interface{}, body interface{}, callback func(bytes []byte) error) error {
+	return DoRequestWithLimit(ctx, client, meta, param, body, 0, callback)
+}
+
+// DoRequestWithLimit bounds buffered response bytes; zero retains the legacy unlimited behavior.
+func DoRequestWithLimit(ctx context.Context, client *http.Client, meta *Meta, param map[string]interface{}, body interface{}, maxBytes int64, callback func([]byte) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -84,7 +89,14 @@ func DoRequestWithContext(ctx context.Context, client *http.Client, meta *Meta, 
 		return err
 	}
 	defer response.Body.Close()
-	bs, err := io.ReadAll(response.Body)
+	var responseReader io.Reader = response.Body
+	if maxBytes > 0 && maxBytes < 1<<63-1 {
+		responseReader = io.LimitReader(response.Body, maxBytes+1)
+	}
+	bs, err := io.ReadAll(responseReader)
+	if err == nil && maxBytes > 0 && int64(len(bs)) > maxBytes {
+		return ErrResponseTooLarge
+	}
 	if err != nil {
 		return err
 	}
@@ -96,3 +108,5 @@ func DoRequestWithContext(ctx context.Context, client *http.Client, meta *Meta, 
 
 	return callback(bs)
 }
+
+var ErrResponseTooLarge = errors.New("HTTP response exceeds configured limit")

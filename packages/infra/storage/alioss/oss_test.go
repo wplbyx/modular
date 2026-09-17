@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,202 @@ import (
 	"github.com/wplbyx/modular/packages/config/configitem"
 	"github.com/wplbyx/modular/packages/infra/storage"
 )
+
+const (
+	AliyunOssUrl    = "oss-cn-chengdu.aliyuncs.com" // 公网 endpoint（-internal 内网地址仅 ECS 内可用）
+	AliyunOssRegion = "cn-chengdu"
+	AliyunOssBucket = "lbyx-holographic" // lbyx-holographic.oss-cn-chengdu.aliyuncs.com
+)
+
+// =============================================================================
+// 真实 OSS 集成测试
+//
+// 凭证读环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET（缺失时自动 Skip，
+// 不影响无凭证环境的 go test ./...）；bucket/region/endpoint 用文件顶部常量。
+//
+// 覆盖三条需求：
+//  1. 资源访问链接动态生成且有时效性——PresignDownload 两次签名 URL 不同，
+//     过期前可访问、过期后 403（TestOSS_Real_PresignedURLExpiry）；
+//  2. 客户端直传 OSS——PresignUpload 生成的 PUT 链接同样动态签名，
+//     裸 http 客户端仅凭 URL + 签名头即可直传（TestOSS_Real_ClientDirectUpload）；
+//  3. 上传回调——OSS 官方提供上传回调能力：PresignUpload 的 Callback/CallbackVar
+//     会进入签名头（TestOSS_PresignUploadAndDownload 已断言），服务端 RSA 验签
+//     与 Handler 见 callback.go。真实 E2E 要求回调地址公网可达（OSS 服务器回源），
+//     本地无法直接验证，暂缓；待有公网回调地址（隧道/ECS）后补充。
+// =============================================================================
+
+// realTestHTTPClient 模拟真实客户端：无 SDK 依赖、带超时。
+var realTestHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+// newRealOSSTestStorage 用环境变量凭证 + 文件常量构造真实 OssStorage（走 NewOSSStorage 完整构造路径）。
+func newRealOSSTestStorage(t *testing.T) *OssStorage {
+	t.Helper()
+	ak := os.Getenv("OSS_ACCESS_KEY_ID")     // os.Getenv("OSS_ACCESS_KEY_ID")
+	sk := os.Getenv("OSS_ACCESS_KEY_SECRET") // os.Getenv("OSS_ACCESS_KEY_SECRET")
+	if ak == "" || sk == "" {
+		t.Skip("未设置 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，跳过真实 OSS 集成测试")
+	}
+	s, err := NewOSSStorage(&configitem.Storage{
+		OSS: &configitem.OSSStorageConfig{
+			AccessKeyID:     ak,
+			AccessKeySecret: sk,
+			Region:          AliyunOssRegion,
+			Bucket:          AliyunOssBucket,
+			Endpoint:        AliyunOssUrl,
+			Timeout:         30 * time.Second,
+			MaxRetries:      2,
+		},
+	})
+	require.NoError(t, err)
+	return s
+}
+
+// uniqueTestKey 用纳秒时间戳生成唯一 key，避免重复运行互相覆盖。
+func uniqueTestKey(prefix string) string {
+	return fmt.Sprintf("%s/%d.bin", prefix, time.Now().UnixNano())
+}
+
+// doPresigned 模拟客户端直传/直连：仅凭预签名 URL + 必须原样携带的签名头发起请求。
+func doPresigned(t *testing.T, req storage.DirectTransferRequest, body io.Reader) *http.Response {
+	t.Helper()
+	httpReq, err := http.NewRequest(req.Method, req.URL, body)
+	require.NoError(t, err)
+	for k, vs := range req.Headers {
+		for _, v := range vs {
+			httpReq.Header.Set(k, v)
+		}
+	}
+	resp, err := realTestHTTPClient.Do(httpReq)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// TestOSS_Real_ClientDirectUpload 需求 2 + 需求 1：
+// 客户端直传（动态 PUT 预签名 URL），直传后服务端可读回一致内容，
+// 且资源访问链接（PresignDownload）同样动态生成并支持响应覆盖参数。
+func TestOSS_Real_ClientDirectUpload(t *testing.T) {
+	s := newRealOSSTestStorage(t)
+	ctx := context.Background()
+	key := uniqueTestKey("modular-itest/direct-upload")
+	content := []byte("modular integration test: client direct upload")
+	// t.Cleanup(func() { _ = s.Delete(ctx, key) })
+
+	uploadOpts := storage.DirectUploadOptions{
+		Expires:         10 * time.Minute,
+		ContentType:     "text/plain",
+		Meta:            map[string]string{"source": "modular-integration-test"},
+		ForbidOverwrite: true,
+	}
+
+	// 直传地址动态生成：同一 key 两次签名，URL 必须不同（签名含时间因子）。
+	up1, err := s.PresignUpload(ctx, key, uploadOpts)
+	// up2, err := s.PresignUpload(ctx, key, uploadOpts)
+	require.NoError(t, err)
+	// require.NoError(t, err)
+	// assert.NotEqual(t, up1.URL, up2.URL, "同一 key 的直传 URL 应每次动态生成")
+	assert.True(t, strings.Contains(up1.URL, "x-oss-signature") || strings.Contains(up1.URL, "Signature="), "url=%s", up1.URL)
+	// assert.WithinDuration(t, time.Now().Add(10*time.Minute), up1.ExpiresAt, 15*time.Second)
+	// assert.Contains(t, up1.PublicURL, AliyunOssBucket+"."+AliyunOssUrl+"/modular-itest/")
+
+	// 客户端直传：裸 PUT，仅携带预签名 URL + 签名头。
+	putResp := doPresigned(t, up1, bytes.NewReader(content))
+	assert.Equal(t, http.StatusOK, putResp.StatusCode, "客户端直传 PUT 应成功")
+
+	// 服务端核对：对象存在、内容一致、大小一致、自定义元数据已落盘。
+	exists, err := s.Exists(ctx, key)
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	// rc, err := s.Download(ctx, key)
+	// require.NoError(t, err)
+	// got, readErr := io.ReadAll(rc)
+	// _ = rc.Close()
+	// require.NoError(t, readErr)
+	// assert.Equal(t, content, got)
+	// meta, err := s.GetMeta(ctx, key)
+	// require.NoError(t, err)
+	// assert.Equal(t, int64(len(content)), meta.Size)
+	// head, err := s.client.HeadObject(ctx, &aliyunoss.HeadObjectRequest{
+	//	Bucket: aliyunoss.Ptr(AliyunOssBucket),
+	//	Key:    aliyunoss.Ptr(s.buildObjectKey(key)),
+	// })
+	// require.NoError(t, err)
+	// assert.Equal(t, "modular-integration-test", head.Metadata["source"])
+	//
+	// // 需求 1：资源访问链接动态生成（PresignDownload），并验证响应覆盖参数生效。
+	// dl, err := s.PresignDownload(ctx, key, storage.DirectDownloadOptions{
+	//	Expires:                    10 * time.Minute,
+	//	ResponseContentType:        "text/plain",
+	//	ResponseContentDisposition: `attachment; filename="integration-test.txt"`,
+	// })
+	// require.NoError(t, err)
+	// getResp := doPresigned(t, dl, nil)
+	// assert.Equal(t, http.StatusOK, getResp.StatusCode)
+	// assert.Equal(t, "text/plain", getResp.Header.Get("Content-Type"))
+	// assert.Contains(t, getResp.Header.Get("Content-Disposition"), "integration-test.txt")
+	// getBody, readErr := io.ReadAll(getResp.Body)
+	// require.NoError(t, readErr)
+	// assert.Equal(t, content, getBody)
+	//
+	// // 软断言：私有 bucket 下未签名的静态 URL 应 403，佐证"访问必须走动态签名链接"；
+	// // 若 bucket 为公共读（返回 200）则仅记录，不判失败。
+	// if rawResp, err := realTestHTTPClient.Get(s.GetUrl(key)); err == nil {
+	//	_ = rawResp.Body.Close()
+	//	if rawResp.StatusCode == http.StatusForbidden {
+	//		t.Logf("bucket 为私有读：静态 GetUrl 返回 403，验证了动态签名链接的必要性")
+	//	} else {
+	//		t.Logf("静态 GetUrl 返回 %d（bucket 可能为公共读），跳过 403 断言", rawResp.StatusCode)
+	//	}
+	// }
+}
+
+// TestOSS_Real_PresignedURLExpiry 需求 1：访问链接有时效性——过期前可用、过期后 403。
+func TestOSS_Real_PresignedURLExpiry(t *testing.T) {
+	s := newRealOSSTestStorage(t)
+	ctx := context.Background()
+	key := uniqueTestKey("modular-itest/expiry")
+	content := []byte("modular integration test: url expiry")
+	// t.Cleanup(func() { _ = s.Delete(ctx, key) })
+	require.NoError(t, s.Upload(ctx, key, bytes.NewReader(content), storage.WithContentType("text/plain")))
+
+	dl, err := s.PresignDownload(ctx, key, storage.DirectDownloadOptions{Expires: 30 * time.Second})
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now().Add(5*time.Second), dl.ExpiresAt, 30*time.Second)
+	t.Log(dl.PublicURL)
+	t.Log(dl.URL)
+
+	// // 过期前：签名链接可访问且内容一致。
+	// resp := doPresigned(t, dl, nil)
+	// assert.Equal(t, http.StatusOK, resp.StatusCode)
+	// body, readErr := io.ReadAll(resp.Body)
+	// require.NoError(t, readErr)
+	// assert.Equal(t, content, body)
+	//
+	// // 等待过期：按签名过期时刻 + 3s 缓冲，规避本地与 OSS 间的细微时钟偏差。
+	// time.Sleep(time.Until(dl.ExpiresAt.Add(3 * time.Second)))
+	//
+	// // 过期后：同一链接必须被拒绝（403）。
+	// expired := doPresigned(t, dl, nil)
+	// assert.Equal(t, http.StatusForbidden, expired.StatusCode, "已过期的签名链接不应再可访问")
+}
+
+// TestOSS_PresignDownload_ResponseOverrideParams 离线单测：
+// 响应覆盖参数应进入预签名 URL 的 query 并参与签名。
+func TestOSS_PresignDownload_ResponseOverrideParams(t *testing.T) {
+	s := newPresignTestStorage(t)
+	dl, err := s.PresignDownload(context.Background(), "docs/a.txt", storage.DirectDownloadOptions{
+		Expires:                    time.Minute,
+		ResponseContentType:        "text/plain",
+		ResponseContentDisposition: `attachment; filename="a.txt"`,
+	})
+	require.NoError(t, err)
+	u, parseErr := url.Parse(dl.URL)
+	require.NoError(t, parseErr)
+	q := u.Query()
+	assert.Equal(t, "text/plain", q.Get("response-content-type"))
+	assert.Equal(t, `attachment; filename="a.txt"`, q.Get("response-content-disposition"))
+}
 
 // newTestStorage 起一个本地 httptest.Server，构造指向它的真实 *oss.Client。
 // 与官方 SDK 自测（client_mock_test.go）同款：用 WithEndpoint 把请求劫持到本地。

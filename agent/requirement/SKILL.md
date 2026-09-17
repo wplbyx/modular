@@ -13,9 +13,10 @@ Business Module 边界、业务动作和手写 Go contract。默认产物是业�
 
 优先直接创建或更新：
 
-- `internal/modules/<module>/contract` 中的公开 Go 接口；
+- `modules/<module>/contract` 中的公开 Go 接口；
 - Command、Query、Result 和必要的公开值类型；
-- 与真实复杂度匹配的 app/domain 实现骨架；
+- `modules/<module>/internal` 中与真实复杂度匹配的 app/domain 实现；
+- `modules/<module>/infrastructure` 中由本模块拥有的 adapter；
 - `.modular/architecture.yaml` 中明确且无环的模块依赖。
 
 不要创建 `proto/`、`common/`、Buf 配置或生成式 Module Port。HTTP、
@@ -27,10 +28,11 @@ gRPC 和消息协议是 Application 边缘的外部契约，由 adapter 显式�
 开始设计前先确认：
 
 - 读取 `.modular/architecture.yaml`，确认 Application、已有模块和依赖；
-- 读取目标模块的 `contract`、`app`、`domain` 和 wiring；
+- 读取目标模块的 `contract`、`internal/app`、`internal/domain` 和
+  `infrastructure`，并读取 `cmd/<application>/modules.go` 的装配；
 - 读取消费方实际需要的能力，不为假想复用扩大接口；
 - 确认共享 DB、事务接口、EventBus 或外部 client 的注入方式；
-- 若模块尚未声明，使用 modular CLI 添加，而不是手改受管 framework 文件。
+- 若模块尚未声明，使用已安装 skill 的 modular CLI 添加，而不是手改受管区域。
 
 ## 核心流程
 
@@ -79,9 +81,10 @@ Business Module 默认对应一个限界上下文，拥有自己的业务规则�
 
 跨模块同步调用遵循：
 
-- consumer 只导入 provider 的 `internal/modules/<provider>/contract`；
+- consumer 只导入 provider 的 `modules/<provider>/contract`；
 - contract 由 provider 定义，但以调用方真实需求保持窄接口；
-- consumer 不导入 provider 的 `internal`、repository、ORM model 或表；
+- consumer 不导入 provider 的模块根包、`internal`、`infrastructure`、ORM
+  model 或表；
 - `.modular/architecture.yaml` 中声明依赖，整个图必须保持 DAG；
 - 不为了消除依赖环创建一个装满 DTO 的 shared/common 业务包。
 
@@ -119,7 +122,8 @@ type Service interface {
 - 接口按调用能力拆分，避免一个包含所有方法的宽 Service；
 - stable reason 定义在拥有该业务规则的模块；
 - 输入校验分清格式校验与业务不变量，后者留在 app/domain；
-- 简单 CRUD 可留在 app；只有聚合、不变量或策略真实存在时才创建 domain。
+- 简单 CRUD 可留在 `internal/app`；统一脚手架保留 `internal/domain/doc.go`
+  说明无领域层的原因，只有聚合、不变量或策略真实存在时才添加领域类型。
 
 ## 事务与一致性
 
@@ -136,8 +140,11 @@ Inbox、补偿和对账。不要把这些成本施加给纯进程内模块调用
 
 ## Application 边缘
 
-入站 adapter 负责认证、传输格式校验和 DTO 映射，然后调用模块 contract。
-出站 adapter 把外部 client、存储或消息系统映射到模块需要的窄端口。
+入站 DTO、映射与 adapter 一起位于模块自己的 `infrastructure/<协议>`，
+负责认证、传输格式校验和映射，然后调用 `internal/app` 中的业务用例。
+用例直接实现需要公开的 contract；私有业务输入输出留在 `internal/app`。
+出站端口由消费它的 `internal/app` 定义，同模块 infrastructure 把
+DB、外部 client、存储或消息系统映射到这些窄端口。
 
 外部 HTTP/gRPC/消息契约可以独立版本化，但不能替代模块 Go contract，也
 不能被其他模块当作本地调用接口。项目明确采用 gRPC 时，其标准 protobuf
@@ -150,12 +157,14 @@ Inbox、补偿和对账。不要把这些成本施加给纯进程内模块调用
 1. 确认或添加模块及 DAG 依赖；
 2. 写 provider 的公开 contract 与稳定错误；
 3. 写发起方用例和必要 domain 规则；
-4. 写 repository/external port 及 adapter；
-5. 在 `WireApplication(platform)` 中按依赖顺序装配；
+4. 在 `internal/app` 写 repository/external port，并在模块自己的
+   `infrastructure` 中实现；
+5. 在 `cmd/<application>/modules.go` 的 `wireModules` 中按 DAG 顺序装配；
 6. 最后映射 HTTP/gRPC/event 边缘。
 
-不要修改 `framework.gen.go` 等 managed 文件。业务 wiring、模块代码和
-project-defined transaction adapter 属于用户维护范围。
+受管区域只由 modular CLI 更新；业务 wiring 写入 `modules.go` 的用户区域。
+模块代码和 project-defined transaction adapter 属于用户维护范围，不要把
+它们移入根级共享 infrastructure 包。
 
 ## 默认回复结构
 
@@ -176,4 +185,4 @@ project-defined transaction adapter 属于用户维护范围。
 - 用数据库表或 ORM model 定义模块边界；
 - 让模块通过全局容器、裸 DB 或 repository 相互调用；
 - 把未知的权限、金额、库存和状态机规则当作确定事实；
-- 为追求固定目录结构创建没有业务价值的空 domain/repository 包。
+- 把 scaffold 的 `doc.go` 误写成没有业务价值的 domain/repository 实现。

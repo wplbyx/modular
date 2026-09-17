@@ -12,6 +12,9 @@ type Option func(*Options)
 
 // Options contains configuration for MQTT client.
 type Options struct {
+	Workers      int
+	QueueSize    int
+	CloseTimeout time.Duration
 	// Broker connection settings
 	BrokerURL string
 	ClientID  string
@@ -53,6 +56,7 @@ type Options struct {
 // DefaultOptions returns the default MQTT options.
 func DefaultOptions() *Options {
 	return &Options{
+		Workers: 8, QueueSize: 256, CloseTimeout: 30 * time.Second,
 		ConnectTimeout:    30 * time.Second,
 		WriteTimeout:      5 * time.Second,
 		KeepAlive:         30 * time.Second,
@@ -202,3 +206,12 @@ func WithOrderMatters(order bool) Option {
 		o.OrderMatters = order
 	}
 }
+
+// WithWorkers sets business concurrency; ordered delivery always uses one worker.
+func WithWorkers(n int) Option { return func(o *Options) { o.Workers = n } }
+
+// WithQueueSize bounds pending business deliveries.
+func WithQueueSize(n int) Option { return func(o *Options) { o.QueueSize = n } }
+
+// WithCloseTimeout sets the default shutdown budget.
+func WithCloseTimeout(d time.Duration) Option { return func(o *Options) { o.CloseTimeout = d } }

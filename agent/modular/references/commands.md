@@ -43,9 +43,13 @@ python3 .modular/tool/modular.py module depend remove billing order
 ```
 
 Modules represent bounded contexts and form an acyclic dependency graph.
-Adding a module creates only its business configuration seam. Agent-led work
-adds `modules/<module>/contract` and the minimum implementation
-packages justified by real use cases.
+Adding a module creates its configuration and typed bootstrap assembly shell,
+alongside contract/internal package placeholders. Bootstrap exposes
+`New(cfg Config, deps Dependencies) (*Module, error)`; Agent-led work supplies
+actual dependencies, contract capabilities, and implementations from known use
+cases. Cmd connects modules; bootstrap assembles internals. See
+[layering](layering.md) before defining either interface. Existing scaffold-once
+constructors and configs are preserved by sync, including older signatures.
 
 Module removal is destructive and previews by default:
 

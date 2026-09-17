@@ -20,6 +20,8 @@ import (
 	"go.uber.org/zap"
 )
 
+var ErrResponseTooLarge = errors.New("HTTP response exceeds configured limit")
+
 const maxRetryResponseDrain = 64 << 10
 
 // RetryPolicy decides whether a replayable request should be retried.
@@ -28,15 +30,17 @@ type RetryPolicy func(request *http.Request, response *http.Response, err error)
 
 // Config contains HTTP client and retry configuration.
 type Config struct {
-	Timeout         time.Duration
-	MaxRetries      int
-	RetryDelay      time.Duration
-	MaxRetryDelay   time.Duration
-	MaxIdleConns    int
-	IdleConnTimeout time.Duration
-	Transport       http.RoundTripper
-	RetryPolicy     RetryPolicy
-	Policy          *modulartransport.Policy
+	// MaxResponseBytes limits buffered helpers and Download. Zero preserves unlimited reads; Do remains streaming.
+	MaxResponseBytes int64
+	Timeout          time.Duration
+	MaxRetries       int
+	RetryDelay       time.Duration
+	MaxRetryDelay    time.Duration
+	MaxIdleConns     int
+	IdleConnTimeout  time.Duration
+	Transport        http.RoundTripper
+	RetryPolicy      RetryPolicy
+	Policy           *modulartransport.Policy
 }
 
 // DefaultConfig returns conservative defaults suitable for general API calls.
@@ -296,8 +300,10 @@ func (client *Client) Download(ctx context.Context, url, destPath string) error 
 		}
 	}()
 
-	if _, err := io.Copy(file, response.Body); err != nil {
+	if n, err := io.Copy(file, limitResponse(response.Body, client.config.MaxResponseBytes)); err != nil {
 		return fmt.Errorf("write download: %w", err)
+	} else if client.config.MaxResponseBytes > 0 && n > client.config.MaxResponseBytes {
+		return ErrResponseTooLarge
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close download: %w", err)
@@ -327,7 +333,10 @@ func (client *Client) read(request *http.Request) ([]byte, error) {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, newResponseError(response)
 	}
-	body, err := io.ReadAll(response.Body)
+	body, err := io.ReadAll(limitResponse(response.Body, client.config.MaxResponseBytes))
+	if err == nil && client.config.MaxResponseBytes > 0 && int64(len(body)) > client.config.MaxResponseBytes {
+		return nil, ErrResponseTooLarge
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
@@ -471,4 +480,48 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func limitResponse(body io.Reader, limit int64) io.Reader {
+	if limit > 0 && limit < 1<<63-1 {
+		return io.LimitReader(body, limit+1)
+	}
+	return body
+}
+
+// PostMultipartStream sends local files without buffering their contents or retrying the upload.
+func (client *Client) PostMultipartStream(ctx context.Context, url string, fields, filePaths map[string]string) ([]byte, error) {
+	reader, writer := io.Pipe()
+	multipartWriter := multipart.NewWriter(writer)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, reader)
+	if err != nil {
+		reader.Close()
+		writer.Close()
+		return nil, err
+	}
+	request.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	stop := context.AfterFunc(ctx, func() { _ = reader.CloseWithError(ctx.Err()); _ = writer.CloseWithError(ctx.Err()) })
+	defer stop()
+	done := make(chan error, 1)
+	go func() {
+		err := func() error {
+			for key, value := range fields {
+				if err := multipartWriter.WriteField(key, value); err != nil {
+					return err
+				}
+			}
+			for field, path := range filePaths {
+				if err := appendMultipartFile(multipartWriter, field, path); err != nil {
+					return err
+				}
+			}
+			return multipartWriter.Close()
+		}()
+		_ = writer.CloseWithError(err)
+		done <- err
+	}()
+	data, requestErr := client.read(request)
+	_ = reader.Close()
+	writeErr := <-done
+	return data, errors.Join(requestErr, writeErr)
 }

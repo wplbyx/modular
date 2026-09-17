@@ -78,6 +78,7 @@ type Manager struct {
 	mu             sync.RWMutex
 	state          State
 	checkers       map[string]Checker
+	flights        map[string]*checkFlight
 	checkTimeout   time.Duration
 	maxConcurrency int
 }
@@ -87,6 +88,7 @@ func NewManager(options ...ManagerOption) *Manager {
 	manager := &Manager{
 		state:          StateStarting,
 		checkers:       make(map[string]Checker),
+		flights:        make(map[string]*checkFlight),
 		checkTimeout:   defaultCheckTimeout,
 		maxConcurrency: defaultConcurrency,
 	}
@@ -113,7 +115,7 @@ func (manager *Manager) Register(checkers ...Checker) error {
 		if _, exists := manager.checkers[name]; exists {
 			return fmt.Errorf("health checker %q is already registered", name)
 		}
-		manager.checkers[name] = checker
+		manager.checkers[name] = sharedChecker{manager: manager, checker: checker}
 	}
 	return nil
 }
@@ -151,7 +153,6 @@ func (manager *Manager) DetailedReport(ctx context.Context) Report {
 
 func (manager *Manager) report(ctx context.Context, details bool) Report {
 	manager.mu.RLock()
-	state := manager.state
 	checkers := make([]Checker, 0, len(manager.checkers))
 	for _, checker := range manager.checkers {
 		checkers = append(checkers, checker)
@@ -161,8 +162,8 @@ func (manager *Manager) report(ctx context.Context, details bool) Report {
 	manager.mu.RUnlock()
 
 	report := run(ctx, timeout, concurrency, details, checkers...)
-	report.State = state
-	if state != StateReady {
+	report.State = manager.State()
+	if report.State != StateReady {
 		report.Status = StatusFailed
 	}
 	return report
@@ -261,4 +262,50 @@ func reportHandler(report func(context.Context) Report) http.Handler {
 		writer.WriteHeader(status)
 		_ = json.NewEncoder(writer).Encode(result)
 	})
+}
+
+// A timed-out checker remains in flight until it really returns.
+type checkFlight struct {
+	done chan struct{}
+	err  error
+}
+type sharedChecker struct {
+	manager *Manager
+	checker Checker
+}
+
+func (c sharedChecker) Name() string { return c.checker.Name() }
+func (c sharedChecker) Check(ctx context.Context) error {
+	name := c.Name()
+	m := c.manager
+	m.mu.Lock()
+	flight := m.flights[name]
+	if flight == nil {
+		flight = &checkFlight{done: make(chan struct{})}
+		m.flights[name] = flight
+		checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.checkTimeout)
+		go func() {
+			defer cancel()
+			err := func() (err error) {
+				defer func() {
+					if p := recover(); p != nil {
+						err = fmt.Errorf("health checker panic: %v", p)
+					}
+				}()
+				return c.checker.Check(checkCtx)
+			}()
+			m.mu.Lock()
+			flight.err = err
+			delete(m.flights, name)
+			close(flight.done)
+			m.mu.Unlock()
+		}()
+	}
+	m.mu.Unlock()
+	select {
+	case <-flight.done:
+		return flight.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

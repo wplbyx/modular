@@ -115,8 +115,13 @@ chore: ignore packages/infra/storage/upload test artifact
 
 ### 模块契约
 
-- 跨模块契约位于 `internal/modules/<module>/contract`，使用手写的窄 Go 接口与 Command/Query/Result 类型。同步模块依赖必须形成 DAG。
-- HTTP/gRPC/消息 DTO 只存在于入站或出站 adapter，并显式映射到应用类型。不要为假想的微服务提取引入 proto、Remote Adapter 或分布式一致性代码。
+- **两层装配**：`cmd/<application>` 是最外层组合根，创建共享 Resource、按 DAG 连接模块、挂载入口并配置 Application 生命周期；`modules/<module>/bootstrap.go` 是模块局部组合根，组装本模块 adapter、用例和领域对象。业务调用顺序、事务与失败恢复由发起用例负责。
+- **两种接口**：兄弟模块只消费 `contract`；cmd 使用模块根包的 `Config`、`Dependencies`、`Module` 与 `New(cfg, deps)` 装配接口。参数和返回能力必须可供 cmd 使用，不泄漏 internal 类型。只注入必要的 Provider 和其他模块的 contract；bootstrap 保留 Provider，不提前 `Value()`，不启动后台任务。装配规则与示例见 `agent/modular/references/layering.md`，调整装配时读取。
+- **接口设计**：设计或审核业务能力、出站端口与可变规则时，读取 `agent/modular/references/interface-design.md`。按业务意图和行为保证选择抽象，不规定固定接口分类、单用例单接口或强制策略层。
+- v0.4 生成项目把限界上下文平铺在 `modules/<module>`。公开契约位于 `modules/<module>/contract`，使用手写的窄 Go 接口与 Command/Query/Result 类型；同步模块依赖必须形成 DAG。
+- 模块私有用例、业务输入输出和出站端口位于 `internal/app`，领域类型位于 `internal/domain`；用例直接实现需要公开的 `contract` 接口。HTTP/GORM/EventBus 等 adapter 位于同模块的 `infrastructure`，协议 DTO 与映射放在对应 adapter 旁。模块 bootstrap 组装这些 adapter；Go 编译器允许 adapter 实现本模块的 internal 端口。
+- `contract` 只放兄弟模块可消费的对外协议；repository、publisher、transaction 等出站端口由消费方在 `internal/app` 定义。兄弟模块只能 import provider 的 `contract`，不能 import 其根包、`internal`、`infrastructure`、ORM model 或表。
+- HTTP/gRPC/消息 DTO 由模块自己的入站 adapter 显式映射到应用类型。不要为假想的微服务提取引入 proto、Remote Adapter 或分布式一致性代码。
 
 ### 错误处理与多语言
 
@@ -126,10 +131,10 @@ chore: ignore packages/infra/storage/upload test artifact
 
 ### 配置、日志与 Transport Policy
 
-- `cmd` 的启动顺序固定为：`config.NewRoot` 加载配置第一，`NewLoggerManager` 创建 Logger 第二，`log.SetDefault` 后创建 `transport.Policy`，最后才构造 Resource/Endpoint/Application。`app.NewApplication(ctx, cfg, logger, ...)` 要求非 nil `log.Logger`；Application 不关闭该 logger。
+- `cmd` 的启动顺序固定为：`config.NewRootCommand` 加载配置第一，`NewLoggerManager` 创建 Logger 第二，`log.SetDefault` 后创建 `transport.Policy`，最后才构造 Resource/Endpoint/Application。`app.NewApplication(ctx, cfg, logger, ...)` 要求非 nil `log.Logger`；Application 不关闭该 logger。
 - 所有日志接口强制接收 `context.Context`：使用 `log.Info(ctx, ...)`、`log.Error(ctx, ...)` 或显式注入的 `log.Logger`。没有 `GetLogger`、`Infof`、Sugar、Fatal、Panic 或 raw zap getter；`log.Default()` 未安装时为 no-op。
 - 异步 Logger 和 `eventbus.Bus` 的队列数据必须直接存放在 `github.com/cyub/ringbuffer.MpscRingBuffer`。禁止新建、复制、fork 或包装自研 RingMPSC 算法；附加 channel 只能用于 wakeup/space signal。Logger 通过 `WithOutputConsole` / `WithOutputFiles(ctx)` 建立 bootstrap sink；Telemetry Resource Setup 后可动态挂载 OTLP sink。
-- `transport.NewPolicy` 默认提供 Recovery -> Metadata/RequestID -> OTel -> AccessLog -> Aegis BBR/SRE protection。通过 `cmd/<application>/policy.go`（scaffold-once）做替换或关闭；HTTP/gRPC 服务器和客户端应接收同一个 Application Policy。
+- `transport.NewPolicy` 默认提供 Recovery -> Metadata/RequestID -> OTel -> AccessLog -> Aegis BBR/SRE protection。通过 `cmd/<application>/main.go` 的用户区域替换或关闭；HTTP/gRPC 服务器和客户端应接收同一个 Application Policy。
 - `packages/metadata` 的 global/local scope 控制边界传播。仅全局且安全的键会穿透；authorization/cookie 必须显式 allowlist。业务日志和 handler 从 Context 获取 request/trace 关联字段。
 
 ### Option 模式并非通用
@@ -149,13 +154,16 @@ chore: ignore packages/infra/storage/upload test artifact
 
 ### 基础设施依赖注入
 
-- DB、Mongo、Redis、Storage 和 HTTP client 不提供包级全局实例。cmd 构造 ManagedResource 并同时注入 Application 与 repository；repository 接收具体的 `core.Provider[T]`。
+- DB、Mongo、Redis、Storage、ID generator 和 HTTP client 不提供包级全局实例。生成项目在 `cmd/<application>/resources.go` 构造 ManagedResource；cmd 将生命周期交给 Application，并将必要 Provider 传入模块 Dependencies。模块 bootstrap 创建 infrastructure adapter 并注入用例；repository 接收具体的 `core.Provider[T]`。
+- 项目不生成共享 infrastructure/platform 包；共享技术能力直接使用 `packages/*`。每个模块的自定义 adapter 放在 `modules/<module>/infrastructure`，数据库迁移以回调交给 cmd 聚合为 DB 之后运行的 Resource。
 - GORM 方言位于 `gorm/{postgres,mysql,clickhouse,sqlite}` 子包，SQLite 是纯 Go 驱动。SQL 使用显式 `configitem.Database.DSN`，Mongo 使用独立的 `configitem.Mongo`。
 
 ### 代码生成 / 构建工具
 
 - `//go:generate` 指令**只存在于 `packages/config/`**，且依赖外部工具 `gomodifytags`（重新生成 `mapstructure` 标签）。编辑配置结构体后若需要刷新标签，运行 `go generate ./packages/config/...`。
-- 无 CI、无 Makefile、无 `.golangci.*`、无 linter 配置——质量门禁是手动的：`go vet ./...` 与 `gofmt -l .`。
+- GitHub Actions 配置位于 `.github/workflows/ci.yml`，覆盖 Windows/Linux 检查、Linux race、脚手架检查与独立的 Pub/Sub 容器集成测试。仓库无 Makefile、无 `.golangci.*`；本地仍运行 `go vet ./...` 与 `gofmt -l .`。
+- `$modular` skill 生成的下游项目同样不含 Makefile、根级 `internal` 或 `*.gen.go`。CLI 的标准入口是已安装 skill 内的 `scripts/modular.py`；项目内 `.modular/tool/modular.py` 仅作为可重放后备。
+- 下游项目通过 `verify --phase framework|contract|complete` 运行阶段门禁；complete 精确包含严格 doctor/marker/test-presence、`gofmt -l`、build、vet 和 `go test -race ./...`，coverage 为独立报告。
 
 ### 其它坑
 

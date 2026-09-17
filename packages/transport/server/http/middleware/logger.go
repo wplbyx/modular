@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wplbyx/modular/packages/errs"
 	modularlog "github.com/wplbyx/modular/packages/log"
 	"go.uber.org/zap"
 )
@@ -15,10 +16,14 @@ func GinLogger(logger modularlog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		started := time.Now()
 		c.Next()
+		status := c.Writer.Status()
+		if !c.Writer.Written() && len(c.Errors) > 0 {
+			status = errs.Code(c.Errors.Last().Err)
+		}
 		fields := []zap.Field{
 			zap.String("method", c.Request.Method),
 			zap.String("path", c.FullPath()),
-			zap.Int("status", c.Writer.Status()),
+			zap.Int("status", status),
 			zap.Duration("duration", time.Since(started)),
 		}
 		if len(c.Errors) > 0 || c.Writer.Status() >= http.StatusInternalServerError {

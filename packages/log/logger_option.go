@@ -57,6 +57,13 @@ func WithOutputConsole() LoggerManagerOption {
 // WithOutputFiles 输出到文件
 func WithOutputFiles(ctx context.Context) LoggerManagerOption {
 	return func(manager *LoggerManager) {
+		if manager.initErr != nil {
+			return
+		}
+		if err := ensureLogDir(manager.config.File.Filename); err != nil {
+			manager.initErr = fmt.Errorf("create log directory: %w", err)
+			return
+		}
 		projectRoot, _ := os.Getwd()
 
 		cfg := newEncoderConfig()

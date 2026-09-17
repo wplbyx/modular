@@ -1,15 +1,22 @@
 # CRUD contract workflow
 
 Use for straightforward query and mutation behavior without rich domain rules.
-Read [layering](../layering.md), [repository placement](../repository.md), and
+Read [layering](../layering.md), [adapter placement](../repository.md), and
 [errors](../errors.md).
 
-1. Name the owning bounded context and the use case in business language.
+1. Name the owning bounded context and use case in business language.
 2. If another module calls it, define the smallest public Go interface and
-   Command/Query/Result types under the provider's `contract` package.
-3. Keep simple use cases and their outbound ports under the module's app layer;
-   do not generate an empty domain layer.
-4. Map HTTP/gRPC/message DTOs in inbound adapters instead of exposing them to
-   module contracts.
-5. Add stable reasons, focused tests, and explicit wiring.
-6. Run `make contract-check`, implement behavior, then run `make verify`.
+   Query/Command/Result types in `modules/<provider>/contract`.
+   Use [interface design](../interface-design.md) for operation granularity,
+   contract guarantees, and the split between request validation and business
+   authorization. Keep ordinary edits lightweight.
+3. Put use cases and outbound ports in `modules/<module>/internal/app`; keep
+   `internal/domain/doc.go` explaining why no domain model is needed.
+4. Put HTTP DTOs, mappings, and handlers in `infrastructure/http`, and
+   persistence models/repositories in `infrastructure/gorm`.
+5. In module `bootstrap.go`, construct adapters and use cases and expose typed
+   contract capabilities and necessary mounting hooks. Use cases implement
+   public contract interfaces directly. Cmd supplies narrow
+   dependencies, connects modules, and mounts their entrypoints.
+6. Add stable reasons and public-entrypoint behavior tests. Pass `verify --phase contract`, then
+   implement behavior and pass `verify --phase complete`.

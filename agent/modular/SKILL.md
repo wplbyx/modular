@@ -16,6 +16,8 @@ owns framework files; the Agent owns module contracts and business behavior.
 | New project or Business Module | [init](references/workflows/init.md) | `init`, `module` |
 | Simple CRUD contract | [crud](references/workflows/crud.md) | Agent edits + `contract-check` |
 | Aggregate or transaction rules | [domain](references/workflows/domain.md) | Agent edits + `contract-check` |
+| Business interface design or review | [interface design](references/interface-design.md) | Agent edits/review; `verify --phase contract` for contract changes |
+| Module assembly or dependency placement | [layering](references/layering.md) | Agent edits + `verify --phase contract` |
 | DB/Redis/Storage/Telemetry/EventBus | [resource](references/workflows/resource.md) | `resource add/remove` |
 | Convention or release audit | [audit](references/workflows/audit.md) | `self-check`, `doctor`, `verify` |
 
@@ -26,9 +28,10 @@ and project-specific policy in `.modular/profile.toml`.
 
 Generated applications follow this layout:
 
-- `cmd/<application>/` is the composition root and owns `main.go`, shared resource construction, and module assembly.
+- `cmd/<application>/` is the outermost composition root: shared resources, cross-module connections, transport mounting, and Application lifecycle wiring.
 - `config/<application>/` contains aggregated application configuration, YAML, and locale catalogs.
 - `modules/<module>/` is a bounded context with `bootstrap.go`, `config.go`, `contract/`, `internal/`, and module-owned `infrastructure/`.
+- `bootstrap.go` is the local composition root: it assembles private adapters and use cases from explicit dependencies. Follow [layering](references/layering.md) when designing its inputs and exported capabilities.
 - Repositories, HTTP handlers, publishers, and subscribers live under the owning module's `infrastructure/`; repository ports remain in `internal/app`.
 - Do not create project-level old project-level wiring and config directories, or shared infrastructure packages.
 
@@ -46,6 +49,9 @@ Generated applications follow this layout:
 - Module contracts use hand-written Go interfaces and Command/Query/Result
   types. Protobuf and other wire formats belong only to optional external
   adapters and are not scaffold concerns.
+- Business contracts serve siblings; the module root's typed constructor and
+  result serve cmd. Document behavioral promises with the contract and verify
+  them through behavior tests; compile and import checks alone do not prove them.
 - Cross-module ACID transactions are allowed when one initiating module owns
   the workflow and calls only public contracts. Define the narrow transaction
   interface in that use case; do not add a framework-wide UoW.
@@ -55,10 +61,11 @@ Generated applications follow this layout:
 ## Three phases
 
 1. **Framework** creates one compiling Application, shared resources and
-   transports, typed `wiring.Platform`, and an `Assembly` seam. It creates no
+   transports, typed application assembly seams, and module bootstrap shells when
+   modules are requested. It creates no
    fake business packages or repositories.
 2. **Contract** is Agent-led. Write narrow Go contracts, stable reasons, use-case
-   inputs/outputs, and edge mappings. Temporary work may carry
+   inputs/outputs, behavioral guarantees, assembly dependencies, and edge mappings. Temporary work may carry
    `modular:contract-unimplemented`.
 3. **Business** implements use cases, domain rules, adapters, and focused tests.
    Remove scaffold markers before `make verify`.

@@ -53,8 +53,7 @@ type Application struct {
 	readiness  *health.Manager
 	registered bool
 
-	// lifecycleLock 防止启动准备和关闭过程交错修改生命周期集合。
-	lifecycleLock   sync.Mutex
+	// initDone 发布初始化集合；关闭只在初始化结束后访问它们。
 	readyResources  []core.Resource
 	activeEndpoints []core.Endpoint
 
@@ -62,6 +61,9 @@ type Application struct {
 	state     applicationState
 	runCancel context.CancelFunc
 
+	initDone     chan struct{}
+	shutdownDone chan struct{}
+	startupWG    sync.WaitGroup
 	shutdownOnce sync.Once
 	shutdownErr  error
 
@@ -90,6 +92,7 @@ func NewApplication(ctx context.Context, cfg *configitem.Application, logger log
 		logger:          logger.Named("application"),
 		state:           applicationNew,
 		shutdownTimeout: defaultShutdownTimeout,
+		initDone:        make(chan struct{}), shutdownDone: make(chan struct{}),
 	}
 	if cfg.ShutdownTimeout > 0 {
 		application.shutdownTimeout = cfg.ShutdownTimeout
@@ -119,7 +122,7 @@ func NewApplication(ctx context.Context, cfg *configitem.Application, logger log
 }
 
 // Run 启动应用程序。每个 Application 最多只能调用一次 Run。
-func (application *Application) Run() error {
+func (application *Application) Run() (returnedErr error) {
 	runCtx, cancel, err := application.startRun()
 	if err != nil {
 		return err
@@ -127,97 +130,115 @@ func (application *Application) Run() error {
 	defer func() {
 		cancel()
 		application.finishRun()
+		if returnedErr != nil {
+			application.logger.Error(application.ctx, "application stopped with error", zap.Error(returnedErr))
+		}
+		application.logger.Info(application.ctx, "application exited")
 	}()
-
 	application.logger.Info(runCtx, "application starting", zap.String("name", application.cfg.Name))
-
-	triggerShutdown := func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), application.shutdownTimeout)
-		defer shutdownCancel()
-		_ = application.Close(shutdownCtx)
-	}
-
 	group, groupCtx := errgroup.WithContext(runCtx)
-	application.lifecycleLock.Lock()
-	prepareErr := application.setupResources(groupCtx)
-	if prepareErr == nil {
-		application.startEndpoints(group, groupCtx)
-	}
-	application.lifecycleLock.Unlock()
-	if prepareErr == nil {
-		prepareErr = application.waitEndpointsReady(groupCtx)
-	}
-	if prepareErr == nil {
-		prepareErr = groupCtx.Err()
-	}
-	if prepareErr == nil {
-		prepareErr = application.registerNode(groupCtx)
-	}
-	if prepareErr == nil && application.readiness != nil {
-		application.readiness.SetReady()
-	}
-
-	if prepareErr != nil {
-		triggerShutdown()
-		groupErr := group.Wait()
-		if runCtx.Err() != nil && errors.Is(prepareErr, runCtx.Err()) {
-			prepareErr = nil
-		}
-		if runCtx.Err() != nil && errors.Is(groupErr, runCtx.Err()) {
-			groupErr = nil
-		}
-		return errors.Join(prepareErr, groupErr, application.shutdownErr)
-	}
-
-	if len(application.endpoints) == 0 {
-		application.logger.Warn(runCtx, "application has no endpoints; waiting for cancellation")
-		<-runCtx.Done()
-		triggerShutdown()
-		return application.shutdownErr
-	}
-
+	groupResult := make(chan error, 1)
+	prepareResult := make(chan error, 1)
 	go func() {
-		<-groupCtx.Done()
-		triggerShutdown()
+		prepareResult <- func() error {
+			defer close(application.initDone)
+			err := application.setupResources(groupCtx)
+			if err == nil && groupCtx.Err() == nil {
+				application.startEndpoints(group, groupCtx)
+			}
+			go func() { groupResult <- group.Wait() }()
+			return err
+		}()
 	}()
-
-	runErr := group.Wait()
-	triggerShutdown()
-
-	if runErr != nil {
-		application.logger.Error(application.ctx, "application stopped with error", zap.Error(runErr))
+	var prepareErr error
+	select {
+	case prepareErr = <-prepareResult:
+	case <-runCtx.Done():
+		prepareErr = runCtx.Err()
 	}
-	if application.shutdownErr != nil {
-		application.logger.Error(application.ctx, "application shutdown failed", zap.Error(application.shutdownErr))
+	// With no endpoints errgroup.Wait cancels groupCtx immediately; readiness uses runCtx instead.
+	readyCtx := groupCtx
+	if len(application.endpoints) == 0 {
+		readyCtx = runCtx
 	}
-	application.logger.Info(application.ctx, "application exited")
-	return errors.Join(runErr, application.shutdownErr)
+	if prepareErr == nil {
+		prepareErr = callWithContext(readyCtx, func() error { return application.waitEndpointsReady(readyCtx) })
+	}
+	if prepareErr == nil {
+		prepareErr = readyCtx.Err()
+	}
+	if prepareErr == nil {
+		prepareErr = application.registerNode(readyCtx)
+	}
+	if prepareErr == nil {
+		application.stateLock.Lock()
+		if application.state == applicationRunning && readyCtx.Err() == nil {
+			if application.readiness != nil {
+				application.readiness.SetReady()
+			}
+		}
+		application.stateLock.Unlock()
+		<-readyCtx.Done()
+	}
+	shutdownErr := application.Close(context.Background())
+	var groupErr error
+	if !errors.Is(shutdownErr, context.DeadlineExceeded) {
+		groupErr = <-groupResult
+	} else {
+		select {
+		case groupErr = <-groupResult:
+		default:
+		}
+	}
+	if errors.Is(prepareErr, context.Canceled) || errors.Is(prepareErr, runCtx.Err()) {
+		prepareErr = nil
+	}
+	if errors.Is(groupErr, context.Canceled) {
+		groupErr = nil
+	}
+	return errors.Join(prepareErr, groupErr, shutdownErr)
 }
 
-// Close 手动触发关闭。Close 在 Run 前调用会关闭 Application，但不会触发任何依赖的生命周期。
+// Close 的调用者独立等待；首次关闭拥有应用配置的总关闭预算。
 func (application *Application) Close(ctx context.Context) error {
 	application.stateLock.Lock()
-	switch application.state {
-	case applicationNew:
+	if application.state == applicationNew {
 		application.state = applicationStopped
 		application.stateLock.Unlock()
 		return nil
-	case applicationStopped:
+	}
+	if application.state == applicationStopped {
 		err := application.shutdownErr
 		application.stateLock.Unlock()
 		return err
-	case applicationRunning:
-		application.state = applicationStopping
+	}
+	application.state = applicationStopping
+	if application.readiness != nil {
+		application.readiness.SetDraining()
 	}
 	if application.runCancel != nil {
 		application.runCancel()
 	}
 	application.stateLock.Unlock()
-
 	application.shutdownOnce.Do(func() {
-		application.shutdownErr = application.shutdown(ctx)
+		go func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), application.shutdownTimeout)
+			defer cancel()
+			err := application.shutdown(shutdownCtx)
+			application.stateLock.Lock()
+			application.shutdownErr = err
+			application.stateLock.Unlock()
+			close(application.shutdownDone)
+		}()
 	})
-	return application.shutdownErr
+	select {
+	case <-application.shutdownDone:
+		application.stateLock.Lock()
+		defer application.stateLock.Unlock()
+		return application.shutdownErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (application *Application) startRun() (context.Context, context.CancelFunc, error) {
@@ -242,14 +263,21 @@ func (application *Application) finishRun() {
 
 // shutdown 在同一个超时预算内按顺序执行全部关闭步骤。
 func (application *Application) shutdown(ctx context.Context) error {
-	application.lifecycleLock.Lock()
-	defer application.lifecycleLock.Unlock()
+	select {
+	case <-application.initDone:
+	case <-ctx.Done():
+		return fmt.Errorf("shutdown waiting for resource setup: %w", ctx.Err())
+	}
 
 	if application.readiness != nil {
 		application.readiness.SetDraining()
 	}
 	unregisterErr := application.unregisterNode(ctx)
 	endpointErr := application.shutdownEndpoints(ctx)
+	startupErr := callWithContext(ctx, func() error { application.startupWG.Wait(); return nil })
+	if startupErr != nil {
+		return errors.Join(unregisterErr, endpointErr, fmt.Errorf("endpoint Startup still running: %w", startupErr))
+	}
 	if ctx.Err() != nil {
 		return errors.Join(unregisterErr, endpointErr, ctx.Err())
 	}
@@ -258,6 +286,9 @@ func (application *Application) shutdown(ctx context.Context) error {
 
 func (application *Application) setupResources(ctx context.Context) error {
 	for _, resource := range application.resources {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		application.logger.Info(ctx, "resource initializing", zap.String("resource", resource.Name()))
 		if err := resource.Setup(ctx); err != nil {
 			return fmt.Errorf("init resource %s: %w", resource.Name(), err)
@@ -286,19 +317,35 @@ func (application *Application) registerNode(ctx context.Context) error {
 	if application.registrar == nil {
 		return nil
 	}
-	if err := application.registrar.Register(ctx, application.node); err != nil {
-		return fmt.Errorf("register service node: %w", err)
-	}
-	application.registered = true
-	application.logger.Info(ctx, "service node registered", zap.String("node", application.node.ID))
-	return nil
+	return callWithContext(ctx, func() error {
+		if err := application.registrar.Register(ctx, application.node); err != nil {
+			return fmt.Errorf("register service node: %w", err)
+		}
+		application.stateLock.Lock()
+		if application.state == applicationRunning && ctx.Err() == nil {
+			application.registered = true
+			application.stateLock.Unlock()
+			return nil
+		}
+		application.stateLock.Unlock()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), application.shutdownTimeout)
+		defer cancel()
+		err := application.registrar.Unregister(cleanupCtx, application.node)
+		if err != nil {
+			application.logger.Error(cleanupCtx, "late registration cleanup failed", zap.Error(err))
+		}
+		return errors.Join(context.Canceled, err)
+	})
 }
 
 func (application *Application) unregisterNode(ctx context.Context) error {
-	if !application.registered {
+	application.stateLock.Lock()
+	registered := application.registered
+	application.registered = false
+	application.stateLock.Unlock()
+	if !registered {
 		return nil
 	}
-	application.registered = false
 	if err := callWithContext(ctx, func() error {
 		return application.registrar.Unregister(ctx, application.node)
 	}); err != nil {
@@ -314,7 +361,9 @@ func (application *Application) startEndpoints(
 ) {
 	for _, endpoint := range application.endpoints {
 		application.activeEndpoints = append(application.activeEndpoints, endpoint)
+		application.startupWG.Add(1)
 		group.Go(func() error {
+			defer application.startupWG.Done()
 			if ctx.Err() != nil {
 				return nil
 			}

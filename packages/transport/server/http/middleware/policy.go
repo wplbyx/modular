@@ -55,6 +55,12 @@ func Protection(policy *modulartransport.Policy) gin.HandlerFunc {
 			return
 		}
 
+		defer func() {
+			if p := recover(); p != nil {
+				done(fmt.Errorf("HTTP handler panic: %v", p))
+				panic(p)
+			}
+		}()
 		ctx.Next()
 		if ctx.Writer.Status() >= http.StatusInternalServerError {
 			if len(ctx.Errors) > 0 {

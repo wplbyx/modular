@@ -1,0 +1,37 @@
+name: modular-pubsub-test
+services:
+  redis:
+    image: redis:7.4
+    ports: ["127.0.0.1:16379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  mqtt:
+    image: eclipse-mosquitto:2.0.22
+    ports: ["127.0.0.1:11883:1883"]
+    volumes: ["./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "localhost", "-t", "health", "-m", "ok"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  namesrv:
+    image: apache/rocketmq:5.3.2
+    command: sh mqnamesrv
+    environment:
+      JAVA_OPT_EXT: "-Xms128m -Xmx128m -Xmn64m"
+  rocket:
+    image: apache/rocketmq:5.3.2
+    command: sh mqbroker -n namesrv:9876 -c /home/rocketmq/broker.conf --enable-proxy -pc /home/rocketmq/proxy.json
+    environment:
+      JAVA_OPT_EXT: "-Xms512m -Xmx512m -Xmn256m"
+    depends_on: [namesrv]
+    ports: ["127.0.0.1:18081:18081"]
+    volumes: ["./broker.conf:/home/rocketmq/broker.conf:ro", "./proxy.json:/home/rocketmq/proxy.json:ro"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/18081"]
+      interval: 10s
+      timeout: 10s
+      retries: 24

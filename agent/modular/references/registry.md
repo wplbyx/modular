@@ -26,9 +26,10 @@ the node through unchanged and requires a node when Registrar is configured.
 It registers only after Endpoint readiness and unregisters before Endpoint
 shutdown.
 
-`wiring.Assembly.Registrar` is the scaffold-once composition seam. Leave it nil
-when registration is unnecessary, or return a configured Consul Registrar
-without editing managed bootstrap code.
+Registrar construction belongs in `wireModules` or another user-owned section
+of `cmd/<application>`. Leave `moduleAssembly.Registrar` nil when registration
+is unnecessary; when configured, main passes both it and the ServiceNode to
+Application without changing library lifecycle code.
 
 Consul writes one record per transport. Its record ID includes base node ID,
 protocol, address, and port, preventing collisions between same-protocol

@@ -40,3 +40,50 @@ jobs:
       - name: Test modular CLI
         if: runner.os == 'Linux'
         run: python -m unittest agent.modular.tests.test_modular_cli
+
+      - name: Check modular templates
+        if: runner.os == 'Linux'
+        run: python agent/modular/scripts/modular.py self-check
+
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - run: go test -race -count=1 ./...
+
+  pubsub-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MODULAR_TEST_REDIS: "127.0.0.1:16379"
+      MODULAR_TEST_MQTT: "tcp://127.0.0.1:11883"
+      MODULAR_TEST_ROCKET: "127.0.0.1:18081"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Start brokers
+        run: docker compose -f tests/integration/pubsub/compose.yaml up -d --wait --wait-timeout 240
+      - name: Provision RocketMQ topic and group
+        run: |
+          docker compose -f tests/integration/pubsub/compose.yaml exec -T rocket sh mqadmin updateTopic -n namesrv:9876 -c DefaultCluster -t modular-reliability
+          docker compose -f tests/integration/pubsub/compose.yaml exec -T rocket sh mqadmin updateSubGroup -n namesrv:9876 -c DefaultCluster -g modular-reliability
+      - name: Test delivery and shutdown
+        run: go test -tags=integration -count=1 -timeout=8m ./tests/integration/pubsub
+      - name: Broker diagnostics
+        if: failure()
+        run: |
+          docker compose -f tests/integration/pubsub/compose.yaml logs --no-color
+          docker compose -f tests/integration/pubsub/compose.yaml exec -T rocket tail -n 200 /home/rocketmq/logs/rocketmqlogs/proxy.log || true
+      - name: Stop brokers
+        if: always()
+        run: docker compose -f tests/integration/pubsub/compose.yaml down -v

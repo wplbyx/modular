@@ -46,7 +46,7 @@ err_template_gen \
   --root . \
   --packages ./modules/user/... \
   --out ./config/user_api/locales \
-  --languages zh-CN,en-US
+  --languages en,zh-CN
 ```
 
 For the normal modular monolith, generate one catalog containing every module reason:
@@ -54,9 +54,9 @@ For the normal modular monolith, generate one catalog containing every module re
 ```bash
 err_template_gen \
   --root . \
-  --packages ./internal/... \
+  --packages ./modules/... \
   --out ./config/my-project/locales \
-  --languages zh-CN,en-US
+  --languages en,zh-CN
 ```
 
 The output stays flat and product-editable:
@@ -75,9 +75,9 @@ Use the same arguments in CI with `--check`:
 ```bash
 err_template_gen \
   --root . \
-  --packages ./internal/... \
+  --packages ./modules/... \
   --out ./config/my-project/locales \
-  --languages zh-CN,en-US \
+  --languages en,zh-CN \
   --check
 ```
 
@@ -87,7 +87,7 @@ Configuration is loaded first; initialize logging second and pass its explicit
 `log.Logger` to the Handler and Application policy.
 
 ```go
-loggerManager, err := log.NewLoggerManager(&cfg.Logging, log.WithOutputConsole())
+loggerManager, err := log.NewLoggerManager(&cfg.Logging)
 if err != nil {
 	return fmt.Errorf("create logger: %w", err)
 }
@@ -97,11 +97,7 @@ defer loggerManager.Close(context.WithoutCancel(ctx))
 
 policy := transport.NewPolicy(cfg.Application.Name, transport.WithLogger(loggerManager.Logger()))
 
-catalog, err := errs.LoadCatalog(
-	os.DirFS("."),
-	"config/my-project/locales",
-	"zh-CN",
-)
+catalog, err := errs.LoadCatalog(projectconfig.Locales, "locales", "en")
 if err != nil {
 	return fmt.Errorf("load error catalog: %w", err)
 }
@@ -123,7 +119,10 @@ grpcServer, err := rpcserver.NewServer(
 )
 ```
 
-Use one locale directory, Catalog, and Handler for the Application even when it hosts multiple Business Modules; do not load locale files from business packages.
+The generated aggregate config embeds `config/<application>/locales/*.yaml` as
+`projectconfig.Locales`. Use that one directory, Catalog, and Handler for the
+Application even when it hosts multiple Business Modules; do not load locale
+files from business packages.
 
 HTTP adapters return errors through `httpserver.Wrap` or `c.Error`. HTTP reads `Accept-Language`; gRPC reads `accept-language` metadata. The framework selects the locale and returns only `code`, `reason`, and localized `message`.
 

@@ -8,6 +8,9 @@ import (
 
 // StreamOptions configures a StreamClient.
 type StreamOptions struct {
+	// RecoveryInterval and ClaimMinIdle control recovery of unacknowledged entries.
+	RecoveryInterval time.Duration
+	ClaimMinIdle     time.Duration
 	// Client is the injected go-redis client. Required.
 	Client goredis.UniversalClient
 
@@ -36,7 +39,7 @@ type StreamOptions struct {
 	// MaxLen trims the stream on publish via XADD MAXLEN ~ N when > 0.
 	MaxLen int64
 
-	// MaxRetries is the number of handler retries before a message is acked and
+	// MaxRetries is the number of handler retries before a message is retained or
 	// (if configured) diverted to DLQStream. Defaults to 0 (no retries).
 	MaxRetries int
 
@@ -44,7 +47,7 @@ type StreamOptions struct {
 	RetryBackoff time.Duration
 
 	// DLQStream is the dead-letter stream for messages that exhaust retries.
-	// When empty, such messages are acked and dropped.
+	// When empty, failed messages remain pending and retry until canceled.
 	DLQStream string
 }
 
@@ -54,11 +57,13 @@ type StreamOption func(*StreamOptions)
 // DefaultStreamOptions returns StreamOptions with sensible defaults.
 func DefaultStreamOptions() *StreamOptions {
 	return &StreamOptions{
-		StartID:      "$",
-		Block:        1 * time.Second,
-		Count:        100,
-		Workers:      1,
-		RetryBackoff: 100 * time.Millisecond,
+		RecoveryInterval: 30 * time.Second,
+		ClaimMinIdle:     5 * time.Minute,
+		StartID:          "$",
+		Block:            1 * time.Second,
+		Count:            100,
+		Workers:          1,
+		RetryBackoff:     100 * time.Millisecond,
 	}
 }
 
@@ -118,7 +123,7 @@ func WithMaxLen(n int64) StreamOption {
 	}
 }
 
-// WithStreamRetries sets handler retry behavior before a message is acked and
+// WithStreamRetries sets handler retry behavior before a message is retained or
 // (if configured) diverted to DLQStream.
 func WithStreamRetries(maxRetries int, backoff time.Duration) StreamOption {
 	return func(o *StreamOptions) {
@@ -135,4 +140,10 @@ func WithDLQStream(name string) StreamOption {
 	return func(o *StreamOptions) {
 		o.DLQStream = name
 	}
+}
+
+// WithStreamRecovery sets the scan interval and idle threshold for pending recovery.
+// Handlers must tolerate duplicate delivery, including after a long-running handler exceeds minIdle.
+func WithStreamRecovery(interval, minIdle time.Duration) StreamOption {
+	return func(o *StreamOptions) { o.RecoveryInterval = interval; o.ClaimMinIdle = minIdle }
 }

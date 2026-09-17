@@ -1,4 +1,4 @@
 interface:
   display_name: "Modular Scaffold Skill"
-  short_description: "Build modular-monolith-first Go applications"
-  default_prompt: "Use $modular to design bounded-context modules, scaffold one shared Application runtime, and verify Go contract boundaries."
+  short_description: "Build self-contained Go business modules"
+  default_prompt: "Use $modular to scaffold one Go Application with self-contained bounded-context modules, wire its cmd composition root, and verify contract boundaries."

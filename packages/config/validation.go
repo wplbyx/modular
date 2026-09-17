@@ -80,6 +80,7 @@ func registerStructValidations(validate *validator.Validate) {
 	validate.RegisterStructValidation(validateMongo, configitem.Mongo{})
 	validate.RegisterStructValidation(validateRedis, configitem.Redis{})
 	validate.RegisterStructValidation(validateHTTP, configitem.HTTP{})
+	validate.RegisterStructValidation(validateTelemetry, configitem.Telemetry{})
 }
 
 func validateStorage(level validator.StructLevel) {
@@ -215,4 +216,18 @@ func mapstructureFieldName(field reflect.StructField) (string, bool) {
 		return field.Name, false
 	}
 	return name, false
+}
+
+func validateTelemetry(level validator.StructLevel) {
+	cfg := level.Current().Interface().(configitem.Telemetry)
+	if !cfg.UseTLS && (cfg.CAFile != "" || cfg.CertFile != "" || cfg.KeyFile != "" || cfg.ServerName != "") {
+		level.ReportError(cfg.UseTLS, "UseTLS", "UseTLS", "required_for_tls_settings", "")
+	}
+	for _, header := range cfg.Headers {
+		key, _, ok := strings.Cut(header, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			level.ReportError(cfg.Headers, "Headers", "Headers", "key_value", "")
+			break
+		}
+	}
 }

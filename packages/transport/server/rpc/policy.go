@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"runtime/debug"
 	"time"
 
@@ -111,6 +112,12 @@ func protectionUnaryInterceptor(policy *modulartransport.Policy) grpc.UnaryServe
 		if err != nil {
 			return nil, err
 		}
+		defer func() {
+			if p := recover(); p != nil {
+				done(fmt.Errorf("gRPC handler panic: %v", p))
+				panic(p)
+			}
+		}()
 		reply, err := next(ctx, request)
 		if isGRPCServerFailure(err) {
 			done(err)
@@ -127,6 +134,12 @@ func protectionStreamInterceptor(policy *modulartransport.Policy) grpc.StreamSer
 		if err != nil {
 			return err
 		}
+		defer func() {
+			if p := recover(); p != nil {
+				done(fmt.Errorf("gRPC handler panic: %v", p))
+				panic(p)
+			}
+		}()
 		err = next(server, stream)
 		if isGRPCServerFailure(err) {
 			done(err)

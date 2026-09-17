@@ -3,20 +3,112 @@ package log
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/wplbyx/modular/packages/config/configitem"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/wplbyx/modular/packages/config/configitem"
 )
+
+func TestNewLoggerManager_ConfigOutputs(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		outputs   []string
+		wantCores int
+		wantFiles int
+		wantError string
+	}{
+		{name: "default", wantCores: 1},
+		{name: "console", outputs: []string{"CONSOLE"}, wantCores: 1},
+		{name: "file", outputs: []string{"FILE"}, wantCores: 1, wantFiles: 1},
+		{name: "combined", outputs: []string{"console", "file", "telemetry"}, wantCores: 2, wantFiles: 1},
+		{name: "telemetry only", outputs: []string{"telemetry"}, wantError: "bootstrap output"},
+		{name: "invalid after file", outputs: []string{"file", "invalid"}, wantError: "unsupported logging output"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// 使用可 Sync 的真实文件捕获控制台输出，避免测试进程管道的 EINVAL。
+			console, err := os.CreateTemp(t.TempDir(), "console")
+			require.NoError(t, err)
+			previous := os.Stdout
+			os.Stdout = console
+			t.Cleanup(func() {
+				os.Stdout = previous
+				require.NoError(t, console.Close())
+			})
+			dir := filepath.Join(t.TempDir(), "logs")
+			cfg := &configitem.Logging{Level: "info", Output: tt.outputs, File: configitem.FileConfig{Filename: filepath.Join(dir, "app.log")}}
+			manager, err := NewLoggerManager(cfg, nil)
+			if tt.wantError != "" {
+				require.ErrorContains(t, err, tt.wantError)
+				require.NoDirExists(t, dir)
+				return
+			}
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, manager.Close(context.Background())) })
+			require.Len(t, manager.cores, tt.wantCores)
+			require.Len(t, manager.closers, tt.wantFiles)
+			manager.Logger().Info(t.Context(), "configured output")
+			require.NoError(t, manager.Close(t.Context()))
+			if tt.wantFiles > 0 {
+				files, err := filepath.Glob(filepath.Join(dir, "app-*.log"))
+				require.NoError(t, err)
+				require.Len(t, files, 1)
+				data, err := os.ReadFile(files[0])
+				require.NoError(t, err)
+				require.Contains(t, string(data), "configured output")
+				writer := manager.closers[0].(*DailyRotate)
+				select {
+				case <-writer.stopChan:
+				default:
+					t.Fatal("file rotation was not stopped")
+				}
+			} else {
+				require.NoDirExists(t, dir)
+			}
+		})
+	}
+}
+
+func TestNewLoggerManager_ExplicitOutputsOverrideConfig(t *testing.T) {
+	var buffer bytes.Buffer
+	dir := filepath.Join(t.TempDir(), "unused")
+	cfg := &configitem.Logging{Output: []string{"file", "invalid"}, File: configitem.FileConfig{Filename: filepath.Join(dir, "app.log")}}
+	manager, err := NewLoggerManager(cfg, withBufferOutput(&buffer))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, manager.Close(context.Background())) })
+	require.Len(t, manager.cores, 1)
+	require.NoDirExists(t, dir)
+	manager.Logger().Info(t.Context(), "explicit output")
+	require.Contains(t, buffer.String(), "explicit output")
+}
+
+func TestNewLoggerManager_FileOptionAndInitializationErrors(t *testing.T) {
+	_, err := NewLoggerManager(nil)
+	require.ErrorContains(t, err, "config is nil")
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "nested", "app.log")
+	manager, err := NewLoggerManager(&configitem.Logging{File: configitem.FileConfig{Filename: filename}}, WithOutputFiles(t.Context()))
+	require.NoError(t, err)
+	require.DirExists(t, filepath.Dir(filename))
+	require.NoError(t, manager.Close(t.Context()))
+
+	blocker := filepath.Join(dir, "blocker")
+	require.NoError(t, os.WriteFile(blocker, nil, 0o600))
+	_, err = NewLoggerManager(&configitem.Logging{Output: []string{"file"}, File: configitem.FileConfig{Filename: filepath.Join(blocker, "app.log")}})
+	require.ErrorContains(t, err, "create log directory")
+}
 
 func TestNewLoggerManagerFailureDoesNotInstallDefault(t *testing.T) {
 	restore := SetDefault(nopLogger{})
 	t.Cleanup(restore)
 
-	_, err := NewLoggerManager(&configitem.Logging{Level: "info"})
+	_, err := NewLoggerManager(&configitem.Logging{Level: "info", Output: []string{"invalid"}})
 	if err == nil {
 		t.Fatal("NewLoggerManager() error = nil")
 	}

@@ -8,8 +8,9 @@ Accepted for v0.4; supersedes ADR 0001 for new projects.
 
 modular v0.4 models one deployable Application composed of bounded-context
 Business Modules. A Business Module owns cohesive behavior, use cases, its
-public Go contract, and data writes. The Application owns transport,
-configuration, infrastructure, observability, and lifecycle.
+public Go contract, adapters, and data writes. The Application owns shared
+transport, configuration, Resources, observability, and lifecycle. ADR 0003
+records their self-contained directory and composition-root layout.
 
 Modules collaborate through hand-written Go contracts and form an acyclic
 dependency graph. They do not use protobuf-generated local Ports, Remote

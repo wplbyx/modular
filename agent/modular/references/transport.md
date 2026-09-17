@@ -20,7 +20,7 @@ gRPC (`packages/transport/server/rpc`): `rpcserver.NewServer(cfg *configitem.GRP
 
 ## Pub/Sub subscriber endpoint
 
-`packages/transport/pubsub/endpoint.go`: `NewSubscriberEndpoint(name string, sub pubsub.Subscriber, topic string, handler pubsub.MessageHandler, opts ...SubscriberOption) *SubscriberEndpoint`. `Ready` completes after the subscription is established. `Startup` auto-detects optional `Connector` / `Disconnector` implementations on the subscriber, subscribes, then blocks on an internal context until `Shutdown` cancels it and closes the subscriber. Override auto-detected hooks with `WithConnect(fn)` / `WithDisconnect(fn)`. Use `WithSubscribeOptions(...SubscribeOption)` to forward QoS, queue name, and similar subscription options into `Subscriber.Subscribe`. Shutdown errors are aggregated with `errors.Join`.
+`packages/transport/pubsub/endpoint.go`: `NewSubscriberEndpoint(name string, sub pubsub.Subscriber, topic string, handler pubsub.MessageHandler, opts ...SubscriberOption) *SubscriberEndpoint`. `Ready` completes after the subscription is established. `Startup` auto-detects optional `Connector` / `Disconnector` implementations on the subscriber, subscribes, then blocks on an internal context until `Shutdown` cancels it and closes the subscriber. Override auto-detected hooks with `WithConnect(fn)` / `WithDisconnect(fn)`. Use `WithSubscribeOptions(...SubscribeOption)` to forward QoS, queue name, and similar subscription options into `Subscriber.Subscribe`. Subscribers implementing `pubsub.ContextCloser` are closed once through `CloseContext(ctx)` instead of calling Disconnect and Close twice. Legacy subscribers retain disconnect/close hooks and aggregated errors. Shutdown is idempotent; failed startup wakes Ready; closed endpoints cannot restart.
 
 Handlers: `pubsub.MessageHandler func(ctx, Message) error`. `pubsub.EventHandler func(ctx, Event) error`. Convert with `pubsub.AsMessageHandler(h)`. `pubsub.EventFromMessage(msg)` builds a `BaseEvent` from a `Message`.
 
@@ -29,7 +29,26 @@ Metadata and trace context; subscribers restore them before the handler. Kafka,
 Redis Stream, and RocketMQ support this. MQTT v3 and Redis Pub/Sub channels do
 not expose a header carrier and therefore start a new local request context.
 
-Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `modules/<module>/internal/api/<surface>/event.go`, return a `MessageHandler`; Application wiring wraps it with `NewSubscriberEndpoint`.
+Broker clients implementing `pubsub.Subscriber`/`Publisher`/`Client`: `kafka` (Consumer + Producer), `mqtt` (Client), `redis` (PubSub + Stream), `rocket` (push consumer + producer). Each has `NewConsumer`/`NewClient` + `With*` options. In `modules/<module>/infrastructure/<protocol>/event.go`, define the message DTO and mapping and return a `MessageHandler` that calls an `internal/app` use case; Application wiring wraps it with `NewSubscriberEndpoint`.
+
+MQTT and Redis Channel use bounded business worker queues (8 workers by default).
+MQTT defaults to 256 queued messages; Redis uses ChannelSize (100 by default).
+Full queues apply backpressure. MQTT disables SDK auto-ACK: handler success
+acknowledges, error/panic retries with cancellable backoff. QoS 0 and Redis
+Channels remain best-effort; Redis handler failures are counted without retries.
+WithOrderMatters(true) uses one MQTT business worker. Protocol callbacks only
+feed the bounded queue. Persistent MQTT sessions retain pre-handler deliveries
+until a matching subscription is registered.
+
+RocketMQ NewPushConsumer performs no network startup. First Subscribe must
+match the configured initial topic and installs its handler before SDK startup.
+Missing handlers and errors/panics return FAILURE for broker-managed retry.
+
+MQTT, Redis Channel and RocketMQ consumers expose CloseContext and Stats.
+Close/Disconnect permanently stop admission and drain accepted work; timeout
+cancels cooperative handlers without acknowledging incomplete reliable messages.
+Default close budget is 30 seconds. Recreate a client after shutdown; preserve
+business idempotency across ambiguous acknowledgements and redelivery.
 
 Kafka needs no connect/disconnect. MQTT/Redis clients that implement `Connect(ctx)` / `Disconnect(ctx)` are auto-detected; pass explicit hooks only when overriding that behavior.
 

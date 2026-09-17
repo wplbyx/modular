@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -91,17 +90,26 @@ func (r *K8sRegistry) GetService(ctx context.Context, serviceName string) ([]*co
 // informers factory 仅在首次 Watch 时启动（通过 startOnce 保证）。
 func (r *K8sRegistry) Watch(ctx context.Context, serviceName string) (<-chan []*core.ServiceNode, error) {
 	ch := make(chan []*core.ServiceNode, 1)
-	var active atomic.Bool
-	active.Store(true)
+	var updateMu sync.Mutex
+	active := true
+	published := false
 	sendUpdate := func(nodes []*core.ServiceNode) {
-		if !active.Load() {
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		if !active {
 			return
 		}
+		published = true
 		select {
 		case ch <- nodes:
-		case <-ctx.Done():
+			return
 		default:
 		}
+		select {
+		case <-ch:
+		default:
+		}
+		ch <- nodes
 	}
 
 	endpointsInformer := r.informers.Core().V1().Endpoints().Informer()
@@ -118,6 +126,9 @@ func (r *K8sRegistry) Watch(ctx context.Context, serviceName string) (<-chan []*
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
+			if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = tombstone.Obj
+			}
 			if ep, ok := obj.(*corev1.Endpoints); ok && ep.Name == serviceName {
 				sendUpdate([]*core.ServiceNode{})
 			}
@@ -134,13 +145,47 @@ func (r *K8sRegistry) Watch(ctx context.Context, serviceName string) (<-chan []*
 
 	// 发送初始快照
 	go func() {
-		defer close(ch)
-		defer func() { _ = endpointsInformer.RemoveEventHandler(handle) }()
-		defer active.Store(false)
-		if nodes, err := r.GetService(ctx, serviceName); err == nil {
-			sendUpdate(nodes)
+		defer func() {
+			_ = endpointsInformer.RemoveEventHandler(handle)
+			updateMu.Lock()
+			active = false
+			close(ch)
+			updateMu.Unlock()
+		}()
+		syncCtx, cancel := context.WithCancel(ctx)
+		syncDone := make(chan struct{})
+		go func() {
+			select {
+			case <-r.stopCh:
+				cancel()
+			case <-syncDone:
+			}
+		}()
+		// Sync observes list completion even when the service has no Endpoints object.
+		synced := cache.WaitForCacheSync(syncCtx.Done(), endpointsInformer.HasSynced)
+		close(syncDone)
+		cancel()
+		if synced {
+			updateMu.Lock()
+			if active && !published {
+				obj, exists, err := endpointsInformer.GetStore().GetByKey(r.namespace + "/" + serviceName)
+				var nodes []*core.ServiceNode
+				if err == nil && exists {
+					if ep, ok := obj.(*corev1.Endpoints); ok {
+						nodes = endpointsToServiceNodes(serviceName, ep)
+					}
+				}
+				if err == nil {
+					ch <- nodes
+					published = true
+				}
+			}
+			updateMu.Unlock()
 		}
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-r.stopCh:
+		}
 	}()
 
 	return ch, nil

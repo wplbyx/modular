@@ -12,7 +12,7 @@ type Memoizer[K comparable, V any] struct {
 	mu    sync.RWMutex
 	ttl   time.Duration
 	items map[K]MemoItem[V]
-	sf    *SingleFlight[K, V]
+	sf    SingleFlight[K, V]
 }
 
 type MemoItem[V any] struct {
@@ -24,7 +24,6 @@ func NewMemoizer[K comparable, V any](ttl time.Duration) *Memoizer[K, V] {
 	return &Memoizer[K, V]{
 		ttl:   ttl,
 		items: make(map[K]MemoItem[V]),
-		sf:    NewSingleFlight[K, V](),
 	}
 }
 
@@ -40,7 +39,12 @@ func (m *Memoizer[K, V]) Get(key K) (V, bool) {
 
 	now := time.Now()
 	if !item.expiresAt.IsZero() && now.After(item.expiresAt) {
-		m.Delete(key)
+		m.mu.Lock()
+		current, exists := m.items[key]
+		if exists && !current.expiresAt.IsZero() && now.After(current.expiresAt) {
+			delete(m.items, key)
+		}
+		m.mu.Unlock()
 		return zero, false
 	}
 	return item.value, true
@@ -75,9 +79,6 @@ func (m *Memoizer[K, V]) GetOrLoad(ctx context.Context, key K, loader func(conte
 		return zero, err
 	}
 
-	if m.sf == nil {
-		m.sf = NewSingleFlight[K, V]()
-	}
 	return m.sf.Do(ctx, key, func(ctx context.Context) (V, error) {
 		if val, ok := m.Get(key); ok {
 			return val, nil
@@ -107,4 +108,19 @@ func (m *Memoizer[K, V]) Len() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.items)
+}
+
+// PurgeExpired removes expired values without starting a background worker.
+func (m *Memoizer[K, V]) PurgeExpired() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	removed := 0
+	for key, item := range m.items {
+		if !item.expiresAt.IsZero() && !now.Before(item.expiresAt) {
+			delete(m.items, key)
+			removed++
+		}
+	}
+	return removed
 }

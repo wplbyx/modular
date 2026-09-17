@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
@@ -28,8 +30,9 @@ var _ storage.Storage = (*DiskStorage)(nil)
 // key 统一为 URL 风格的相对路径（用 "/" 分隔），内部由 filepath 转换为平台路径。
 // Meta/ContentType 在磁盘实现中不持久化（opts 中传入会被静默忽略）。
 type DiskStorage struct {
-	rootDir string // 存储根目录的绝对路径
-	baseUrl string // 访问域名（已剥离协议前缀和尾斜杠）
+	multipartMu sync.Mutex
+	rootDir     string // 存储根目录的绝对路径
+	baseUrl     string // 访问域名（已剥离协议前缀和尾斜杠）
 }
 
 // NewDiskStorage 构造一个新的本地磁盘 Storage 实例。
@@ -67,69 +70,60 @@ func (s *DiskStorage) GetUrl(key string) string {
 
 // GetMeta 获取单个文件的元信息
 func (s *DiskStorage) GetMeta(ctx context.Context, key string) (storage.ObjectItem, error) {
-	path, err := s.GenKeyToFilePath(key)
+	root, name, err := s.objectRoot(ctx, key)
 	if err != nil {
 		return storage.ObjectItem{}, err
 	}
-	info, err := os.Stat(path)
+	defer root.Close()
+	info, err := root.Stat(name)
 	if err != nil {
 		return storage.ObjectItem{}, err
 	}
-	return storage.ObjectItem{
-		Key:          key,
-		Size:         info.Size(),
-		LastModified: info.ModTime().Unix(),
-	}, nil
+	return storage.ObjectItem{Key: key, Size: info.Size(), LastModified: info.ModTime().Unix()}, nil
 }
 
 // Exists 检查文件是否存在
 func (s *DiskStorage) Exists(ctx context.Context, key string) (bool, error) {
-	path, err := s.GenKeyToFilePath(key)
+	root, name, err := s.objectRoot(ctx, key)
 	if err != nil {
 		return false, err
 	}
-	if _, err = os.Stat(path); err == nil {
-		return true, nil
-	} else if os.IsNotExist(err) {
+	defer root.Close()
+	_, err = root.Stat(name)
+	if os.IsNotExist(err) {
 		return false, nil
 	}
-	return false, err
+	return err == nil, err
 }
 
 // Upload 上传单个文件（opts 中的 Meta/ContentType 在磁盘实现中被忽略）
 func (s *DiskStorage) Upload(ctx context.Context, key string, body io.Reader, opts ...storage.IOConfigOptionFunc) error {
-	path, err := s.GenKeyToFilePath(key)
+	root, name, err := s.objectRoot(ctx, key)
 	if err != nil {
 		return err
 	}
-	if err = os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.Copy(f, body)
-	return err
+	defer root.Close()
+	return atomicWrite(ctx, root, name, body)
 }
 
 // Delete 删除单个文件
 func (s *DiskStorage) Delete(ctx context.Context, key string, opts ...storage.IOConfigOptionFunc) error {
-	path, err := s.GenKeyToFilePath(key)
+	root, name, err := s.objectRoot(ctx, key)
 	if err != nil {
 		return err
 	}
-	return os.Remove(path)
+	defer root.Close()
+	return root.Remove(name)
 }
 
 // Download 下载单个文件，调用方需关闭返回的 io.ReadCloser
 func (s *DiskStorage) Download(ctx context.Context, key string, opts ...storage.IOConfigOptionFunc) (io.ReadCloser, error) {
-	path, err := s.GenKeyToFilePath(key)
+	root, name, err := s.objectRoot(ctx, key)
 	if err != nil {
 		return nil, err
 	}
-	return os.Open(path)
+	defer root.Close()
+	return root.Open(name)
 }
 
 // BatchUpload 批量上传，errgroup 控制并发，全跑完后聚合错误
@@ -164,30 +158,24 @@ func (s *DiskStorage) BatchUpload(ctx context.Context, tasks []storage.UploadTas
 
 // BatchDelete 批量删除，返回成功删除的 key 列表（不存在的 key 视为已删除，跳过不报错）
 func (s *DiskStorage) BatchDelete(ctx context.Context, keys []string, opts ...storage.IOConfigOptionFunc) ([]string, error) {
-	var (
-		deleted []string
-		errs    []error
-	)
+	var deleted []string
+	var failures []error
 	for _, key := range keys {
 		if key == "" {
 			continue
 		}
-
-		path, err := s.GenKeyToFilePath(key)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("delete %s: %w", key, err))
-			continue
+		if err := ctx.Err(); err != nil {
+			return deleted, errors.Join(append(failures, err)...)
 		}
-		if err = os.Remove(path); err != nil {
-			if os.IsNotExist(err) {
-				continue // 不存在的文件不计入失败
+		if err := s.Delete(ctx, key, opts...); err != nil {
+			if !os.IsNotExist(err) {
+				failures = append(failures, fmt.Errorf("delete %s: %w", key, err))
 			}
-			errs = append(errs, fmt.Errorf("delete %s: %w", key, err))
 			continue
 		}
 		deleted = append(deleted, key)
 	}
-	return deleted, errors.Join(errs...)
+	return deleted, errors.Join(failures...)
 }
 
 // DeleteByPrefix 按前缀删除所有文件（遍历 + 分批删除，内存峰值受控）
@@ -226,65 +214,45 @@ func (s *DiskStorage) DeleteByPrefix(ctx context.Context, prefix string, opts ..
 
 // PrefixIterator 迭代遍历指定前缀目录下的所有文件，分页流式回调
 func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callback storage.ListCallback) error {
-	walkRoot := s.rootDir
-	if prefix != "" {
-		var err error
-		walkRoot, err = s.GenKeyToFilePath(prefix)
-		if err != nil {
-			return err
-		}
+	if callback == nil {
+		return errors.New("list callback is nil")
 	}
-	info, err := os.Stat(walkRoot)
+	if prefix == "" {
+		prefix = "."
+	}
+	root, name, err := s.objectRoot(ctx, prefix)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // 前缀目录不存在，无文件可遍历
-		}
 		return err
 	}
-	// prefix 指向单个文件时，回调它自身
-	if !info.IsDir() {
-		rel, _ := filepath.Rel(s.rootDir, walkRoot)
-		return callback(ctx, storage.ObjectItem{
-			Key:          filepath.ToSlash(rel),
-			Size:         info.Size(),
-			LastModified: info.ModTime().Unix(),
-		})
-	}
-
-	const batchSize = 1000
+	defer root.Close()
 	var batch []storage.ObjectItem
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
 		}
-		if err := callback(ctx, batch...); err != nil {
+		err := callback(ctx, batch...)
+		batch = nil
+		return err
+	}
+	err = fs.WalkDir(root.FS(), filepath.ToSlash(name), func(path string, d fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		batch = batch[:0]
-		return nil
-	}
-
-	err = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if os.IsNotExist(walkErr) && path == filepath.ToSlash(name) {
+				return nil
+			}
 			return walkErr
 		}
 		if d.IsDir() {
 			return nil
 		}
-		fi, err := d.Info()
+		info, err := root.Stat(filepath.FromSlash(path))
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(s.rootDir, path)
-		if err != nil {
-			return err
-		}
-		batch = append(batch, storage.ObjectItem{
-			Key:          filepath.ToSlash(rel), // 统一用 "/" 输出 key
-			Size:         fi.Size(),
-			LastModified: fi.ModTime().Unix(),
-		})
-		if len(batch) >= batchSize {
+		batch = append(batch, storage.ObjectItem{Key: path, Size: info.Size(), LastModified: info.ModTime().Unix()})
+		if len(batch) >= 1000 {
 			return flush()
 		}
 		return nil
@@ -297,80 +265,91 @@ func (s *DiskStorage) PrefixIterator(ctx context.Context, prefix string, callbac
 
 // InitiateMultipartUpload 初始化分片上传（用 UUID 生成 uploadID，创建临时目录）
 func (s *DiskStorage) InitiateMultipartUpload(ctx context.Context, key string) (storage.MultipartUploadSession, error) {
-	if _, err := s.GenKeyToFilePath(key); err != nil {
+	root, _, err := s.objectRoot(ctx, key)
+	if err != nil {
 		return storage.MultipartUploadSession{}, err
 	}
-	uploadID := uuid.NewString()
-	if err := os.MkdirAll(s.MultipartTempDir(uploadID), 0o755); err != nil {
-		return storage.MultipartUploadSession{}, fmt.Errorf("create multipart temp dir: %w", err)
+	root.Close()
+	session := storage.MultipartUploadSession{UploadID: uuid.NewString(), Key: key}
+	base, err := s.multipartRoot()
+	if err != nil {
+		return storage.MultipartUploadSession{}, err
 	}
-	return storage.MultipartUploadSession{UploadID: uploadID, Key: key}, nil
+	defer base.Close()
+	if err = base.Mkdir(session.UploadID, 0700); err != nil {
+		return storage.MultipartUploadSession{}, err
+	}
+	data, _ := json.Marshal(multipartBinding{Root: s.rootDir, Key: key})
+	if err = base.WriteFile(filepath.Join(session.UploadID, "session.json"), data, 0600); err != nil {
+		_ = base.RemoveAll(session.UploadID)
+		return storage.MultipartUploadSession{}, err
+	}
+	return session, nil
 }
 
 // CompleteMultipartUpload 按 PartNumber 升序合并所有分片到最终路径，清理临时目录
 func (s *DiskStorage) CompleteMultipartUpload(ctx context.Context, session storage.MultipartUploadSession, parts []storage.UploadPartResponse, opts ...storage.IOConfigOptionFunc) error {
+	s.multipartMu.Lock()
+	defer s.multipartMu.Unlock()
 	if len(parts) == 0 {
 		return errors.New("no parts to complete")
 	}
-
-	// 创建目标文件实例对象，待写入内容
-	targetPath, err := s.GenKeyToFilePath(session.Key)
+	base, err := s.validateSession(session, false)
 	if err != nil {
 		return err
 	}
-	if err = os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+	defer base.Close()
+	ordered := append([]storage.UploadPartResponse(nil), parts...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].PartNumber < ordered[j].PartNumber })
+	for i, part := range ordered {
+		if part.PartNumber < 1 || (i > 0 && part.PartNumber == ordered[i-1].PartNumber) {
+			return errors.New("invalid or duplicate part number")
+		}
+	}
+	reader := &partSequenceReader{root: base, uploadID: session.UploadID, parts: ordered}
+	defer reader.Close()
+	if err = s.Upload(ctx, session.Key, reader, opts...); err != nil {
 		return err
 	}
-	dst, err := os.Create(targetPath)
-	if err != nil {
+	if err = reader.Close(); err != nil {
 		return err
 	}
-	defer dst.Close()
 
-	// 依次有序的读取切片内容，并写入到目标文件里
-	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
-	tempDir := s.MultipartTempDir(session.UploadID)
-	for _, p := range parts {
-		partPath := filepath.Join(tempDir, fmt.Sprintf("part_%d", p.PartNumber))
-		f, err := os.Open(partPath)
-		if err != nil {
-			return fmt.Errorf("open part %d: %w", p.PartNumber, err)
-		}
-		if _, err = io.Copy(dst, f); err != nil {
-			f.Close()
-			return fmt.Errorf("merge part %d: %w", p.PartNumber, err)
-		}
-		f.Close()
-	}
-	// 合并成功，清理临时目录
-	_ = os.RemoveAll(tempDir)
-	return nil
+	return base.RemoveAll(session.UploadID)
 }
 
 // CancelMultipartUpload 取消分片上传，删除临时分片目录
 func (s *DiskStorage) CancelMultipartUpload(ctx context.Context, session storage.MultipartUploadSession) error {
-	return os.RemoveAll(s.MultipartTempDir(session.UploadID))
+	s.multipartMu.Lock()
+	defer s.multipartMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	base, err := s.validateSession(session, true)
+	if err != nil {
+		return err
+	}
+	defer base.Close()
+	return base.RemoveAll(session.UploadID)
 }
 
 // MultipartUpload 上传单个分片到临时目录，返回 ETag（分片内容的 MD5）
 func (s *DiskStorage) MultipartUpload(ctx context.Context, session storage.MultipartUploadSession, partNumber int, partSize int64, body io.Reader) (storage.UploadPartResponse, error) {
+	s.multipartMu.Lock()
+	defer s.multipartMu.Unlock()
 	if partNumber < 1 {
 		return storage.UploadPartResponse{}, errors.New("partNumber must be >= 1")
 	}
-	partPath := filepath.Join(s.MultipartTempDir(session.UploadID), fmt.Sprintf("part_%d", partNumber))
-	f, err := os.Create(partPath)
+	base, err := s.validateSession(session, false)
 	if err != nil {
 		return storage.UploadPartResponse{}, err
 	}
-	defer f.Close()
+	defer base.Close()
 	h := md5.New()
-	if _, err = io.Copy(io.MultiWriter(f, h), body); err != nil {
+	if err = atomicWrite(ctx, base, filepath.Join(session.UploadID, fmt.Sprintf("part_%d", partNumber)), io.TeeReader(body, h)); err != nil {
 		return storage.UploadPartResponse{}, err
 	}
-	return storage.UploadPartResponse{
-		PartNumber: partNumber,
-		ETag:       hex.EncodeToString(h.Sum(nil)),
-	}, nil
+	return storage.UploadPartResponse{PartNumber: partNumber, ETag: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
 // GenKeyToFilePath 将相对 key 转为安全的本地路径，防止路径穿越（如 key 含 "../"）。
@@ -386,7 +365,7 @@ func (s *DiskStorage) GenKeyToFilePath(key string) (string, error) {
 		return "", fmt.Errorf("invalid key %q: %w", key, err)
 	}
 	// rel 若以 ".." 开头说明路径逃逸出 rootDir
-	if strings.HasPrefix(rel, "..") {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid key %q: escapes storage root", key)
 	}
 	return full, nil
@@ -395,4 +374,149 @@ func (s *DiskStorage) GenKeyToFilePath(key string) (string, error) {
 // MultipartTempDir 返回指定 uploadID 的分片临时目录（位于系统临时目录下，不污染 rootDir）
 func (s *DiskStorage) MultipartTempDir(uploadID string) string {
 	return filepath.Join(os.TempDir(), "upload_temp_dir", uploadID)
+}
+
+// objectRoot 将每次文件操作约束在存储根目录，禁止符号链接逃逸。
+func (s *DiskStorage) objectRoot(ctx context.Context, key string) (*os.Root, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	path, err := s.GenKeyToFilePath(key)
+	if err != nil {
+		return nil, "", err
+	}
+	name, err := filepath.Rel(s.rootDir, path)
+	if err != nil {
+		return nil, "", err
+	}
+	root, err := os.OpenRoot(s.rootDir)
+	return root, name, err
+}
+
+type multipartBinding struct {
+	Root string
+	Key  string
+}
+
+func (s *DiskStorage) multipartRoot() (*os.Root, error) {
+	dir := filepath.Join(os.TempDir(), "upload_temp_dir")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, err
+	}
+	return os.OpenRoot(dir)
+}
+func (s *DiskStorage) validateSession(session storage.MultipartUploadSession, allowMissing bool) (*os.Root, error) {
+	id, err := uuid.Parse(session.UploadID)
+	if err != nil || id.String() != session.UploadID {
+		return nil, errors.New("invalid multipart upload ID")
+	}
+	if _, err = s.GenKeyToFilePath(session.Key); err != nil {
+		return nil, err
+	}
+	base, err := s.multipartRoot()
+	if err != nil {
+		return nil, err
+	}
+	data, err := base.ReadFile(filepath.Join(session.UploadID, "session.json"))
+	if allowMissing && os.IsNotExist(err) {
+		return base, nil
+	}
+	var binding multipartBinding
+	if err == nil {
+		err = json.Unmarshal(data, &binding)
+	}
+	if err == nil && (binding.Root != s.rootDir || binding.Key != session.Key) {
+		err = errors.New("multipart session belongs to another storage or key")
+	}
+	if err != nil {
+		base.Close()
+		return nil, err
+	}
+	return base, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+func atomicWrite(ctx context.Context, root *os.Root, name string, body io.Reader) error {
+	if body == nil {
+		return errors.New("upload body is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := root.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		return err
+	}
+	temporary := filepath.Join(filepath.Dir(name), ".modular-"+uuid.NewString()+".tmp")
+	file, err := root.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer root.Remove(temporary)
+	_, copyErr := io.Copy(file, contextReader{ctx, body})
+	closeErr := file.Close()
+	if err = errors.Join(copyErr, closeErr, ctx.Err()); err != nil {
+		return err
+	}
+	return root.Rename(temporary, name)
+}
+
+// partSequenceReader opens one part at a time, validating its hash before advancing.
+type partSequenceReader struct {
+	root     *os.Root
+	uploadID string
+	parts    []storage.UploadPartResponse
+	index    int
+	file     *os.File
+	hash     hash.Hash
+}
+
+func (r *partSequenceReader) Read(buffer []byte) (int, error) {
+	for r.index < len(r.parts) {
+		part := r.parts[r.index]
+		if r.file == nil {
+			file, err := r.root.Open(filepath.Join(r.uploadID, fmt.Sprintf("part_%d", part.PartNumber)))
+			if err != nil {
+				return 0, err
+			}
+			r.file = file
+			r.hash = md5.New()
+		}
+		n, err := r.file.Read(buffer)
+		_, _ = r.hash.Write(buffer[:n])
+		if err == io.EOF {
+			closeErr := r.file.Close()
+			r.file = nil
+			if closeErr != nil {
+				return n, closeErr
+			}
+			if part.ETag != "" && part.ETag != hex.EncodeToString(r.hash.Sum(nil)) {
+				return n, errors.New("part ETag mismatch")
+			}
+			r.index++
+			if n > 0 {
+				return n, nil
+			}
+			continue
+		}
+		return n, err
+	}
+	return 0, io.EOF
+}
+func (r *partSequenceReader) Close() error {
+	if r.file == nil {
+		return nil
+	}
+	err := r.file.Close()
+	r.file = nil
+	return err
 }

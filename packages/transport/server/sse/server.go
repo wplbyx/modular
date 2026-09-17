@@ -3,7 +3,9 @@ package sse
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +36,7 @@ type Server struct {
 	clients    map[string]*Client
 	bufferSize int
 	started    bool
+	closed     bool
 	cancel     context.CancelFunc
 	startupID  *struct{}
 	ready      chan struct{}
@@ -66,7 +69,7 @@ func (s *Server) Startup(ctx context.Context) error {
 	startupID := &struct{}{}
 
 	s.mu.Lock()
-	if s.cancel != nil {
+	if s.cancel != nil || s.closed {
 		s.mu.Unlock()
 		cancel()
 		return fmt.Errorf("sse server is already running")
@@ -103,6 +106,7 @@ func (s *Server) Ready(ctx context.Context) error {
 // Shutdown 关闭服务，清理所有连接。
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
+	s.closed = true
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
@@ -147,7 +151,11 @@ func (s *Server) Connect() gin.HandlerFunc {
 			MsgChan: make(chan Message, s.bufferSize),
 		}
 
-		s.addClient(clientID, client)
+		if !s.addClient(clientID, client) {
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		defer s.removeClient(clientID, client)
 
 		// 发送初始连接成功消息
 		s.Publish(clientID, Message{Event: "system", Data: "connected successfully"})
@@ -165,7 +173,9 @@ func (s *Server) Connect() gin.HandlerFunc {
 				return
 
 			case <-keepalive.C:
-				fmt.Fprint(c.Writer, ": keepalive\n\n")
+				if _, err := fmt.Fprint(c.Writer, ": keepalive\n\n"); err != nil {
+					return
+				}
 				flusher.Flush()
 
 			case msg, ok := <-client.MsgChan:
@@ -174,14 +184,9 @@ func (s *Server) Connect() gin.HandlerFunc {
 					return
 				}
 
-				// 写入 SSE 格式数据
-				if msg.Event != "" {
-					fmt.Fprintf(c.Writer, "event: %s\n", msg.Event)
+				if err := writeMessage(c.Writer, msg); err != nil {
+					return
 				}
-				if msg.ID != "" {
-					fmt.Fprintf(c.Writer, "id: %s\n", msg.ID)
-				}
-				fmt.Fprintf(c.Writer, "data: %s\n\n", msg.Data)
 				flusher.Flush()
 			}
 		}
@@ -190,6 +195,9 @@ func (s *Server) Connect() gin.HandlerFunc {
 
 // Publish 向指定 ID 的客户端发送消息。
 func (s *Server) Publish(clientID string, msg Message) bool {
+	if !validMessage(msg) {
+		return false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -209,6 +217,9 @@ func (s *Server) Publish(clientID string, msg Message) bool {
 
 // Notify 广播消息给所有连接的客户端。
 func (s *Server) Notify(msg Message) {
+	if !validMessage(msg) {
+		return
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -238,14 +249,18 @@ func (s *Server) IsStarted() bool {
 // --- 内部辅助方法 ---
 
 // addClient replaces any existing connection for clientID and closes the old channel.
-func (s *Server) addClient(clientID string, client *Client) {
+func (s *Server) addClient(clientID string, client *Client) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.closed {
+		return false
+	}
 	if old, exists := s.clients[clientID]; exists && old != client {
 		close(old.MsgChan)
 	}
 	s.clients[clientID] = client
+	return true
 }
 
 // removeClient 安全移除客户端。
@@ -260,4 +275,27 @@ func (s *Server) removeClient(clientID string, current *Client) {
 		close(client.MsgChan)
 		delete(s.clients, clientID)
 	}
+}
+
+func validMessage(msg Message) bool {
+	return !strings.ContainsAny(msg.Event, "\r\n") && !strings.ContainsAny(msg.ID, "\r\n\x00")
+}
+func writeMessage(writer io.Writer, msg Message) error {
+	if !validMessage(msg) {
+		return fmt.Errorf("invalid SSE event or ID")
+	}
+	var output strings.Builder
+	if msg.Event != "" {
+		fmt.Fprintf(&output, "event: %s\n", msg.Event)
+	}
+	if msg.ID != "" {
+		fmt.Fprintf(&output, "id: %s\n", msg.ID)
+	}
+	data := strings.ReplaceAll(strings.ReplaceAll(msg.Data, "\r\n", "\n"), "\r", "\n")
+	for _, line := range strings.Split(data, "\n") {
+		fmt.Fprintf(&output, "data: %s\n", line)
+	}
+	output.WriteByte('\n')
+	_, err := io.WriteString(writer, output.String())
+	return err
 }

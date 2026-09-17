@@ -116,6 +116,7 @@ func ValidateNode(object interface{}) error {
 
 // Watch 监听本地配置文件的变更。当文件发生变更时，调用提供的 callback 函数。
 // 内部使用 viper 的 WatchConfig + OnConfigChange 实现文件系统级监听。
+// Deprecated: 使用 SnapshotWatcher 获得受 Context 管理且校验后发布的配置快照。旧 Watch 不可与 Load 并发使用。
 func (l *ConfigureLoader) Watch(callback func(fsnotify.Event)) {
 	if l.fileSource != nil && l.fileSource.filesystem != nil {
 		log.Println("Embedded config source does not support file watching.")
@@ -128,6 +129,7 @@ func (l *ConfigureLoader) Watch(callback func(fsnotify.Event)) {
 
 // WatchRemoteConfig 定期轮询远程配置中心（etcd/consul/firestore），
 // 当检测到变更时触发 callback。调用方负责通过 ctx 控制轮询生命周期。
+// Deprecated: 使用 SnapshotWatcher，避免修改正在被读取的 Viper 实例。
 func (l *ConfigureLoader) WatchRemoteConfig(ctx context.Context, callback func(e fsnotify.Event)) {
 	if l == nil || !l.remoteReady {
 		log.Println("Remote config watcher is disabled because no compatible remote provider is registered.")
